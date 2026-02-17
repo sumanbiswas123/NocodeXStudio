@@ -1,0 +1,45 @@
+{
+  "applicationId": "js.neutralino.nocodexstudio",
+  "version": "1.0.0",
+  "defaultMode": "window",
+  "documentRoot": "dist/",
+  "url": "/",
+  "enableServer": true,
+  "singlePageServe": false,
+  "enableNativeAPI": true,
+  "nativeBlockList": [],
+  "nativeAllowList": [
+    "app.*",
+    "os.*",
+    "filesystem.*",
+    "window.*",
+    "events.*",
+    "debug.*",
+    "server.*"
+  ],
+  "modes": {
+    "window": {
+      "title": "Nocode X Studio",
+      "width": 1280,
+      "height": 800,
+      "minWidth": 800,
+      "minHeight": 600,
+      "center": true,
+      "fullScreen": false,
+      "alwaysOnTop": false,
+      "enableInspector": false,
+      "borderless": true,
+      "maximize": false,
+      "hidden": false,
+      "resizable": true,
+      "extendUserAgentWith": "Neutralinojs"
+    }
+  },
+  "cli": {
+    "binaryName": "nocode-x-studio",
+    "resourcesPath": "/dist",
+    "distributionPath": "/dist",
+    "binaryVersion": "6.5.0",
+    "clientVersion": "6.5.0"
+  }
+}
