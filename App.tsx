@@ -113,6 +113,122 @@ const IGNORED_FOLDERS = new Set([
 ]);
 const THEME_STORAGE_KEY = "nocode-x-studio-theme";
 const PREVIEW_AUTOSAVE_STORAGE_KEY = "nocode-x-studio-preview-autosave";
+const SHARED_FONT_VIRTUAL_DIR = "shared/media/fonts";
+const PRESENTATION_CSS_VIRTUAL_PATH = "shared/css/presentation.css";
+const FONT_CACHE_VIRTUAL_PATH = "shared/js/nocodex-fonts.json";
+const FONT_CACHE_VERSION = 1;
+const DEFAULT_EDITOR_FONTS = [
+  "Arial",
+  "Helvetica",
+  "Times New Roman",
+  "Georgia",
+  "Courier New",
+  "Verdana",
+  "Trebuchet MS",
+  "Impact",
+  "sans-serif",
+  "serif",
+  "monospace",
+];
+
+type FontCachePayload = {
+  version: number;
+  source: "presentation.css";
+  generatedAt: string;
+  fonts: string[];
+};
+
+const sanitizeFontFamilyName = (raw: string): string =>
+  String(raw || "")
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .trim();
+
+const dedupeFontFamilies = (families: string[]): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of families) {
+    const normalized = sanitizeFontFamilyName(raw);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+};
+
+const buildEditorFontOptions = (projectFamilies: string[]): string[] =>
+  dedupeFontFamilies([...projectFamilies, ...DEFAULT_EDITOR_FONTS]);
+
+const parsePresentationCssFontFamilies = (cssContent: string): string[] => {
+  if (!cssContent) return [];
+  const out: string[] = [];
+  const faceRegex = /@font-face\s*\{[\s\S]*?\}/gi;
+  let blockMatch: RegExpExecArray | null = null;
+  while ((blockMatch = faceRegex.exec(cssContent)) !== null) {
+    const block = blockMatch[0];
+    const familyMatch = block.match(/font-family\s*:\s*([^;]+);/i);
+    if (!familyMatch) continue;
+    out.push(sanitizeFontFamilyName(familyMatch[1]));
+  }
+  return dedupeFontFamilies(out);
+};
+
+const parseFontCacheFamilies = (raw: string): string[] => {
+  try {
+    const parsed = JSON.parse(raw) as Partial<FontCachePayload> | null;
+    if (!parsed || !Array.isArray(parsed.fonts)) return [];
+    return dedupeFontFamilies(parsed.fonts.map((item) => String(item || "")));
+  } catch {
+    return [];
+  }
+};
+
+const deriveFontFamilyFromFontFileName = (fileName: string): string => {
+  const base = String(fileName || "").replace(/\.[^.]+$/, "");
+  const normalized = base.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  return normalized || base || "Custom Font";
+};
+
+const fontFormatFromFileName = (fileName: string): string => {
+  const ext = String(fileName || "").split(".").pop()?.toLowerCase() || "";
+  if (ext === "woff2") return "woff2";
+  if (ext === "woff") return "woff";
+  if (ext === "ttf") return "truetype";
+  if (ext === "otf") return "opentype";
+  if (ext === "eot") return "embedded-opentype";
+  return ext || "truetype";
+};
+
+const relativePathBetweenVirtualFiles = (fromFilePath: string, toFilePath: string): string => {
+  const fromParts = normalizeProjectRelative(fromFilePath).split("/").filter(Boolean);
+  const toParts = normalizeProjectRelative(toFilePath).split("/").filter(Boolean);
+  if (fromParts.length > 0) fromParts.pop();
+  let pivot = 0;
+  while (
+    pivot < fromParts.length &&
+    pivot < toParts.length &&
+    fromParts[pivot].toLowerCase() === toParts[pivot].toLowerCase()
+  ) {
+    pivot += 1;
+  }
+  const upward = new Array(Math.max(0, fromParts.length - pivot)).fill("..");
+  const downward = toParts.slice(pivot);
+  const combined = [...upward, ...downward].join("/");
+  return combined || toParts[toParts.length - 1] || "";
+};
+
+const collectSharedFontFamiliesFromFileMap = (fileMap: FileMap): string[] =>
+  dedupeFontFamilies(
+    Object.values(fileMap)
+      .filter((file) => {
+        if (file.type !== "font") return false;
+        const normalized = normalizeProjectRelative(file.path).toLowerCase();
+        return normalized.startsWith(`${SHARED_FONT_VIRTUAL_DIR}/`);
+      })
+      .map((file) => deriveFontFamilyFromFontFileName(file.name)),
+  );
 
 const inferFileType = (name: string): ProjectFile["type"] => {
   const lower = name.toLowerCase();
@@ -733,6 +849,7 @@ const buildPreviewRuntimeScript = (
     var __previewSelectedEl = null;
     var __previewEditingEl = null;
     var __previewMode = 'preview';
+    var __previewSelectionMode = 'default';
     var __previewEditableTags = {
       p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
       a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
@@ -764,20 +881,134 @@ const buildPreviewRuntimeScript = (
       return __previewMode === 'edit';
     }
 
-    function getPreviewSelectableTarget(node) {
-      var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
-      while (current && current !== document.body) {
-        var tag = String(current.tagName || '').toLowerCase();
+    function isPreviewBaseSelectable(el) {
+      if (!el) return false;
+      var tag = String(el.tagName || '').toLowerCase();
+      return Boolean(
+        tag &&
+        tag !== 'script' &&
+        tag !== 'style' &&
+        tag !== 'head' &&
+        tag !== 'meta' &&
+        tag !== 'link' &&
+        tag !== 'html' &&
+        tag !== 'body'
+      );
+    }
+
+    function hasOwnTextNode(el) {
+      if (!el) return false;
+      for (var i = 0; i < el.childNodes.length; i++) {
+        var child = el.childNodes[i];
+        if (child && child.nodeType === 3 && String(child.textContent || '').trim()) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function isElementImageCandidate(el) {
+      if (!el || !isPreviewBaseSelectable(el)) return false;
+      var tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'img' || tag === 'picture' || tag === 'source') return true;
+      try {
+        var computed = window.getComputedStyle(el);
+        var bg = computed ? String(computed.backgroundImage || '') : '';
+        if (bg && bg !== 'none' && /url\\(/i.test(bg)) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function normalizeSelectionMode(raw) {
+      var mode = String(raw || '').toLowerCase();
+      if (mode === 'text' || mode === 'image' || mode === 'css') return mode;
+      return 'default';
+    }
+
+    function findBestDescendant(root, selector, predicate, pointX, pointY) {
+      var descendants = root.querySelectorAll ? root.querySelectorAll(selector) : [];
+      var best = null;
+      var bestArea = Number.POSITIVE_INFINITY;
+      var bestDistance = Number.POSITIVE_INFINITY;
+      for (var d = 0; d < descendants.length; d++) {
+        var candidate = descendants[d];
+        if (!candidate || candidate === root) continue;
+        if (predicate && !predicate(candidate)) continue;
+        var rect = candidate.getBoundingClientRect ? candidate.getBoundingClientRect() : null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        var distance = 0;
+        if (pointX !== null && pointY !== null) {
+          var dx = pointX < rect.left ? (rect.left - pointX) : (pointX > rect.right ? (pointX - rect.right) : 0);
+          var dy = pointY < rect.top ? (rect.top - pointY) : (pointY > rect.bottom ? (pointY - rect.bottom) : 0);
+          distance = (dx * dx) + (dy * dy);
+        }
+        var area = rect.width * rect.height;
         if (
-          tag &&
-          tag !== 'script' &&
-          tag !== 'style' &&
-          tag !== 'head' &&
-          tag !== 'meta' &&
-          tag !== 'link' &&
-          tag !== 'html' &&
-          tag !== 'body'
+          distance < bestDistance ||
+          (distance === bestDistance && area < bestArea)
         ) {
+          best = candidate;
+          bestArea = area;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    function applySelectionModeDecorations() {
+      if (!document || !document.body) return;
+      var staleImages = document.querySelectorAll('.__nx-preview-image-candidate');
+      for (var si = 0; si < staleImages.length; si++) {
+        staleImages[si].classList.remove('__nx-preview-image-candidate');
+      }
+      var staleCss = document.querySelectorAll('.__nx-preview-css-candidate');
+      for (var sc = 0; sc < staleCss.length; sc++) {
+        staleCss[sc].classList.remove('__nx-preview-css-candidate');
+      }
+      if (!isPreviewEditMode()) return;
+      if (__previewSelectionMode === 'image') {
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i];
+          if (isElementImageCandidate(el)) {
+            el.classList.add('__nx-preview-image-candidate');
+          }
+        }
+      } else if (__previewSelectionMode === 'css') {
+        var cssEls = document.querySelectorAll('body *');
+        for (var j = 0; j < cssEls.length; j++) {
+          var cssEl = cssEls[j];
+          if (isPreviewBaseSelectable(cssEl)) {
+            cssEl.classList.add('__nx-preview-css-candidate');
+          }
+        }
+      }
+    }
+
+    function getPreviewSelectableTarget(node, event) {
+      var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+      var pointX = event && typeof event.clientX === 'number' ? event.clientX : null;
+      var pointY = event && typeof event.clientY === 'number' ? event.clientY : null;
+      while (current && current !== document.body) {
+        if (!isPreviewBaseSelectable(current)) {
+          current = current.parentElement;
+          continue;
+        }
+        if (__previewSelectionMode === 'text') {
+          if (hasOwnTextNode(current)) return current;
+          var nearText = findBestDescendant(
+            current,
+            'p,span,h1,h2,h3,h4,h5,h6,a,button,label,strong,em,small,b,i,u,li,td,th,blockquote,pre,div',
+            hasOwnTextNode,
+            pointX,
+            pointY,
+          );
+          if (nearText) return nearText;
+        } else if (__previewSelectionMode === 'image') {
+          if (isElementImageCandidate(current)) return current;
+          var nearImage = findBestDescendant(current, '*', isElementImageCandidate, pointX, pointY);
+          if (nearImage) return nearImage;
+        } else {
           return current;
         }
         current = current.parentElement;
@@ -921,6 +1152,8 @@ const buildPreviewRuntimeScript = (
       __previewStyle.textContent =
         '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
         '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
+        '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
         '[data-nx-inline-editing=\"true\"]{cursor:text!important;}';
       if (document.head) document.head.appendChild(__previewStyle);
@@ -937,10 +1170,12 @@ const buildPreviewRuntimeScript = (
       }
       if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
       var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+      __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
       __previewMode = nextMode;
       if (nextMode !== 'edit') {
         clearPreviewSelection();
       }
+      applySelectionModeDecorations();
     });
 
     document.addEventListener('click', function(event) {
@@ -966,7 +1201,7 @@ const buildPreviewRuntimeScript = (
         return;
       }
       var target = event && event.target;
-      var selected = getPreviewSelectableTarget(target);
+      var selected = getPreviewSelectableTarget(target, event);
       if (selected) {
         clearPreviewSelection();
         __previewSelectedEl = selected;
@@ -979,6 +1214,8 @@ const buildPreviewRuntimeScript = (
           id: __previewSelectedEl.id || '',
           className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
           text: __previewSelectedEl.textContent || '',
+          src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
+          href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
           inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
         });
       }
@@ -997,7 +1234,7 @@ const buildPreviewRuntimeScript = (
       if (!isPreviewEditMode()) return;
       if (__previewEditingEl) return;
       var target = event && event.target;
-      var selected = getPreviewSelectableTarget(target);
+      var selected = getPreviewSelectableTarget(target, event);
       if (!selected || !canInlineEdit(selected)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -1185,17 +1422,34 @@ const pickDefaultHtmlFile = (fileMap: FileMap): string | null => {
 
 const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
 (function () {
-  if (window.__nxMountedPreviewBridgeInstalled) return;
+  var __docEl = document && document.documentElement ? document.documentElement : null;
+  if (__docEl && __docEl.getAttribute('data-nx-mounted-preview-bridge') === '1') return;
+  if (__docEl) __docEl.setAttribute('data-nx-mounted-preview-bridge', '1');
   window.__nxMountedPreviewBridgeInstalled = true;
 
   var __previewSelectedEl = null;
   var __previewEditingEl = null;
+  var __previewHoverEl = null;
+  var __previewHoverBadge = null;
+  var __previewHoverOutline = null;
+  var __previewHoverRaf = 0;
   var __previewMode = 'preview';
+  var __previewSelectionMode = 'default';
   var __previewEditableTags = {
     p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
     a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
     i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
   };
+
+  function syncModeFromHost() {
+    try {
+      var hostMode = String(window.__nxPreviewHostMode || '').toLowerCase();
+      if (hostMode === 'preview' || hostMode === 'edit') {
+        __previewMode = hostMode;
+      }
+      __previewSelectionMode = normalizeSelectionMode(window.__nxPreviewHostSelectionMode);
+    } catch (e) {}
+  }
 
   function postPreviewMessage(type, payload) {
     if (!window.parent || window.parent === window) return;
@@ -1219,24 +1473,169 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     __previewSelectedEl = null;
   }
 
+  function clearPreviewHover() {
+    __previewHoverEl = null;
+    if (__previewHoverRaf) {
+      cancelAnimationFrame(__previewHoverRaf);
+      __previewHoverRaf = 0;
+    }
+    if (__previewHoverBadge) {
+      __previewHoverBadge.style.display = 'none';
+    }
+    if (__previewHoverOutline) {
+      __previewHoverOutline.style.display = 'none';
+    }
+  }
+
   function isPreviewEditMode() {
+    syncModeFromHost();
     return __previewMode === 'edit';
   }
 
-  function getPreviewSelectableTarget(node) {
-    var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
-    while (current && current !== document.body) {
-      var tag = String(current.tagName || '').toLowerCase();
+  function isPreviewBaseSelectable(el) {
+    if (!el) return false;
+    var tag = String(el.tagName || '').toLowerCase();
+    return Boolean(
+      tag &&
+      tag !== 'script' &&
+      tag !== 'style' &&
+      tag !== 'head' &&
+      tag !== 'meta' &&
+      tag !== 'link' &&
+      tag !== 'html' &&
+      tag !== 'body'
+    );
+  }
+
+  function hasOwnTextNode(el) {
+    if (!el) return false;
+    for (var i = 0; i < el.childNodes.length; i++) {
+      var child = el.childNodes[i];
+      if (child && child.nodeType === 3 && String(child.textContent || '').trim()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isElementImageCandidate(el) {
+    if (!el || !isPreviewBaseSelectable(el)) return false;
+    var tag = String(el.tagName || '').toLowerCase();
+    if (tag === 'img' || tag === 'picture' || tag === 'source') return true;
+    try {
+      var computed = window.getComputedStyle(el);
+      var bg = computed ? String(computed.backgroundImage || '') : '';
+      if (bg && bg !== 'none' && /url\\(/i.test(bg)) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function extractImageSource(el) {
+    if (!el) return '';
+    var tag = String(el.tagName || '').toLowerCase();
+    if (tag === 'img' || tag === 'source') {
+      var attrSrc = el.getAttribute ? (el.getAttribute('src') || '') : '';
+      if (attrSrc) return attrSrc;
+    }
+    try {
+      var computed = window.getComputedStyle(el);
+      var bg = computed ? String(computed.backgroundImage || '') : '';
+      var match = bg && bg.match(/url\\((['"]?)(.*?)\\1\\)/i);
+      if (match && match[2]) return match[2];
+    } catch (e) {}
+    return '';
+  }
+
+  function normalizeSelectionMode(raw) {
+    var mode = String(raw || '').toLowerCase();
+    if (mode === 'text' || mode === 'image' || mode === 'css') return mode;
+    return 'default';
+  }
+
+  function findBestDescendant(root, selector, predicate, pointX, pointY) {
+    var descendants = root.querySelectorAll ? root.querySelectorAll(selector) : [];
+    var best = null;
+    var bestArea = Number.POSITIVE_INFINITY;
+    var bestDistance = Number.POSITIVE_INFINITY;
+    for (var d = 0; d < descendants.length; d++) {
+      var candidate = descendants[d];
+      if (!candidate || candidate === root) continue;
+      if (predicate && !predicate(candidate)) continue;
+      var rect = candidate.getBoundingClientRect ? candidate.getBoundingClientRect() : null;
+      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+      var distance = 0;
+      if (pointX !== null && pointY !== null) {
+        var dx = pointX < rect.left ? (rect.left - pointX) : (pointX > rect.right ? (pointX - rect.right) : 0);
+        var dy = pointY < rect.top ? (rect.top - pointY) : (pointY > rect.bottom ? (pointY - rect.bottom) : 0);
+        distance = (dx * dx) + (dy * dy);
+      }
+      var area = rect.width * rect.height;
       if (
-        tag &&
-        tag !== 'script' &&
-        tag !== 'style' &&
-        tag !== 'head' &&
-        tag !== 'meta' &&
-        tag !== 'link' &&
-        tag !== 'html' &&
-        tag !== 'body'
+        distance < bestDistance ||
+        (distance === bestDistance && area < bestArea)
       ) {
+        best = candidate;
+        bestArea = area;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  function applySelectionModeDecorations() {
+    if (!document || !document.body) return;
+    var staleImages = document.querySelectorAll('.__nx-preview-image-candidate');
+    for (var si = 0; si < staleImages.length; si++) {
+      staleImages[si].classList.remove('__nx-preview-image-candidate');
+    }
+    var staleCss = document.querySelectorAll('.__nx-preview-css-candidate');
+    for (var sc = 0; sc < staleCss.length; sc++) {
+      staleCss[sc].classList.remove('__nx-preview-css-candidate');
+    }
+    if (!isPreviewEditMode()) return;
+    if (__previewSelectionMode === 'image') {
+      var all = document.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (isElementImageCandidate(el)) {
+          el.classList.add('__nx-preview-image-candidate');
+        }
+      }
+    } else if (__previewSelectionMode === 'css') {
+      var cssEls = document.querySelectorAll('body *');
+      for (var j = 0; j < cssEls.length; j++) {
+        var cssEl = cssEls[j];
+        if (isPreviewBaseSelectable(cssEl)) {
+          cssEl.classList.add('__nx-preview-css-candidate');
+        }
+      }
+    }
+  }
+
+  function getPreviewSelectableTarget(node, event) {
+    var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+    var pointX = event && typeof event.clientX === 'number' ? event.clientX : null;
+    var pointY = event && typeof event.clientY === 'number' ? event.clientY : null;
+    while (current && current !== document.body) {
+      if (!isPreviewBaseSelectable(current)) {
+        current = current.parentElement;
+        continue;
+      }
+      if (__previewSelectionMode === 'text') {
+        if (hasOwnTextNode(current)) return current;
+        var nearText = findBestDescendant(
+          current,
+          'p,span,h1,h2,h3,h4,h5,h6,a,button,label,strong,em,small,b,i,u,li,td,th,blockquote,pre,div',
+          hasOwnTextNode,
+          pointX,
+          pointY,
+        );
+        if (nearText) return nearText;
+      } else if (__previewSelectionMode === 'image') {
+        if (isElementImageCandidate(current)) return current;
+        var nearImage = findBestDescendant(current, '*', isElementImageCandidate, pointX, pointY);
+        if (nearImage) return nearImage;
+      } else {
         return current;
       }
       current = current.parentElement;
@@ -1273,6 +1672,113 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (!__previewEditableTags[tag]) return false;
     if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
     return true;
+  }
+
+  function ensureHoverBadge() {
+    if (__previewHoverBadge && document.body && document.body.contains(__previewHoverBadge)) {
+      return __previewHoverBadge;
+    }
+    if (!document.body) return null;
+    var badge = document.createElement('div');
+    badge.setAttribute('data-preview-hover-badge', 'true');
+    badge.style.display = 'none';
+    document.body.appendChild(badge);
+    __previewHoverBadge = badge;
+    return badge;
+  }
+
+  function ensureHoverOutline() {
+    if (__previewHoverOutline && document.body && document.body.contains(__previewHoverOutline)) {
+      return __previewHoverOutline;
+    }
+    if (!document.body) return null;
+    var outline = document.createElement('div');
+    outline.setAttribute('data-preview-hover-outline', 'true');
+    outline.style.display = 'none';
+    document.body.appendChild(outline);
+    __previewHoverOutline = outline;
+    return outline;
+  }
+
+  function getElementMetaLabel(el, rect) {
+    if (!el) return '';
+    var width = rect ? Math.max(0, Math.round(rect.width)) : 0;
+    var height = rect ? Math.max(0, Math.round(rect.height)) : 0;
+    var tag = String(el.tagName || 'div').toLowerCase();
+    var id = el.id ? ('#' + el.id) : '';
+    var cls = '';
+    if (typeof el.className === 'string' && el.className.trim()) {
+      cls = '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.');
+    }
+    var dims = width + 'x' + height;
+    if (__previewSelectionMode === 'image') {
+      var imgSrc = extractImageSource(el);
+      var shortSrc = imgSrc ? imgSrc.slice(0, 72) : '';
+      return tag + id + cls + '  ' + dims + (shortSrc ? ('  ' + shortSrc) : '');
+    }
+    if (__previewSelectionMode === 'css') {
+      var cssSnippet = '';
+      try {
+        var computed = window.getComputedStyle(el);
+        if (computed) {
+          var display = computed.display ? ('display:' + computed.display) : '';
+          var position = computed.position ? ('position:' + computed.position) : '';
+          var color = computed.color ? ('color:' + computed.color) : '';
+          cssSnippet = [display, position, color].filter(Boolean).join('; ');
+        }
+      } catch (e) {}
+      return tag + id + cls + '  ' + dims + (cssSnippet ? ('  ' + cssSnippet) : '');
+    }
+    return tag + id + cls + '  ' + dims;
+  }
+
+  function updateHoverBadgePosition() {
+    if (!isPreviewEditMode() || !__previewHoverEl || __previewEditingEl) {
+      if (__previewHoverBadge) __previewHoverBadge.style.display = 'none';
+      if (__previewHoverOutline) __previewHoverOutline.style.display = 'none';
+      return;
+    }
+    var badge = ensureHoverBadge();
+    var outline = ensureHoverOutline();
+    if (!badge || !outline) return;
+    var rect = __previewHoverEl.getBoundingClientRect ? __previewHoverEl.getBoundingClientRect() : null;
+    if (!rect) {
+      badge.style.display = 'none';
+      outline.style.display = 'none';
+      return;
+    }
+    outline.style.display = 'block';
+    outline.style.left = Math.round(rect.left - 2) + 'px';
+    outline.style.top = Math.round(rect.top - 2) + 'px';
+    outline.style.width = Math.max(0, Math.round(rect.width + 4)) + 'px';
+    outline.style.height = Math.max(0, Math.round(rect.height + 4)) + 'px';
+
+    badge.textContent = getElementMetaLabel(__previewHoverEl, rect);
+    badge.style.display = 'block';
+    var top = rect.top - badge.offsetHeight - 10;
+    if (top < 6) top = rect.bottom + 10;
+    var left = rect.left + 2;
+    var maxLeft = Math.max(6, window.innerWidth - badge.offsetWidth - 6);
+    if (left > maxLeft) left = maxLeft;
+    if (left < 6) left = 6;
+    badge.style.left = Math.round(left) + 'px';
+    badge.style.top = Math.round(top) + 'px';
+  }
+
+  function setPreviewHover(el) {
+    if (__previewHoverEl === el) {
+      return;
+    }
+    __previewHoverEl = el || null;
+    updateHoverBadgePosition();
+  }
+
+  function requestHoverUpdate() {
+    if (__previewHoverRaf) return;
+    __previewHoverRaf = requestAnimationFrame(function() {
+      __previewHoverRaf = 0;
+      updateHoverBadgePosition();
+    });
   }
 
   function beginInlineEdit(el) {
@@ -1380,13 +1886,18 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   }
 
   try {
+    syncModeFromHost();
     if (!document.querySelector('style[data-preview-inline-editor]')) {
       var __previewStyle = document.createElement('style');
       __previewStyle.setAttribute('data-preview-inline-editor', 'true');
       __previewStyle.textContent =
         '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
         '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
+        '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
+        '[data-preview-hover-outline="true"]{position:fixed;z-index:2147483646;pointer-events:none;border:3px solid rgba(16,185,129,0.98);background:rgba(16,185,129,0.12);border-radius:8px;box-shadow:0 0 0 1px rgba(5,150,105,0.9),0 12px 28px rgba(0,0,0,0.28);transition:left .14s cubic-bezier(.2,.8,.2,1),top .14s cubic-bezier(.2,.8,.2,1),width .14s cubic-bezier(.2,.8,.2,1),height .14s cubic-bezier(.2,.8,.2,1),opacity .12s ease;}' +
+        '[data-preview-hover-badge="true"]{position:fixed;z-index:2147483647;pointer-events:none;background:rgba(2,6,23,0.99);color:#ecfeff;border:3px solid rgba(34,211,238,0.95);font:800 20px/1.3 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;letter-spacing:.2px;padding:12px 16px;border-radius:12px;white-space:nowrap;max-width:94vw;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 0 rgba(0,0,0,0.45);box-shadow:0 16px 32px rgba(2,6,23,0.6);}' +
         '[data-nx-inline-editing="true"]{cursor:text!important;}';
       if (document.head) document.head.appendChild(__previewStyle);
     }
@@ -1403,9 +1914,15 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     }
     if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
     var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+    __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
     __previewMode = nextMode;
     if (nextMode !== 'edit') {
       clearPreviewSelection();
+      clearPreviewHover();
+      applySelectionModeDecorations();
+    } else {
+      applySelectionModeDecorations();
+      requestHoverUpdate();
     }
   });
 
@@ -1454,9 +1971,12 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     'touchstart',
     'touchmove',
     'touchend',
+    'mousedown',
+    'mouseup',
     'pointerdown',
     'pointermove',
     'pointerup',
+    'dragstart',
     'wheel'
   ];
   for (var __blockIdx = 0; __blockIdx < __BLOCK_INTERACTION_EVENTS.length; __blockIdx++) {
@@ -1497,7 +2017,7 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     }
     event.stopPropagation();
     var target = event && event.target;
-    var selected = getPreviewSelectableTarget(target);
+    var selected = getPreviewSelectableTarget(target, event);
     if (selected) {
       clearPreviewSelection();
       __previewSelectedEl = selected;
@@ -1510,6 +2030,8 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         id: __previewSelectedEl.id || '',
         className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
         text: __previewSelectedEl.textContent || '',
+        src: extractImageSource(__previewSelectedEl),
+        href: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : '',
         inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
       });
     }
@@ -1523,6 +2045,20 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     event.stopPropagation();
   }, true);
 
+  document.addEventListener('mousemove', function(event) {
+    if (!isPreviewEditMode()) return;
+    if (__previewEditingEl) return;
+    var target = event && event.target;
+    var hovered = getPreviewSelectableTarget(target, event);
+    setPreviewHover(hovered || null);
+  }, true);
+
+  document.addEventListener('mouseleave', function() {
+    clearPreviewHover();
+  }, true);
+  window.addEventListener('scroll', requestHoverUpdate, true);
+  window.addEventListener('resize', requestHoverUpdate, true);
+
   document.addEventListener('dblclick', function(event) {
     if (!isPreviewEditMode()) return;
     if (typeof event.stopImmediatePropagation === 'function') {
@@ -1531,10 +2067,11 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     event.stopPropagation();
     if (__previewEditingEl) return;
     var target = event && event.target;
-    var selected = getPreviewSelectableTarget(target);
+    var selected = getPreviewSelectableTarget(target, event);
     if (!selected || !canInlineEdit(selected)) return;
     event.preventDefault();
     event.stopPropagation();
+    clearPreviewHover();
     beginInlineEdit(selected);
   }, true);
 })();
@@ -1542,6 +2079,43 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
 
 const toCssPropertyName = (key: string): string =>
   key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+
+const CSS_GENERIC_FONT_FAMILIES = new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "emoji",
+  "math",
+  "fangsong",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+  "revert-layer",
+]);
+
+const normalizeFontFamilyCssValue = (raw: string): string => {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.includes(",")) return trimmed;
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    return trimmed;
+  }
+  if (CSS_GENERIC_FONT_FAMILIES.has(trimmed.toLowerCase())) return trimmed;
+  if (/\s/.test(trimmed)) {
+    return `'${trimmed.replace(/'/g, "\\'")}'`;
+  }
+  return trimmed;
+};
 
 const readElementByPath = (root: Element, path: number[]): Element | null => {
   let cursor: Element | null = root;
@@ -1590,15 +2164,6 @@ const extractComputedStylesFromElement = (
   return out as React.CSSProperties;
 };
 
-const escapeHtmlText = (raw: string): string =>
-  raw
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-const multilineTextToHtml = (raw: string): string =>
-  escapeHtmlText(raw.replace(/\r\n?/g, "\n")).replace(/\n/g, "<br>");
-
 const normalizeEditorMultilineText = (raw: string): string => {
   const normalized = raw.replace(/\r\n?/g, "\n");
   const lines = normalized
@@ -1611,15 +2176,42 @@ const normalizeEditorMultilineText = (raw: string): string => {
   while (end >= start && !lines[end]) end -= 1;
   if (start > end) return "";
 
-  return lines.slice(start, end + 1).join("\n");
+  const compacted: string[] = [];
+  let previousEmpty = false;
+  for (const line of lines.slice(start, end + 1)) {
+    const isEmpty = line.length === 0;
+    if (isEmpty && previousEmpty) continue;
+    compacted.push(line);
+    previousEmpty = isEmpty;
+  }
+  return compacted.join("\n");
 };
 
 const extractTextWithBreaks = (element: Element | null): string => {
   if (!element) return "";
   let out = "";
+  const normalizeExtractedTextNode = (raw: string): string => {
+    if (!raw) return "";
+    const normalized = raw.replace(/\r\n?/g, "\n");
+    if (normalized.trim().length === 0) {
+      // Keep inline spacing, drop formatting-only line breaks from pretty HTML.
+      return /[\n\r]/.test(normalized) ? "" : " ";
+    }
+    const lines = normalized
+      .split("\n")
+      .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim());
+    const nonEmptyCount = lines.reduce(
+      (count, line) => count + (line.length > 0 ? 1 : 0),
+      0,
+    );
+    if (nonEmptyCount <= 1) {
+      return normalized.replace(/[ \t\f\v]+/g, " ").trim();
+    }
+    return lines.join("\n");
+  };
   const walk = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      out += node.textContent || "";
+      out += normalizeExtractedTextNode(node.textContent || "");
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -1827,6 +2419,16 @@ type PreviewConsoleEntry = {
   source: string;
   time: number;
 };
+type PreviewSelectionMode = "default" | "text" | "image" | "css";
+const PREVIEW_SELECTION_MODE_OPTIONS: Array<{
+  value: PreviewSelectionMode;
+  label: string;
+}> = [
+  { value: "default", label: "Default" },
+  { value: "text", label: "Text" },
+  { value: "image", label: "Image" },
+  { value: "css", label: "CSS" },
+];
 
 const App: React.FC = () => {
   // --- Neutralino Setup ---
@@ -1858,6 +2460,9 @@ const App: React.FC = () => {
     "edit" | "preview" | "inspect" | "draw"
   >("edit");
   const [previewMode, setPreviewMode] = useState<"edit" | "preview">("preview");
+  const [previewSelectionMode, setPreviewSelectionMode] =
+    useState<PreviewSelectionMode>("default");
+  const [availableFonts, setAvailableFonts] = useState<string[]>(DEFAULT_EDITOR_FONTS);
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
@@ -1921,6 +2526,8 @@ const App: React.FC = () => {
   const [leftPanelWidth, setLeftPanelWidth] = useState(256);
   const [isResizingLeftPanel, setIsResizingLeftPanel] = useState(false);
   const filePathIndexRef = useRef<Record<string, string>>({});
+  const presentationCssPathRef = useRef<string | null>(null);
+  const fontCachePathRef = useRef<string | null>(null);
   const previewRootAliasPathRef = useRef<string | null>(null);
   const loadingFilesRef = useRef<Set<string>>(new Set());
   const loadingFilePromisesRef = useRef<
@@ -2025,6 +2632,138 @@ const App: React.FC = () => {
     activeFileRef.current = nextPath;
     setActiveFile((prev) => (prev === nextPath ? prev : nextPath));
   }, []);
+  const persistProjectFontCache = useCallback(async (fontFamilies: string[]) => {
+    const cacheVirtualPath = fontCachePathRef.current;
+    if (!cacheVirtualPath) return;
+    const cacheAbsolutePath = filePathIndexRef.current[cacheVirtualPath];
+    if (!cacheAbsolutePath) return;
+    const payload: FontCachePayload = {
+      version: FONT_CACHE_VERSION,
+      source: "presentation.css",
+      generatedAt: new Date().toISOString(),
+      fonts: dedupeFontFamilies(fontFamilies),
+    };
+    const serialized = JSON.stringify(payload, null, 2);
+    try {
+      await (Neutralino as any).filesystem.writeFile(cacheAbsolutePath, serialized);
+    } catch (error) {
+      console.warn("Failed to write font cache file:", error);
+      return;
+    }
+    setFiles((prev) => {
+      const existing = prev[cacheVirtualPath];
+      const name = cacheVirtualPath.includes("/")
+        ? cacheVirtualPath.slice(cacheVirtualPath.lastIndexOf("/") + 1)
+        : cacheVirtualPath;
+      if (existing) {
+        return {
+          ...prev,
+          [cacheVirtualPath]: {
+            ...existing,
+            content: serialized,
+          },
+        };
+      }
+      return {
+        ...prev,
+        [cacheVirtualPath]: {
+          path: cacheVirtualPath,
+          name,
+          type: inferFileType(name),
+          content: serialized,
+        },
+      };
+    });
+  }, []);
+  const handleAddFontToPresentationCss = useCallback(
+    async (rawFontPath: string) => {
+      const fontPath = normalizeProjectRelative(rawFontPath);
+      const file = filesRef.current[fontPath];
+      if (!file || file.type !== "font") return;
+      if (!fontPath.toLowerCase().startsWith(`${SHARED_FONT_VIRTUAL_DIR}/`)) {
+        window.alert(`Font must be inside "${SHARED_FONT_VIRTUAL_DIR}" to register.`);
+        return;
+      }
+
+      const presentationPath =
+        presentationCssPathRef.current ??
+        findFilePathCaseInsensitive(filesRef.current, PRESENTATION_CSS_VIRTUAL_PATH);
+      if (!presentationPath) {
+        window.alert(
+          `presentation.css not found at "${PRESENTATION_CSS_VIRTUAL_PATH}".`,
+        );
+        return;
+      }
+      presentationCssPathRef.current = presentationPath;
+      const presentationAbsolutePath = filePathIndexRef.current[presentationPath];
+      if (!presentationAbsolutePath) {
+        window.alert("Unable to resolve presentation.css absolute path.");
+        return;
+      }
+
+      let currentCss = "";
+      try {
+        const rawCss = await (Neutralino as any).filesystem.readFile(
+          presentationAbsolutePath,
+        );
+        currentCss = typeof rawCss === "string" ? rawCss : String(rawCss || "");
+      } catch (error) {
+        console.warn("Failed reading presentation.css:", error);
+        window.alert("Unable to read presentation.css.");
+        return;
+      }
+
+      const family = deriveFontFamilyFromFontFileName(file.name);
+      const existingFamilies = parsePresentationCssFontFamilies(currentCss);
+      const alreadyRegistered = existingFamilies.some(
+        (name) => name.toLowerCase() === family.toLowerCase(),
+      );
+      if (alreadyRegistered) {
+        setAvailableFonts(buildEditorFontOptions(existingFamilies));
+        await persistProjectFontCache(existingFamilies);
+        return;
+      }
+
+      const relativeFontPath = relativePathBetweenVirtualFiles(
+        presentationPath,
+        fontPath,
+      );
+      const fontFormat = fontFormatFromFileName(file.name);
+      const fontFaceBlock =
+        `@font-face {\n` +
+        `  font-family: '${family}';\n` +
+        `  src: url('${relativeFontPath}') format('${fontFormat}');\n` +
+        `  font-weight: normal;\n` +
+        `  font-style: normal;\n` +
+        `  font-display: swap;\n` +
+        `}`;
+      const nextCss = `${currentCss.trimEnd()}\n\n${fontFaceBlock}\n`;
+
+      try {
+        await (Neutralino as any).filesystem.writeFile(presentationAbsolutePath, nextCss);
+      } catch (error) {
+        console.warn("Failed writing presentation.css:", error);
+        window.alert("Unable to update presentation.css.");
+        return;
+      }
+
+      setFiles((prev) => {
+        const existing = prev[presentationPath];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [presentationPath]: {
+            ...existing,
+            content: nextCss,
+          },
+        };
+      });
+      const nextProjectFamilies = parsePresentationCssFontFamilies(nextCss);
+      setAvailableFonts(buildEditorFontOptions(nextProjectFamilies));
+      await persistProjectFontCache(nextProjectFamilies);
+    },
+    [persistProjectFontCache],
+  );
   const shouldProcessPreviewPageSignal = useCallback((path: string) => {
     if (!path) return false;
     const now = Date.now();
@@ -2321,8 +3060,10 @@ const App: React.FC = () => {
         previewFrameRef.current?.contentWindow?.document ??
         null;
       if (frameDocument) {
-        Array.from(frameDocument.querySelectorAll(".__nx-preview-dirty")).forEach((el) => {
-          el.classList.remove("__nx-preview-dirty");
+        Array.from(frameDocument.querySelectorAll<HTMLElement>(".__nx-preview-dirty")).forEach((el) => {
+          if (el instanceof HTMLElement) {
+            el.classList.remove("__nx-preview-dirty");
+          }
         });
       }
     }
@@ -2971,6 +3712,107 @@ const App: React.FC = () => {
         await patchMtVeevaCheck(sharedDirectoryPath);
       }
 
+      const presentationCssVirtualPath =
+        findFilePathCaseInsensitive(fsFiles, PRESENTATION_CSS_VIRTUAL_PATH);
+      presentationCssPathRef.current = presentationCssVirtualPath;
+
+      let fontCacheVirtualPath: string | null = null;
+      let fontCacheAbsolutePath: string | null = null;
+      if (sharedDirectoryPath) {
+        const existingCachePath = findFilePathCaseInsensitive(
+          fsFiles,
+          FONT_CACHE_VIRTUAL_PATH,
+        );
+        if (existingCachePath) {
+          fontCacheVirtualPath = existingCachePath;
+          fontCacheAbsolutePath = absolutePathIndex[existingCachePath] || null;
+        } else {
+          fontCacheVirtualPath = FONT_CACHE_VIRTUAL_PATH;
+          fontCacheAbsolutePath = normalizePath(
+            joinPath(sharedDirectoryPath, "js/nocodex-fonts.json"),
+          );
+          absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
+        }
+      }
+      fontCachePathRef.current = fontCacheVirtualPath;
+
+      let projectFontFamilies: string[] = [];
+      let loadedFromCache = false;
+      if (fontCacheVirtualPath && fontCacheAbsolutePath) {
+        try {
+          const cacheRaw = await (Neutralino as any).filesystem.readFile(
+            fontCacheAbsolutePath,
+          );
+          if (typeof cacheRaw === "string" && cacheRaw.trim().length > 0) {
+            const cachedFamilies = parseFontCacheFamilies(cacheRaw);
+            if (cachedFamilies.length > 0) {
+              projectFontFamilies = cachedFamilies;
+              loadedFromCache = true;
+            }
+          }
+        } catch {
+          // Cache file may not exist yet for first-time projects.
+        }
+      }
+
+      if (!loadedFromCache && presentationCssVirtualPath) {
+        const presentationAbsolutePath = absolutePathIndex[presentationCssVirtualPath];
+        if (presentationAbsolutePath) {
+          try {
+            const presentationCss = await (Neutralino as any).filesystem.readFile(
+              presentationAbsolutePath,
+            );
+            if (typeof presentationCss === "string" && presentationCss.length > 0) {
+              projectFontFamilies = parsePresentationCssFontFamilies(presentationCss);
+            }
+          } catch {
+            // Ignore missing presentation.css reads and fall back to fonts folder.
+          }
+        }
+      }
+
+      if (projectFontFamilies.length === 0) {
+        projectFontFamilies = collectSharedFontFamiliesFromFileMap(fsFiles);
+      }
+      setAvailableFonts(buildEditorFontOptions(projectFontFamilies));
+
+      if (
+        !loadedFromCache &&
+        projectFontFamilies.length > 0 &&
+        fontCacheVirtualPath &&
+        fontCacheAbsolutePath
+      ) {
+        const cachePayload: FontCachePayload = {
+          version: FONT_CACHE_VERSION,
+          source: "presentation.css",
+          generatedAt: new Date().toISOString(),
+          fonts: dedupeFontFamilies(projectFontFamilies),
+        };
+        const serializedCache = JSON.stringify(cachePayload, null, 2);
+        try {
+          await (Neutralino as any).filesystem.writeFile(
+            fontCacheAbsolutePath,
+            serializedCache,
+          );
+          if (!fsFiles[fontCacheVirtualPath]) {
+            fsFiles[fontCacheVirtualPath] = {
+              path: fontCacheVirtualPath,
+              name: "nocodex-fonts.json",
+              type: inferFileType("nocodex-fonts.json"),
+              content: serializedCache,
+            };
+            absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
+          } else {
+            fsFiles[fontCacheVirtualPath] = {
+              ...fsFiles[fontCacheVirtualPath],
+              content: serializedCache,
+            };
+          }
+        } catch (error) {
+          console.warn("Failed writing initial font cache:", error);
+        }
+      }
+
       const mountBasePath = nearestSharedParent || rootPath;
       const mountBaseName =
         normalizePath(mountBasePath).split("/").filter(Boolean).pop() || "";
@@ -3187,7 +4029,9 @@ const App: React.FC = () => {
     const frameWindow = frame?.contentWindow ?? null;
     const frameDocument = frameWindow?.document ?? null;
     if (!frameWindow || !frameDocument) return;
-    if ((frameWindow as any).__nxMountedPreviewBridgeInstalled) return;
+    if (frameDocument.documentElement?.getAttribute("data-nx-mounted-preview-bridge") === "1") {
+      return;
+    }
     try {
       const script = frameDocument.createElement("script");
       script.type = "text/javascript";
@@ -3198,33 +4042,84 @@ const App: React.FC = () => {
       script.remove();
     } catch {
       try {
-        frameWindow.eval(MOUNTED_PREVIEW_BRIDGE_SCRIPT);
+        (frameWindow as any).eval(MOUNTED_PREVIEW_BRIDGE_SCRIPT);
       } catch {
         // Ignore bridge injection failures for locked-down page contexts.
       }
     }
   }, []);
-  const postPreviewModeToFrame = useCallback(() => {
+  const postPreviewModeToFrame = useCallback(
+    (overrides?: {
+      mode?: "edit" | "preview";
+      selectionMode?: PreviewSelectionMode;
+      force?: boolean;
+    }) => {
     const frameWindow =
       previewFrameRef.current?.contentWindow ??
       previewFrameRef.current?.contentDocument?.defaultView ??
       null;
     if (!frameWindow) return;
-    if (interactionMode !== "preview") return;
+      const nextMode = overrides?.mode ?? previewMode;
+      const nextSelectionMode = overrides?.selectionMode ?? previewSelectionMode;
+      const shouldSend = overrides?.force ? true : interactionMode === "preview";
+      if (!shouldSend) return;
+    try {
+      (frameWindow as any).__nxPreviewHostMode = nextMode;
+      (frameWindow as any).__nxPreviewHostSelectionMode = nextSelectionMode;
+    } catch {
+      // Ignore host flag sync issues for transient frame reloads.
+    }
     try {
       frameWindow.postMessage(
-        JSON.stringify({ type: "PREVIEW_SET_MODE", mode: previewMode }),
+        JSON.stringify({
+          type: "PREVIEW_SET_MODE",
+          mode: nextMode,
+          selectionMode: nextSelectionMode,
+        }),
         "*",
       );
     } catch {
       // Ignore postMessage failures for transient frame reloads.
     }
-  }, [interactionMode, previewMode]);
+    },
+    [interactionMode, previewMode, previewSelectionMode],
+  );
+  const setPreviewModeWithSync = useCallback(
+    (nextMode: "edit" | "preview") => {
+      setPreviewMode(nextMode);
+      if (interactionModeRef.current !== "preview") return;
+      postPreviewModeToFrame({ mode: nextMode, force: true });
+      window.setTimeout(() => {
+        postPreviewModeToFrame({ mode: nextMode, force: true });
+      }, 50);
+      window.setTimeout(() => {
+        postPreviewModeToFrame({ mode: nextMode, force: true });
+      }, 180);
+    },
+    [postPreviewModeToFrame],
+  );
   const isActivePreviewMessageSource = useCallback(
     (source: MessageEventSource | null): boolean => {
       const activeWindow = previewFrameRef.current?.contentWindow ?? null;
       if (!activeWindow || !source) return false;
       return source === activeWindow;
+    },
+    [],
+  );
+  const getLivePreviewSelectedElement = useCallback(
+    (path?: number[] | null): Element | null => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument?.body) return null;
+      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
+      if (byMarker) return byMarker;
+      if (Array.isArray(path) && path.length > 0) {
+        const byPath = readElementByPath(frameDocument.body, path);
+        if (byPath) return byPath;
+      }
+      return null;
     },
     [],
   );
@@ -3417,51 +4312,73 @@ const App: React.FC = () => {
       const parser = new DOMParser();
       const parsed = parser.parseFromString(sourceHtml, "text/html");
       const target = readElementByPath(parsed.body, previewSelectedPath);
-      if (!target || !(target instanceof HTMLElement)) return;
-
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveTarget = frameDocument
-        ? readElementByPath(frameDocument.body, previewSelectedPath)
-        : null;
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!(target instanceof HTMLElement) && !(liveTarget instanceof HTMLElement)) return;
 
       for (const [key, rawValue] of Object.entries(styles)) {
         const cssKey = toCssPropertyName(key);
-        const value =
+        const valueRaw =
           rawValue === undefined || rawValue === null ? "" : String(rawValue);
+        const value =
+          cssKey === "font-family"
+            ? normalizeFontFamilyCssValue(valueRaw)
+            : valueRaw;
         if (!value) {
-          target.style.removeProperty(cssKey);
+          if (target instanceof HTMLElement) {
+            target.style.removeProperty(cssKey);
+          }
           if (liveTarget instanceof HTMLElement) {
             liveTarget.style.removeProperty(cssKey);
           }
           continue;
         }
-        target.style.setProperty(cssKey, value);
+        if (target instanceof HTMLElement) {
+          target.style.setProperty(
+            cssKey,
+            value,
+            cssKey === "font-family" ? "important" : "",
+          );
+        }
         if (liveTarget instanceof HTMLElement) {
-          liveTarget.style.setProperty(cssKey, value);
+          liveTarget.style.setProperty(
+            cssKey,
+            value,
+            cssKey === "font-family" ? "important" : "",
+          );
         }
       }
 
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath: previewSelectedPath,
-      });
+      if (target instanceof HTMLElement) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
       setPreviewSelectedElement((prev) =>
         prev
           ? {
               ...prev,
               styles: {
                 ...prev.styles,
-                ...styles,
+                ...Object.fromEntries(
+                  Object.entries(styles).map(([key, rawValue]) => {
+                    if (key !== "fontFamily") return [key, rawValue];
+                    return [
+                      key,
+                      typeof rawValue === "string"
+                        ? normalizeFontFamilyCssValue(rawValue)
+                        : rawValue,
+                    ];
+                  }),
+                ),
               },
             }
           : prev,
       );
     },
     [
+      getLivePreviewSelectedElement,
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedPath,
@@ -3491,50 +4408,75 @@ const App: React.FC = () => {
       const parser = new DOMParser();
       const parsed = parser.parseFromString(sourceHtml, "text/html");
       const target = readElementByPath(parsed.body, previewSelectedPath);
-      if (!target) return;
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveTarget = frameDocument
-        ? readElementByPath(frameDocument.body, previewSelectedPath)
-        : null;
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
 
       if (typeof data.content === "string") {
         const normalizedText = data.content.replace(/\r\n?/g, "\n");
-        const nextHtml = multilineTextToHtml(normalizedText);
-        if (target instanceof HTMLElement) {
-          target.innerHTML = nextHtml;
-        } else {
-          target.textContent = normalizedText;
+        if (target) {
+          applyMultilineTextToElement(target, normalizedText);
         }
-        if (liveTarget instanceof HTMLElement) {
-          liveTarget.innerHTML = nextHtml;
-          if (normalizedText.includes("\n")) {
-            liveTarget.style.whiteSpace = "pre-line";
+        if (liveTarget) {
+          applyMultilineTextToElement(liveTarget, normalizedText);
+        }
+      }
+      if (typeof data.src === "string" && (target instanceof HTMLElement || liveTarget instanceof HTMLElement)) {
+        const sourceValue = data.src.trim();
+        const lowerTag =
+          target instanceof HTMLElement
+            ? target.tagName.toLowerCase()
+            : liveTarget instanceof HTMLElement
+              ? liveTarget.tagName.toLowerCase()
+              : "";
+        const isDirectImageTag =
+          lowerTag === "img" || lowerTag === "source" || lowerTag === "video";
+        if (isDirectImageTag) {
+          if (target instanceof HTMLElement) {
+            target.setAttribute("src", sourceValue);
           }
-        } else if (liveTarget) {
-          liveTarget.textContent = normalizedText;
+          if (liveTarget instanceof HTMLElement) {
+            liveTarget.setAttribute("src", sourceValue);
+          }
+        } else {
+          const nextBackground =
+            sourceValue.length === 0
+              ? ""
+              : /^url\(/i.test(sourceValue)
+                ? sourceValue
+                : `url("${sourceValue}")`;
+          if (nextBackground) {
+            if (target instanceof HTMLElement) {
+              target.style.setProperty("background-image", nextBackground);
+            }
+            if (liveTarget instanceof HTMLElement) {
+              liveTarget.style.setProperty("background-image", nextBackground);
+            }
+          } else {
+            if (target instanceof HTMLElement) {
+              target.style.removeProperty("background-image");
+            }
+            if (liveTarget instanceof HTMLElement) {
+              liveTarget.style.removeProperty("background-image");
+            }
+          }
         }
       }
-      if (typeof data.src === "string" && target instanceof HTMLElement) {
-        target.setAttribute("src", data.src);
-        if (liveTarget instanceof HTMLElement) {
-          liveTarget.setAttribute("src", data.src);
+      if (typeof data.href === "string") {
+        if (target instanceof HTMLElement) {
+          target.setAttribute("href", data.href);
         }
-      }
-      if (typeof data.href === "string" && target instanceof HTMLElement) {
-        target.setAttribute("href", data.href);
         if (liveTarget instanceof HTMLElement) {
           liveTarget.setAttribute("href", data.href);
         }
       }
 
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath: previewSelectedPath,
-      });
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
 
       setPreviewSelectedElement((prev) =>
         prev
@@ -3550,6 +4492,7 @@ const App: React.FC = () => {
       );
     },
     [
+      getLivePreviewSelectedElement,
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedPath,
@@ -3579,23 +4522,19 @@ const App: React.FC = () => {
       const parser = new DOMParser();
       const parsed = parser.parseFromString(sourceHtml, "text/html");
       const target = readElementByPath(parsed.body, previewSelectedPath);
-      if (!target) return;
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveTarget = frameDocument
-        ? readElementByPath(frameDocument.body, previewSelectedPath)
-        : null;
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
 
       const reserved = new Set(["id", "class", "style", "src", "href"]);
-      Array.from(target.attributes).forEach((attr) => {
-        if (!reserved.has(attr.name.toLowerCase())) {
-          target.removeAttribute(attr.name);
-        }
-      });
+      if (target) {
+        Array.from(target.attributes).forEach((attr: Attr) => {
+          if (!reserved.has(attr.name.toLowerCase())) {
+            target.removeAttribute(attr.name);
+          }
+        });
+      }
       if (liveTarget) {
-        Array.from(liveTarget.attributes).forEach((attr) => {
+        Array.from(liveTarget.attributes).forEach((attr: Attr) => {
           if (!reserved.has(attr.name.toLowerCase())) {
             liveTarget.removeAttribute(attr.name);
           }
@@ -3603,17 +4542,21 @@ const App: React.FC = () => {
       }
       Object.entries(attributes || {}).forEach(([key, value]) => {
         if (!key) return;
-        target.setAttribute(key, value);
+        if (target) {
+          target.setAttribute(key, value);
+        }
         if (liveTarget) {
           liveTarget.setAttribute(key, value);
         }
       });
 
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath: previewSelectedPath,
-      });
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
 
       setPreviewSelectedElement((prev) =>
         prev
@@ -3625,6 +4568,7 @@ const App: React.FC = () => {
       );
     },
     [
+      getLivePreviewSelectedElement,
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedPath,
@@ -3662,6 +4606,8 @@ const App: React.FC = () => {
             className?: string;
             text?: string;
             inlineStyle?: string;
+            src?: string;
+            href?: string;
           }
         | undefined;
       if (!payload || !payload.type) return;
@@ -3675,7 +4621,7 @@ const App: React.FC = () => {
       }
 
       if (payload.type === "PREVIEW_NAVIGATE") {
-        if (!selectedPreviewHtml || !payload.path) return;
+        if (!selectedPreviewHtml || typeof payload.path !== "string" || !payload.path) return;
         const target = resolvePreviewNavigationPath(
           selectedPreviewHtml,
           payload.path,
@@ -3698,7 +4644,7 @@ const App: React.FC = () => {
       }
 
       if (payload.type === "PREVIEW_PATH_CHANGED") {
-        if (!payload.path) return;
+        if (typeof payload.path !== "string" || !payload.path) return;
         const mountRelativePath = extractMountRelativePath(payload.path);
         if (!mountRelativePath) return;
         const resolvedVirtualPath =
@@ -3736,35 +4682,49 @@ const App: React.FC = () => {
           typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
         );
 
-        const frameDocument =
-          previewFrameRef.current?.contentDocument ??
-          previewFrameRef.current?.contentWindow?.document ??
-          null;
-        const liveElement = frameDocument
-          ? readElementByPath(frameDocument.body, nextPath)
-          : null;
-        const shouldCaptureComputed =
-          interactionModeRef.current === "inspect";
-        const computedStyles = shouldCaptureComputed
-          ? extractComputedStylesFromElement(liveElement)
-          : null;
+        const liveElement = getLivePreviewSelectedElement(nextPath);
+        const computedStyles = extractComputedStylesFromElement(liveElement);
 
         const editableText = liveElement
           ? extractTextWithBreaks(liveElement)
           : normalizeEditorMultilineText(
               typeof payload.text === "string" ? payload.text : "",
             );
+        const payloadSrc =
+          typeof payload.src === "string" && payload.src.trim().length > 0
+            ? payload.src.trim()
+            : "";
+        const payloadHref =
+          typeof payload.href === "string" && payload.href.trim().length > 0
+            ? payload.href.trim()
+            : "";
+        const liveSrc =
+          liveElement && liveElement instanceof HTMLElement
+            ? liveElement.getAttribute("src") || ""
+            : "";
+        const liveHref =
+          liveElement && liveElement instanceof HTMLElement
+            ? liveElement.getAttribute("href") || ""
+            : "";
+        const resolvedSrc = payloadSrc || liveSrc || undefined;
+        const resolvedHref = payloadHref || liveHref || undefined;
+        const mergedStyles: React.CSSProperties = {
+          ...(computedStyles || {}),
+          ...inlineStyles,
+        };
 
         const nextElement: VirtualElement = {
           id,
           type: tag,
           name: tag.toUpperCase(),
           content: editableText,
+          ...(resolvedSrc ? { src: resolvedSrc } : {}),
+          ...(resolvedHref ? { href: resolvedHref } : {}),
           className:
             typeof payload.className === "string" && payload.className.length > 0
               ? payload.className
               : undefined,
-          styles: inlineStyles,
+          styles: mergedStyles,
           children: [],
         };
 
@@ -3780,6 +4740,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [
     appendPreviewConsole,
+    getLivePreviewSelectedElement,
     isActivePreviewMessageSource,
     isMountedPreview,
     extractMountRelativePath,
@@ -4253,7 +5214,7 @@ const App: React.FC = () => {
           {interactionMode === "preview" && (
             <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
               <button
-                onClick={() => setPreviewMode("edit")}
+                onClick={() => setPreviewModeWithSync("edit")}
                 className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
                   previewMode === "edit"
                     ? theme === "light"
@@ -4268,7 +5229,7 @@ const App: React.FC = () => {
                 Edit
               </button>
               <button
-                onClick={() => setPreviewMode("preview")}
+                onClick={() => setPreviewModeWithSync("preview")}
                 className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
                   previewMode === "preview"
                     ? theme === "light"
@@ -4391,6 +5352,9 @@ const App: React.FC = () => {
                 projectPath={projectPath}
                 activeFile={previewSyncedFile ?? activeFile}
                 onSelectFile={handleSelectFile}
+                onAddFontToPresentationCss={(path) => {
+                  void handleAddFontToPresentationCss(path);
+                }}
               onAddElement={(type) => handleAddElement(type, "inside")}
               root={root}
               selectedId={selectedId}
@@ -4852,65 +5816,119 @@ const App: React.FC = () => {
                 {selectedId || previewSelectedElement ? "Element" : "Project"}
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden">
-            {interactionMode === "inspect" && selectedId ? (
-              <StyleInspectorPanel
-                element={inspectorElement}
-                onUpdateStyle={handleUpdateStyle}
-                computedStyles={null}
-              />
-            ) : (
-              <PropertiesPanel
-                element={interactionMode === "preview" && previewSelectedElement ? previewSelectedElement : selectedElement}
-                onUpdateStyle={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? (styles) => {
-                        void applyPreviewStyleUpdate(styles);
-                      }
-                    : handleUpdateStyle
-                }
-                onUpdateContent={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? (data) => {
-                        void applyPreviewContentUpdate(data);
-                      }
-                    : handleUpdateContent
-                }
-                onUpdateAttributes={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? (attributes) => {
-                        void applyPreviewAttributesUpdate(attributes);
-                      }
-                    : handleUpdateAttributes
-                }
-                onUpdateAnimation={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? (animation) => {
-                        void applyPreviewAnimationUpdate(animation);
-                      }
-                    : handleUpdateAnimation
-                }
-                onDelete={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? () => {}
-                    : handleDeleteElement
-                }
-                onAddElement={
-                  interactionMode === "preview" && previewSelectedElement
-                    ? () => {}
-                    : handleAddElement
-                }
-                onMoveOrder={(dir) => {}}
-                resolveImage={(p) => p}
-                availableFonts={[
-                  "Inter",
-                  "Roboto",
-                  "Open Sans",
-                  "Lato",
-                  "Poppins",
-                ]}
-              />
-            )}
+            <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+              {interactionMode === "preview" && (
+                <div
+                  className="shrink-0 px-2.5 py-2 border-b"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(0,0,0,0.1)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.42)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <div
+                    className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
+                    style={{ color: theme === "dark" ? "#94a3b8" : "#64748b" }}
+                  >
+                    
+                  </div>
+                  <div className="mt-1 grid grid-cols-4 gap-1">
+                    {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        onClick={() => setPreviewSelectionMode(option.value)}
+                        className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
+                        style={{
+                          color:
+                            previewSelectionMode === option.value
+                              ? theme === "dark"
+                                ? "#ecfeff"
+                                : "#155e75"
+                              : theme === "dark"
+                                ? "#cbd5e1"
+                                : "#475569",
+                          background:
+                            previewSelectionMode === option.value
+                              ? theme === "dark"
+                                ? "rgba(34,211,238,0.2)"
+                                : "rgba(14,165,233,0.16)"
+                              : theme === "dark"
+                                ? "rgba(15,23,42,0.68)"
+                                : "rgba(241,245,249,0.9)",
+                          border:
+                            previewSelectionMode === option.value
+                              ? "1px solid rgba(34,211,238,0.55)"
+                              : theme === "dark"
+                                ? "1px solid rgba(148,163,184,0.28)"
+                                : "1px solid rgba(148,163,184,0.26)",
+                        }}
+                        title={option.label}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="min-h-0 flex-1 overflow-hidden">
+              {interactionMode === "inspect" && selectedId ? (
+                <StyleInspectorPanel
+                  element={inspectorElement}
+                  onUpdateStyle={handleUpdateStyle}
+                  computedStyles={null}
+                />
+              ) : (
+                <PropertiesPanel
+                  element={interactionMode === "preview" && previewSelectedElement ? previewSelectedElement : selectedElement}
+                  onUpdateStyle={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? (styles) => {
+                          void applyPreviewStyleUpdate(styles);
+                        }
+                      : handleUpdateStyle
+                  }
+                  onUpdateContent={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? (data) => {
+                          void applyPreviewContentUpdate(data);
+                        }
+                      : handleUpdateContent
+                  }
+                  onUpdateAttributes={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? (attributes) => {
+                          void applyPreviewAttributesUpdate(attributes);
+                        }
+                      : handleUpdateAttributes
+                  }
+                  onUpdateAnimation={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? (animation) => {
+                          void applyPreviewAnimationUpdate(animation);
+                        }
+                      : handleUpdateAnimation
+                  }
+                  onDelete={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? () => {}
+                      : handleDeleteElement
+                  }
+                  onAddElement={
+                    interactionMode === "preview" && previewSelectedElement
+                      ? () => {}
+                      : handleAddElement
+                  }
+                  onMoveOrder={(dir) => {}}
+                  resolveImage={(p) => p}
+                  availableFonts={availableFonts}
+                />
+              )}
+              </div>
             </div>
             <div
               className="pointer-events-none absolute inset-0 rounded-2xl"
@@ -5267,4 +6285,3 @@ const EditorContent: React.FC<{
 );
 
 export default App;
-

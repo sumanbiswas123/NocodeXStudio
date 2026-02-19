@@ -10,6 +10,7 @@ interface SidebarProps {
   projectPath: string | null;
   activeFile: string | null;
   onSelectFile: (path: string) => void;
+  onAddFontToPresentationCss: (path: string) => void;
   onAddElement: (type: string) => void;
   root: VirtualElement;
   selectedId: string | null;
@@ -34,6 +35,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   projectPath,
   activeFile,
   onSelectFile,
+  onAddFontToPresentationCss,
   onAddElement,
   root,
   selectedId,
@@ -186,7 +188,14 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Tab Content */}
         <div className="flex-1 overflow-hidden custom-scrollbar animate-slideInLeft">
           {activeTab === 'files' ? (
-            <FileExplorer files={files} projectPath={projectPath} activeFile={activeFile} onSelectFile={onSelectFile} theme={theme} />
+            <FileExplorer
+              files={files}
+              projectPath={projectPath}
+              activeFile={activeFile}
+              onSelectFile={onSelectFile}
+              onAddFontToPresentationCss={onAddFontToPresentationCss}
+              theme={theme}
+            />
           ) : activeTab === 'layers' ? (
             <LayersPanel root={root} selectedId={selectedId} onSelect={onSelectElement} theme={theme} />
           ) : (

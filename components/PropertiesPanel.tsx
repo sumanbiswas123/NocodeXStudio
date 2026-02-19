@@ -148,7 +148,27 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   );
 
   const gradient = TYPE_GRADIENTS[element.type] || TYPE_GRADIENTS['div'];
-  const hasContent = element.content !== undefined || ['img', 'a', 'p', 'h1', 'h2', 'h3', 'button', 'span'].includes(element.type);
+  const hasContent =
+    element.content !== undefined ||
+    ['img', 'a', 'p', 'h1', 'h2', 'h3', 'button', 'span'].includes(element.type) ||
+    (typeof element.src === 'string' && element.src.length > 0) ||
+    (typeof element.styles?.backgroundImage === 'string' &&
+      String(element.styles.backgroundImage).length > 0);
+  const extractUrlFromBackground = (raw?: string): string => {
+    if (!raw || typeof raw !== 'string') return '';
+    const match = raw.match(/url\((['"]?)(.*?)\1\)/i);
+    return match?.[2] ? match[2] : '';
+  };
+  const imageSourceCandidate =
+    (typeof element.src === 'string' && element.src.trim().length > 0
+      ? element.src.trim()
+      : '') ||
+    extractUrlFromBackground(
+      typeof element.styles?.backgroundImage === 'string'
+        ? String(element.styles.backgroundImage)
+        : undefined,
+    );
+  const isImageLikeSelection = element.type === 'img' || imageSourceCandidate.length > 0;
 
   return (
     <div
@@ -245,10 +265,10 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           <div className="animate-slideInRight">
             {hasContent ? (
               <div className="p-3">
-                {element.type === 'img' ? (
+                {isImageLikeSelection ? (
                   <div className="space-y-3">
                      <img 
-                        src={element.src ? resolveImage(element.src) : ''} 
+                        src={imageSourceCandidate ? resolveImage(imageSourceCandidate) : ''} 
                         className="w-full h-32 object-cover rounded-xl border shadow-sm"
                         style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--input-bg)' }}
                      />

@@ -6,6 +6,7 @@ interface FileExplorerProps {
   files: FileMap;
   activeFile: string | null;
   onSelectFile: (path: string) => void;
+  onAddFontToPresentationCss?: (path: string) => void;
   projectPath: string | null;
   theme: 'light' | 'dark';
 }
@@ -18,8 +19,32 @@ interface TreeNode {
   children: Record<string, TreeNode>;
 }
 
-const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelectFile, projectPath, theme }) => {
+const FileExplorer: React.FC<FileExplorerProps> = ({
+  files,
+  activeFile,
+  onSelectFile,
+  onAddFontToPresentationCss,
+  projectPath,
+  theme,
+}) => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [fontContextMenu, setFontContextMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+    name: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!fontContextMenu) return;
+    const close = () => setFontContextMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [fontContextMenu]);
 
   useEffect(() => {
     if (!activeFile) return;
@@ -162,6 +187,17 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelect
                 onSelectFile(node.path);
               }
             }}
+            onContextMenu={(e) => {
+              if (node.type !== 'file' || node.fileType !== 'font') return;
+              e.preventDefault();
+              e.stopPropagation();
+              setFontContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                path: node.path,
+                name: node.name,
+              });
+            }}
             title={node.name}
           >
             {node.type === 'folder' && (
@@ -211,6 +247,44 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelect
             .map(child => renderNode(child, 0))
         )}
       </div>
+      {fontContextMenu && (
+        <div
+          className="fixed z-[4000] min-w-[220px] rounded-lg border shadow-xl backdrop-blur-md p-1"
+          style={{
+            left: fontContextMenu.x,
+            top: fontContextMenu.y,
+            backgroundColor: theme === 'dark' ? 'rgba(15,23,42,0.95)' : 'rgba(255,255,255,0.96)',
+            borderColor: theme === 'dark' ? 'rgba(148,163,184,0.35)' : 'rgba(148,163,184,0.3)',
+          }}
+        >
+          <button
+            type="button"
+            className="w-full text-left px-3 py-2 rounded text-xs font-medium transition-colors"
+            style={{
+              color: theme === 'dark' ? '#e2e8f0' : '#0f172a',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor =
+                theme === 'dark' ? 'rgba(56,189,248,0.18)' : 'rgba(14,165,233,0.14)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent';
+            }}
+            onClick={() => {
+              onAddFontToPresentationCss?.(fontContextMenu.path);
+              setFontContextMenu(null);
+            }}
+          >
+            Add @font-face to presentation.css
+          </button>
+          <div
+            className="px-3 pt-1 pb-1 text-[10px]"
+            style={{ color: theme === 'dark' ? '#94a3b8' : '#64748b' }}
+          >
+            {fontContextMenu.name}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
