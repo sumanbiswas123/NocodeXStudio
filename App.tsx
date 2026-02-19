@@ -1114,6 +1114,12 @@ const buildPreviewRuntimeScript = (
         if (!value) {
           el.style.removeProperty(cssKey);
         } else {
+          if (cssKey === 'animation') {
+            el.style.setProperty('animation', 'none');
+            if (typeof el.offsetWidth === 'number') {
+              el.offsetWidth;
+            }
+          }
           el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
         }
       }
@@ -1236,7 +1242,16 @@ const buildPreviewRuntimeScript = (
         '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
         '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
-        '[data-nx-inline-editing=\"true\"]{cursor:text!important;}';
+        '[data-nx-inline-editing=\"true\"]{cursor:text!important;}' +
+        '@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}' +
+        '@keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}' +
+        '@keyframes zoomIn{from{transform:scale(0.8);opacity:0;}to{transform:scale(1);opacity:1;}}' +
+        '@keyframes bounce{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}}' +
+        '@keyframes pulse{0%{opacity:1;}50%{opacity:.5;}100%{opacity:1;}}' +
+        '@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}' +
+        '@keyframes flip{0%{transform:perspective(400px) rotateY(90deg);opacity:0;}100%{transform:perspective(400px) rotateY(0deg);opacity:1;}}' +
+        '@keyframes wiggle{0%,100%{transform:rotate(-3deg);}50%{transform:rotate(3deg);}}' +
+        '@keyframes revealScroll{from{opacity:0;transform:translateY(30px);}to{opacity:1;transform:translateY(0);}}';
       if (document.head) document.head.appendChild(__previewStyle);
     } catch (e) {}
 
@@ -1841,6 +1856,12 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (!value) {
         el.style.removeProperty(cssKey);
       } else {
+        if (cssKey === 'animation') {
+          el.style.setProperty('animation', 'none');
+          if (typeof el.offsetWidth === 'number') {
+            el.offsetWidth;
+          }
+        }
         el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
       }
     }
@@ -2079,7 +2100,16 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
         '[data-preview-hover-outline="true"]{position:fixed;z-index:2147483646;pointer-events:none;border:3px solid rgba(16,185,129,0.98);background:rgba(16,185,129,0.12);border-radius:8px;box-shadow:0 0 0 1px rgba(5,150,105,0.9),0 12px 28px rgba(0,0,0,0.28);transition:left .14s cubic-bezier(.2,.8,.2,1),top .14s cubic-bezier(.2,.8,.2,1),width .14s cubic-bezier(.2,.8,.2,1),height .14s cubic-bezier(.2,.8,.2,1),opacity .12s ease;}' +
         '[data-preview-hover-badge="true"]{position:fixed;z-index:2147483647;pointer-events:none;background:rgba(2,6,23,0.99);color:#ecfeff;border:3px solid rgba(34,211,238,0.95);font:800 20px/1.3 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;letter-spacing:.2px;padding:12px 16px;border-radius:12px;white-space:nowrap;max-width:94vw;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 0 rgba(0,0,0,0.45);box-shadow:0 16px 32px rgba(2,6,23,0.6);}' +
-        '[data-nx-inline-editing="true"]{cursor:text!important;}';
+        '[data-nx-inline-editing="true"]{cursor:text!important;}' +
+        '@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}' +
+        '@keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}' +
+        '@keyframes zoomIn{from{transform:scale(0.8);opacity:0;}to{transform:scale(1);opacity:1;}}' +
+        '@keyframes bounce{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}}' +
+        '@keyframes pulse{0%{opacity:1;}50%{opacity:.5;}100%{opacity:1;}}' +
+        '@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}' +
+        '@keyframes flip{0%{transform:perspective(400px) rotateY(90deg);opacity:0;}100%{transform:perspective(400px) rotateY(0deg);opacity:1;}}' +
+        '@keyframes wiggle{0%,100%{transform:rotate(-3deg);}50%{transform:rotate(3deg);}}' +
+        '@keyframes revealScroll{from{opacity:0;transform:translateY(30px);}to{opacity:1;transform:translateY(0);}}';
       if (document.head) document.head.appendChild(__previewStyle);
     }
   } catch (e) {}
@@ -2705,6 +2735,7 @@ const App: React.FC = () => {
   const [tabletOrientation, setTabletOrientation] = useState<
     "portrait" | "landscape"
   >("landscape");
+  const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0);
   const [frameZoom, setFrameZoom] = useState<50 | 75 | 100>(100);
   const [deviceCtxMenu, setDeviceCtxMenu] = useState<{
     type: "mobile" | "desktop" | "tablet";
@@ -3539,9 +3570,14 @@ const App: React.FC = () => {
   const handleUpdateAnimation = useCallback(
     (animation: string) => {
       if (!selectedId) return;
+      const nextAnimation = typeof animation === "string" ? animation.trim() : "";
       const newRoot = updateElementInTree(root, selectedId, (el) => ({
         ...el,
-        animation,
+        animation: nextAnimation,
+        styles: {
+          ...el.styles,
+          animation: nextAnimation,
+        },
       }));
       pushHistory(newRoot);
     },
@@ -4163,11 +4199,13 @@ const App: React.FC = () => {
     const nlPort = String((window as any).NL_PORT || "").trim();
     const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
     const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-    return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
+    const withRefresh = `${mountPath}${mountPath.includes("?") ? "&" : "?"}nx_refresh=${previewRefreshNonce}`;
+    return previewServerOrigin ? `${previewServerOrigin}${withRefresh}` : withRefresh;
   }, [
     selectedMountedPreviewHtml,
     isPreviewMountReady,
     previewMountBasePath,
+    previewRefreshNonce,
     projectPath,
   ]);
   const isMountedPreview = Boolean(
@@ -4555,6 +4593,12 @@ const App: React.FC = () => {
           );
         }
         if (liveTarget instanceof HTMLElement) {
+          if (cssKey === "animation") {
+            liveTarget.style.setProperty("animation", "none");
+            // Force layout so the next assignment retriggers animation playback.
+            // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+            liveTarget.offsetWidth;
+          }
           liveTarget.style.setProperty(
             cssKey,
             value,
@@ -4798,12 +4842,17 @@ const App: React.FC = () => {
   );
   const applyPreviewAnimationUpdate = useCallback(
     async (animation: string) => {
-      await applyPreviewStyleUpdate({ animation });
+      const nextAnimation = typeof animation === "string" ? animation.trim() : "";
+      await applyPreviewStyleUpdate({ animation: nextAnimation });
       setPreviewSelectedElement((prev) =>
         prev
           ? {
               ...prev,
-              animation,
+              animation: nextAnimation,
+              styles: {
+                ...prev.styles,
+                animation: nextAnimation,
+              },
             }
           : prev,
       );
@@ -4946,6 +4995,20 @@ const App: React.FC = () => {
           ...(computedStyles || {}),
           ...inlineStyles,
         };
+        const inlineAnimation =
+          typeof inlineStyles.animation === "string"
+            ? inlineStyles.animation.trim()
+            : "";
+        const computedAnimationCandidate =
+          computedStyles && typeof computedStyles.animation === "string"
+            ? computedStyles.animation.trim()
+            : "";
+        const resolvedAnimation =
+          inlineAnimation ||
+          (computedAnimationCandidate &&
+          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+            ? computedAnimationCandidate
+            : "");
 
         const nextElement: VirtualElement = {
           id,
@@ -4959,6 +5022,7 @@ const App: React.FC = () => {
               ? payload.className
               : undefined,
           styles: mergedStyles,
+          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
           children: [],
         };
 
@@ -5289,24 +5353,31 @@ const App: React.FC = () => {
           <div className="h-4 w-px bg-gray-500/20"></div>
           <button
             className={`glass-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
-            onClick={() => setDeviceMode("tablet")}
+            onClick={() => {
+              setDeviceMode("tablet");
+              setTabletOrientation((prev) =>
+                prev === "landscape" ? "portrait" : "landscape",
+              );
+            }}
             onContextMenu={(e) => {
               e.preventDefault();
               setDeviceMode("tablet");
               setDeviceCtxMenu({ type: "tablet", x: e.clientX, y: e.clientY });
             }}
-            title="iPad (right-click for model)"
+            title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
           >
-            <Tablet size={16} />
+            <Tablet
+              size={16}
+              className="transition-transform duration-300 ease-out"
+              style={{
+                transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
+              }}
+            />
           </button>
           <button
             className="glass-icon-btn"
-            onClick={() =>
-              setTabletOrientation((prev) =>
-                prev === "landscape" ? "portrait" : "landscape",
-              )
-            }
-            title={`Rotate iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"})`}
+            onClick={() => setPreviewRefreshNonce((prev) => prev + 1)}
+            title="Refresh iPad content"
           >
             <RotateCw size={16} />
           </button>
@@ -5376,9 +5447,10 @@ const App: React.FC = () => {
               <Settings2 size={16} />
             </button>
             {dirtyFiles.length > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full text-[9px] leading-4 text-center bg-amber-500 text-black font-bold">
-                {dirtyFiles.length}
-              </span>
+              <span
+                className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
+                aria-hidden="true"
+              />
             )}
             {isSaveMenuOpen && (
               <div
@@ -5917,6 +5989,10 @@ const App: React.FC = () => {
                       <div className="w-full h-full relative">
                         {hasPreviewContent && (
                           <iframe
+                            key={
+                              selectedPreviewSrc ||
+                              `preview-doc:${selectedPreviewHtml || "none"}:${previewRefreshNonce}`
+                            }
                             ref={previewFrameRef}
                             title="project-preview"
                             src={selectedPreviewSrc || undefined}
