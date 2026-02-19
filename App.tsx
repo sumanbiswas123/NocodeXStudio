@@ -359,13 +359,22 @@ const rewriteInlineAssetRefs = (
   return content;
 };
 
-const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string => {
+const buildPreviewRuntimeScript = (
+  fileMap: FileMap,
+  htmlPath: string,
+  includePaths?: string[],
+): string => {
+  const includeSet =
+    includePaths && includePaths.length > 0 ? new Set(includePaths) : null;
   const records: Record<
     string,
     { kind: "text"; content: string } | { kind: "data"; data: string }
   > = {};
 
   for (const [path, file] of Object.entries(fileMap)) {
+    const lowerPath = String(path || "").toLowerCase();
+    const allowShared = lowerPath.startsWith("shared/");
+    if (includeSet && !includeSet.has(path) && !allowShared) continue;
     if (typeof file.content !== "string" || file.content.trim().length === 0) {
       continue;
     }
@@ -723,6 +732,7 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
 
     var __previewSelectedEl = null;
     var __previewEditingEl = null;
+    var __previewMode = 'preview';
     var __previewEditableTags = {
       p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
       a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
@@ -749,6 +759,9 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
         __previewSelectedEl.classList.remove('__nx-preview-selected');
       }
       __previewSelectedEl = null;
+    }
+    function isPreviewEditMode() {
+      return __previewMode === 'edit';
     }
 
     function getPreviewSelectableTarget(node) {
@@ -913,7 +926,45 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
       if (document.head) document.head.appendChild(__previewStyle);
     } catch (e) {}
 
+    window.addEventListener('message', function(event) {
+      var payload = event && event.data;
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload);
+        } catch (e) {
+          return;
+        }
+      }
+      if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
+      var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+      __previewMode = nextMode;
+      if (nextMode !== 'edit') {
+        clearPreviewSelection();
+      }
+    });
+
     document.addEventListener('click', function(event) {
+      if (!isPreviewEditMode()) {
+        var navCandidate = event && event.target && event.target.closest ? event.target.closest('a[href]') : null;
+        if (navCandidate) {
+          var rawHref = navCandidate.getAttribute('href');
+          if (rawHref) {
+            var trimmedHref = String(rawHref).trim();
+            if (
+              trimmedHref &&
+              !/^(javascript:|mailto:|tel:|#)/i.test(trimmedHref)
+            ) {
+              var navTarget = resolveNavigationTarget(trimmedHref);
+              if (navTarget) {
+                event.preventDefault();
+                event.stopPropagation();
+                notifyNavigate(navTarget);
+              }
+            }
+          }
+        }
+        return;
+      }
       var target = event && event.target;
       var selected = getPreviewSelectableTarget(target);
       if (selected) {
@@ -938,15 +989,12 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
       if (event.detail && event.detail > 1) return;
       var anchor = target.closest('a[href]');
       if (!anchor) return;
-      var href = anchor.getAttribute('href');
-      var navTarget = resolveNavigationTarget(href);
-      if (!navTarget) return;
       event.preventDefault();
       event.stopPropagation();
-      notifyNavigate(navTarget);
     }, true);
 
     document.addEventListener('dblclick', function(event) {
+      if (!isPreviewEditMode()) return;
       if (__previewEditingEl) return;
       var target = event && event.target;
       var selected = getPreviewSelectableTarget(target);
@@ -1033,7 +1081,11 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
   `;
 };
 
-const createPreviewDocument = (fileMap: FileMap, htmlPath: string): string => {
+const createPreviewDocument = (
+  fileMap: FileMap,
+  htmlPath: string,
+  includePaths?: string[],
+): string => {
   const entry = fileMap[htmlPath];
   if (
     !entry ||
@@ -1043,7 +1095,7 @@ const createPreviewDocument = (fileMap: FileMap, htmlPath: string): string => {
     return "";
   }
   let html = entry.content;
-  const runtimeScript = buildPreviewRuntimeScript(fileMap, htmlPath);
+  const runtimeScript = buildPreviewRuntimeScript(fileMap, htmlPath, includePaths);
 
   if (/<head[\s>]/i.test(html)) {
     html = html.replace(
@@ -1130,6 +1182,363 @@ const pickDefaultHtmlFile = (fileMap: FileMap): string | null => {
     htmlFiles.find((f) => f.name.toLowerCase() === "index.html");
   return (indexHtml || htmlFiles[0]).path;
 };
+
+const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
+(function () {
+  if (window.__nxMountedPreviewBridgeInstalled) return;
+  window.__nxMountedPreviewBridgeInstalled = true;
+
+  var __previewSelectedEl = null;
+  var __previewEditingEl = null;
+  var __previewMode = 'preview';
+  var __previewEditableTags = {
+    p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+    a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
+    i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
+  };
+
+  function postPreviewMessage(type, payload) {
+    if (!window.parent || window.parent === window) return;
+    try {
+      var message = { type: type };
+      if (payload && typeof payload === 'object') {
+        for (var key in payload) {
+          if (Object.prototype.hasOwnProperty.call(payload, key)) {
+            message[key] = payload[key];
+          }
+        }
+      }
+      window.parent.postMessage(message, '*');
+    } catch (e) {}
+  }
+
+  function clearPreviewSelection() {
+    if (__previewSelectedEl && __previewSelectedEl.classList) {
+      __previewSelectedEl.classList.remove('__nx-preview-selected');
+    }
+    __previewSelectedEl = null;
+  }
+
+  function isPreviewEditMode() {
+    return __previewMode === 'edit';
+  }
+
+  function getPreviewSelectableTarget(node) {
+    var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+    while (current && current !== document.body) {
+      var tag = String(current.tagName || '').toLowerCase();
+      if (
+        tag &&
+        tag !== 'script' &&
+        tag !== 'style' &&
+        tag !== 'head' &&
+        tag !== 'meta' &&
+        tag !== 'link' &&
+        tag !== 'html' &&
+        tag !== 'body'
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function getPreviewElementPath(el) {
+    if (!el || !document.body || !document.body.contains(el)) return null;
+    var path = [];
+    var cursor = el;
+    while (cursor && cursor !== document.body) {
+      var parent = cursor.parentElement;
+      if (!parent) return null;
+      var children = parent.children;
+      var idx = -1;
+      for (var i = 0; i < children.length; i++) {
+        if (children[i] === cursor) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return null;
+      path.unshift(idx);
+      cursor = parent;
+    }
+    return path;
+  }
+
+  function canInlineEdit(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return false;
+    var tag = String(el.tagName || '').toLowerCase();
+    if (!__previewEditableTags[tag]) return false;
+    if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
+    return true;
+  }
+
+  function beginInlineEdit(el) {
+    if (!el || !canInlineEdit(el)) return;
+    if (__previewEditingEl && __previewEditingEl !== el) {
+      __previewEditingEl.blur();
+    }
+    var path = getPreviewElementPath(el);
+    if (!path) return;
+
+    __previewEditingEl = el;
+    el.classList.add('__nx-preview-editing');
+    el.setAttribute('contenteditable', 'true');
+    el.setAttribute('data-nx-inline-editing', 'true');
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var selection = window.getSelection();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    } catch (e) {}
+    try { el.focus(); } catch (e) {}
+
+    var done = false;
+    var normalizeEditableHtml = function(raw) {
+      var html = String(raw || '');
+      html = html.split('<div><br></div>').join('<br>');
+      html = html.split('<div>').join('<br>');
+      html = html.split('</div>').join('');
+      html = html.split('<p>').join('<br>');
+      html = html.split('</p>').join('');
+      while (
+        html.startsWith('<br>') ||
+        html.startsWith('<br/>') ||
+        html.startsWith('<br />')
+      ) {
+        if (html.startsWith('<br />')) {
+          html = html.slice(6);
+        } else if (html.startsWith('<br/>')) {
+          html = html.slice(5);
+        } else {
+          html = html.slice(4);
+        }
+      }
+      return html;
+    };
+    var insertLineBreakAtCursor = function() {
+      try {
+        var sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        var range = sel.getRangeAt(0);
+        range.deleteContents();
+        var br = document.createElement('br');
+        range.insertNode(br);
+        range.setStartAfter(br);
+        range.setEndAfter(br);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) {}
+    };
+    var finish = function(commit) {
+      if (done) return;
+      done = true;
+      el.removeEventListener('blur', onBlur, true);
+      el.removeEventListener('keydown', onKeyDown, true);
+      el.removeAttribute('contenteditable');
+      el.removeAttribute('data-nx-inline-editing');
+      el.classList.remove('__nx-preview-editing');
+      __previewEditingEl = null;
+      if (commit) {
+        postPreviewMessage('PREVIEW_INLINE_EDIT', {
+          path: path,
+          html: normalizeEditableHtml(el.innerHTML)
+        });
+      }
+    };
+
+    var onBlur = function() {
+      finish(true);
+    };
+    var onKeyDown = function(event) {
+      if (!event) return;
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        insertLineBreakAtCursor();
+      } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+    };
+
+    el.addEventListener('blur', onBlur, true);
+    el.addEventListener('keydown', onKeyDown, true);
+  }
+
+  function emitPathChanged() {
+    postPreviewMessage('PREVIEW_PATH_CHANGED', {
+      path: window.location.pathname || ''
+    });
+  }
+
+  try {
+    if (!document.querySelector('style[data-preview-inline-editor]')) {
+      var __previewStyle = document.createElement('style');
+      __previewStyle.setAttribute('data-preview-inline-editor', 'true');
+      __previewStyle.textContent =
+        '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
+        '[data-nx-inline-editing="true"]{cursor:text!important;}';
+      if (document.head) document.head.appendChild(__previewStyle);
+    }
+  } catch (e) {}
+
+  window.addEventListener('message', function(event) {
+    var payload = event && event.data;
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch (e) {
+        return;
+      }
+    }
+    if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
+    var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+    __previewMode = nextMode;
+    if (nextMode !== 'edit') {
+      clearPreviewSelection();
+    }
+  });
+
+  try {
+    var __PUSH = history.pushState ? history.pushState.bind(history) : null;
+    if (__PUSH) {
+      history.pushState = function() {
+        var result = __PUSH.apply(history, arguments);
+        emitPathChanged();
+        return result;
+      };
+    }
+    var __REPLACE = history.replaceState ? history.replaceState.bind(history) : null;
+    if (__REPLACE) {
+      history.replaceState = function() {
+        var result = __REPLACE.apply(history, arguments);
+        emitPathChanged();
+        return result;
+      };
+    }
+    window.addEventListener('popstate', emitPathChanged);
+    window.addEventListener('hashchange', emitPathChanged);
+    setTimeout(emitPathChanged, 0);
+  } catch (e) {}
+
+  function isInsideInlineEditor(target) {
+    if (!__previewEditingEl || !target || !target.nodeType) return false;
+    return target === __previewEditingEl || (__previewEditingEl.contains && __previewEditingEl.contains(target));
+  }
+
+  function swallowInteraction(event) {
+    if (!isPreviewEditMode()) return;
+    if (!event) return;
+    var target = event.target;
+    if (isInsideInlineEditor(target)) return;
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+  }
+
+  var __BLOCK_INTERACTION_EVENTS = [
+    'touchstart',
+    'touchmove',
+    'touchend',
+    'pointerdown',
+    'pointermove',
+    'pointerup',
+    'wheel'
+  ];
+  for (var __blockIdx = 0; __blockIdx < __BLOCK_INTERACTION_EVENTS.length; __blockIdx++) {
+    document.addEventListener(__BLOCK_INTERACTION_EVENTS[__blockIdx], swallowInteraction, true);
+  }
+
+  var __NAV_KEYS = {
+    ArrowLeft: true,
+    ArrowRight: true,
+    ArrowUp: true,
+    ArrowDown: true,
+    PageUp: true,
+    PageDown: true,
+    Home: true,
+    End: true,
+    ' ': true,
+    Spacebar: true
+  };
+  document.addEventListener('keydown', function(event) {
+    if (!isPreviewEditMode()) return;
+    if (!event) return;
+    if (isInsideInlineEditor(event.target)) return;
+    var key = event.key || '';
+    if (!__NAV_KEYS[key]) return;
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+  }, true);
+
+  document.addEventListener('click', function(event) {
+    if (!isPreviewEditMode()) return;
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    var target = event && event.target;
+    var selected = getPreviewSelectableTarget(target);
+    if (selected) {
+      clearPreviewSelection();
+      __previewSelectedEl = selected;
+      if (__previewSelectedEl.classList) {
+        __previewSelectedEl.classList.add('__nx-preview-selected');
+      }
+      postPreviewMessage('PREVIEW_SELECT', {
+        path: getPreviewElementPath(__previewSelectedEl),
+        tag: String(__previewSelectedEl.tagName || '').toLowerCase(),
+        id: __previewSelectedEl.id || '',
+        className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
+        text: __previewSelectedEl.textContent || '',
+        inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
+      });
+    }
+
+    if (__previewEditingEl) return;
+    if (!target || !target.closest) return;
+    if (event.detail && event.detail > 1) return;
+    var anchor = target.closest('a[href]');
+    if (!anchor) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  document.addEventListener('dblclick', function(event) {
+    if (!isPreviewEditMode()) return;
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    if (__previewEditingEl) return;
+    var target = event && event.target;
+    var selected = getPreviewSelectableTarget(target);
+    if (!selected || !canInlineEdit(selected)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginInlineEdit(selected);
+  }, true);
+})();
+`;
 
 const toCssPropertyName = (key: string): string =>
   key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
@@ -1441,12 +1850,14 @@ const App: React.FC = () => {
   const [isPreviewMountReady, setIsPreviewMountReady] = useState(false);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [previewSyncedFile, setPreviewSyncedFile] = useState<string | null>(null);
+  const [previewNavigationFile, setPreviewNavigationFile] = useState<string | null>(null);
   const [deviceMode, setDeviceMode] = useState<"desktop" | "mobile" | "tablet">(
     "tablet",
   );
   const [interactionMode, setInteractionMode] = useState<
     "edit" | "preview" | "inspect" | "draw"
   >("edit");
+  const [previewMode, setPreviewMode] = useState<"edit" | "preview">("preview");
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
@@ -1515,6 +1926,7 @@ const App: React.FC = () => {
   const loadingFilePromisesRef = useRef<
     Record<string, Promise<string | Blob | undefined>>
   >({});
+  const previewDependencyIndexRef = useRef<Record<string, string[]>>({});
   const filesRef = useRef<FileMap>({});
   const activeFileRef = useRef<string | null>(null);
   const selectedPreviewHtmlRef = useRef<string | null>(null);
@@ -1537,10 +1949,14 @@ const App: React.FC = () => {
   const leftPanelPendingWidthRef = useRef(256);
   const leftPanelResizeRafRef = useRef<number | null>(null);
   const previewConsoleSeqRef = useRef(0);
+  const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
+  const previewConsoleFlushTimerRef = useRef<number | null>(null);
   const saveMenuRef = useRef<HTMLDivElement | null>(null);
   const pendingPreviewWritesRef = useRef<Record<string, string>>({});
   const previewHistoryRef = useRef<Record<string, PreviewHistoryEntry>>({});
+  const previewDocCacheRef = useRef<Record<string, string>>({});
   const autoSaveTimerRef = useRef<number | null>(null);
+  const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(null);
   const BASE_STAGE_PADDING = 40;
   const LEFT_PANEL_MIN_WIDTH = 220;
   const LEFT_PANEL_MAX_WIDTH = 520;
@@ -1563,15 +1979,25 @@ const App: React.FC = () => {
   );
   const appendPreviewConsole = useCallback(
     (level: PreviewConsoleLevel, message: string, source = "preview") => {
-      setPreviewConsoleEntries((prev) => {
-        const nextId = previewConsoleSeqRef.current + 1;
-        previewConsoleSeqRef.current = nextId;
-        const next = [
-          ...prev,
-          { id: nextId, level, message, source, time: Date.now() },
-        ];
-        return next.length > 1000 ? next.slice(next.length - 1000) : next;
+      const nextId = previewConsoleSeqRef.current + 1;
+      previewConsoleSeqRef.current = nextId;
+      previewConsoleBufferRef.current.push({
+        id: nextId,
+        level,
+        message,
+        source,
+        time: Date.now(),
       });
+      if (previewConsoleFlushTimerRef.current !== null) return;
+      previewConsoleFlushTimerRef.current = window.setTimeout(() => {
+        previewConsoleFlushTimerRef.current = null;
+        const buffered = previewConsoleBufferRef.current.splice(0);
+        if (buffered.length === 0) return;
+        setPreviewConsoleEntries((prev) => {
+          const next = [...prev, ...buffered];
+          return next.length > 1000 ? next.slice(next.length - 1000) : next;
+        });
+      }, 120);
     },
     [],
   );
@@ -1599,6 +2025,16 @@ const App: React.FC = () => {
     activeFileRef.current = nextPath;
     setActiveFile((prev) => (prev === nextPath ? prev : nextPath));
   }, []);
+  const shouldProcessPreviewPageSignal = useCallback((path: string) => {
+    if (!path) return false;
+    const now = Date.now();
+    const last = lastPreviewPageSignalRef.current;
+    if (last && last.path === path && now - last.at < 700) {
+      return false;
+    }
+    lastPreviewPageSignalRef.current = { path, at: now };
+    return true;
+  }, []);
   const syncPreviewActiveFile = useCallback(
     (
       nextPath: string,
@@ -1606,6 +2042,9 @@ const App: React.FC = () => {
     ) => {
       if (!nextPath) return;
       setPreviewSyncedFile((prev) => (prev === nextPath ? prev : nextPath));
+      if (source === "navigate" || source === "explorer") {
+        setPreviewNavigationFile((prev) => (prev === nextPath ? prev : nextPath));
+      }
 
       if (source === "load" || source === "path_changed") {
         if (interactionModeRef.current !== "preview") {
@@ -1708,6 +2147,9 @@ const App: React.FC = () => {
     () => () => {
       if (autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
+      }
+      if (previewConsoleFlushTimerRef.current !== null) {
+        window.clearTimeout(previewConsoleFlushTimerRef.current);
       }
     },
     [],
@@ -1935,9 +2377,13 @@ const App: React.FC = () => {
           content: previous,
         },
       };
-      setSelectedPreviewDoc(
-        createPreviewDocument(previewSnapshot, filePath),
-      );
+        setSelectedPreviewDoc(
+          createPreviewDocument(
+            previewSnapshot,
+            filePath,
+            previewDependencyIndexRef.current[filePath],
+          ),
+        );
     }
     schedulePreviewAutoSave();
   }, [schedulePreviewAutoSave]);
@@ -1981,9 +2427,13 @@ const App: React.FC = () => {
           content: next,
         },
       };
-      setSelectedPreviewDoc(
-        createPreviewDocument(previewSnapshot, filePath),
-      );
+        setSelectedPreviewDoc(
+          createPreviewDocument(
+            previewSnapshot,
+            filePath,
+            previewDependencyIndexRef.current[filePath],
+          ),
+        );
     }
     schedulePreviewAutoSave();
   }, [schedulePreviewAutoSave]);
@@ -2592,9 +3042,16 @@ const App: React.FC = () => {
       loadingFilesRef.current.clear();
       loadingFilePromisesRef.current = {};
       previewConsoleSeqRef.current = 0;
+      previewConsoleBufferRef.current = [];
+      if (previewConsoleFlushTimerRef.current !== null) {
+        window.clearTimeout(previewConsoleFlushTimerRef.current);
+        previewConsoleFlushTimerRef.current = null;
+      }
       setPreviewConsoleEntries([]);
       pendingPreviewWritesRef.current = {};
       previewHistoryRef.current = {};
+      previewDependencyIndexRef.current = {};
+      previewDocCacheRef.current = {};
       setDirtyFiles([]);
       setDirtyPathKeysByFile({});
       setFiles(fsFiles);
@@ -2609,6 +3066,7 @@ const App: React.FC = () => {
       const initialFile = defaultHtmlFile ?? firstOpenableFile?.path ?? null;
       setActiveFileStable(initialFile);
       setPreviewSyncedFile(initialFile);
+      setPreviewNavigationFile(initialFile);
       if (initialFile && fsFiles[initialFile]?.type === "html") {
         setInteractionMode("preview");
       }
@@ -2639,14 +3097,24 @@ const App: React.FC = () => {
   const inspectorElement = previewSelectedElement ?? selectedElement;
   const selectedPreviewHtml = useMemo(() => {
     if (!projectPath) return null;
+    if (previewSyncedFile && files[previewSyncedFile]?.type === "html") {
+      return previewSyncedFile;
+    }
     if (activeFile && files[activeFile]?.type === "html") return activeFile;
     return pickDefaultHtmlFile(files);
-  }, [activeFile, files, projectPath]);
+  }, [activeFile, files, previewSyncedFile, projectPath]);
+  const selectedMountedPreviewHtml = useMemo(() => {
+    if (!projectPath) return null;
+    if (previewNavigationFile && files[previewNavigationFile]?.type === "html") {
+      return previewNavigationFile;
+    }
+    return selectedPreviewHtml;
+  }, [files, previewNavigationFile, projectPath, selectedPreviewHtml]);
   const selectedPreviewSrc = useMemo(() => {
-    if (!selectedPreviewHtml || !isPreviewMountReady || !previewMountBasePath) {
+    if (!selectedMountedPreviewHtml || !isPreviewMountReady || !previewMountBasePath) {
       return null;
     }
-    const absolutePath = filePathIndexRef.current[selectedPreviewHtml];
+    const absolutePath = filePathIndexRef.current[selectedMountedPreviewHtml];
     if (!absolutePath) return null;
     const relativePath = toMountRelativePath(previewMountBasePath, absolutePath);
     if (!relativePath) return null;
@@ -2655,16 +3123,26 @@ const App: React.FC = () => {
     const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
     return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
   }, [
-    selectedPreviewHtml,
+    selectedMountedPreviewHtml,
     isPreviewMountReady,
     previewMountBasePath,
     projectPath,
   ]);
-  const forceInteractiveSrcDoc = true;
-  const isMountedPreview = Boolean(selectedPreviewSrc && !forceInteractiveSrcDoc);
+  const isMountedPreview = Boolean(
+    selectedPreviewSrc &&
+      interactionMode === "preview",
+  );
+  useEffect(() => {
+    if (isMountedPreview) return;
+    setPreviewNavigationFile((prev) =>
+      prev === selectedPreviewHtml ? prev : selectedPreviewHtml,
+    );
+  }, [isMountedPreview, selectedPreviewHtml]);
+  const shouldPrepareEditPreviewDoc = Boolean(
+    selectedPreviewHtml && !isMountedPreview,
+  );
   const hasPreviewContent = Boolean(
-    projectPath &&
-      (isMountedPreview ? selectedPreviewSrc : selectedPreviewDoc),
+    projectPath && (selectedPreviewSrc || selectedPreviewDoc),
   );
   useEffect(() => {
     selectedPreviewHtmlRef.current = selectedPreviewHtml;
@@ -2705,10 +3183,63 @@ const App: React.FC = () => {
     }
     return null;
   }, []);
+  const injectMountedPreviewBridge = useCallback((frame: HTMLIFrameElement | null) => {
+    const frameWindow = frame?.contentWindow ?? null;
+    const frameDocument = frameWindow?.document ?? null;
+    if (!frameWindow || !frameDocument) return;
+    if ((frameWindow as any).__nxMountedPreviewBridgeInstalled) return;
+    try {
+      const script = frameDocument.createElement("script");
+      script.type = "text/javascript";
+      script.text = MOUNTED_PREVIEW_BRIDGE_SCRIPT;
+      const target = frameDocument.head || frameDocument.documentElement || frameDocument.body;
+      if (!target) return;
+      target.appendChild(script);
+      script.remove();
+    } catch {
+      try {
+        frameWindow.eval(MOUNTED_PREVIEW_BRIDGE_SCRIPT);
+      } catch {
+        // Ignore bridge injection failures for locked-down page contexts.
+      }
+    }
+  }, []);
+  const postPreviewModeToFrame = useCallback(() => {
+    const frameWindow =
+      previewFrameRef.current?.contentWindow ??
+      previewFrameRef.current?.contentDocument?.defaultView ??
+      null;
+    if (!frameWindow) return;
+    if (interactionMode !== "preview") return;
+    try {
+      frameWindow.postMessage(
+        JSON.stringify({ type: "PREVIEW_SET_MODE", mode: previewMode }),
+        "*",
+      );
+    } catch {
+      // Ignore postMessage failures for transient frame reloads.
+    }
+  }, [interactionMode, previewMode]);
+  const isActivePreviewMessageSource = useCallback(
+    (source: MessageEventSource | null): boolean => {
+      const activeWindow = previewFrameRef.current?.contentWindow ?? null;
+      if (!activeWindow || !source) return false;
+      return source === activeWindow;
+    },
+    [],
+  );
 
   const handlePreviewFrameLoad = useCallback((event: React.SyntheticEvent<HTMLIFrameElement>) => {
-    if (!isPreviewMountReady) return;
     const frame = event.currentTarget;
+    if (selectedPreviewSrc) {
+      injectMountedPreviewBridge(frame);
+    }
+    postPreviewModeToFrame();
+    window.setTimeout(postPreviewModeToFrame, 0);
+    window.setTimeout(postPreviewModeToFrame, 120);
+    window.setTimeout(postPreviewModeToFrame, 360);
+
+    if (!isPreviewMountReady) return;
     const frameSrc = frame.getAttribute("src") || frame.src || "";
     if (!frameSrc) return;
 
@@ -2728,14 +3259,33 @@ const App: React.FC = () => {
     if (!resolvedFile || resolvedFile.type !== "html") return;
     if (resolvedVirtualPath === activeFileRef.current) return;
 
+    if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
     console.log("[Preview] Current page:", resolvedVirtualPath);
     syncPreviewActiveFile(resolvedVirtualPath, "load");
   }, [
     extractMountRelativePath,
+    injectMountedPreviewBridge,
     isPreviewMountReady,
+    postPreviewModeToFrame,
     resolveVirtualPathFromMountRelative,
+    selectedPreviewSrc,
+    shouldProcessPreviewPageSignal,
     syncPreviewActiveFile,
   ]);
+  useEffect(() => {
+    if (selectedPreviewSrc) {
+      injectMountedPreviewBridge(previewFrameRef.current);
+    }
+    postPreviewModeToFrame();
+    const t0 = window.setTimeout(postPreviewModeToFrame, 0);
+    const t120 = window.setTimeout(postPreviewModeToFrame, 120);
+    const t360 = window.setTimeout(postPreviewModeToFrame, 360);
+    return () => {
+      window.clearTimeout(t0);
+      window.clearTimeout(t120);
+      window.clearTimeout(t360);
+    };
+  }, [injectMountedPreviewBridge, postPreviewModeToFrame, selectedPreviewDoc, selectedPreviewSrc, previewMode]);
   const persistPreviewHtmlContent = useCallback(
     async (
       updatedPath: string,
@@ -2761,6 +3311,7 @@ const App: React.FC = () => {
           },
         };
       });
+      delete previewDocCacheRef.current[updatedPath];
       pendingPreviewWritesRef.current[updatedPath] = serialized;
       setDirtyFiles((prev) =>
         prev.includes(updatedPath) ? prev : [...prev, updatedPath],
@@ -2781,7 +3332,13 @@ const App: React.FC = () => {
             content: serialized,
           },
         };
-        setSelectedPreviewDoc(createPreviewDocument(previewSnapshot, updatedPath));
+        setSelectedPreviewDoc(
+          createPreviewDocument(
+            previewSnapshot,
+            updatedPath,
+            previewDependencyIndexRef.current[updatedPath],
+          ),
+        );
       }
 
       if (shouldSaveNow) {
@@ -3091,6 +3648,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
+      if (!isActivePreviewMessageSource(event.source)) return;
       const payload = event.data as
         | {
             type?: string;
@@ -3124,9 +3682,11 @@ const App: React.FC = () => {
           filesRef.current,
         );
         if (!target) return;
+        if (!shouldProcessPreviewPageSignal(target)) return;
         console.log("[Preview] Current page:", target);
         if (isMountedPreview) {
           setPreviewSyncedFile((prev) => (prev === target ? prev : target));
+          setPreviewNavigationFile((prev) => (prev === target ? prev : target));
           if (interactionModeRef.current !== "preview") {
             setInteractionMode("preview");
           }
@@ -3147,6 +3707,7 @@ const App: React.FC = () => {
         const resolvedFile = filesRef.current[resolvedVirtualPath];
         if (!resolvedFile || resolvedFile.type !== "html") return;
         if (resolvedVirtualPath === activeFileRef.current) return;
+        if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
         console.log("[Preview] Current page:", resolvedVirtualPath);
         syncPreviewActiveFile(resolvedVirtualPath, "path_changed");
         return;
@@ -3182,7 +3743,11 @@ const App: React.FC = () => {
         const liveElement = frameDocument
           ? readElementByPath(frameDocument.body, nextPath)
           : null;
-        const computedStyles = extractComputedStylesFromElement(liveElement);
+        const shouldCaptureComputed =
+          interactionModeRef.current === "inspect";
+        const computedStyles = shouldCaptureComputed
+          ? extractComputedStylesFromElement(liveElement)
+          : null;
 
         const editableText = liveElement
           ? extractTextWithBreaks(liveElement)
@@ -3215,10 +3780,12 @@ const App: React.FC = () => {
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [
     appendPreviewConsole,
+    isActivePreviewMessageSource,
     isMountedPreview,
     extractMountRelativePath,
     resolveVirtualPathFromMountRelative,
     selectedPreviewHtml,
+    shouldProcessPreviewPageSignal,
     syncPreviewActiveFile,
     applyPreviewInlineEdit,
   ]);
@@ -3228,8 +3795,17 @@ const App: React.FC = () => {
   }, [activeFile, loadFileContent]);
 
   useEffect(() => {
+    if (!shouldPrepareEditPreviewDoc) {
+      setSelectedPreviewDoc("");
+      return;
+    }
     if (!selectedPreviewHtml) {
       setSelectedPreviewDoc("");
+      return;
+    }
+    const cachedDoc = previewDocCacheRef.current[selectedPreviewHtml];
+    if (cachedDoc) {
+      setSelectedPreviewDoc(cachedDoc);
       return;
     }
 
@@ -3343,9 +3919,17 @@ const App: React.FC = () => {
       }
 
       if (canceled) return;
-      setSelectedPreviewDoc(
-        createPreviewDocument(fileMapSnapshot, selectedPreviewHtml),
+      previewDependencyIndexRef.current[selectedPreviewHtml] = [
+        selectedPreviewHtml,
+        ...Array.from(dependencyPaths),
+      ];
+      const doc = createPreviewDocument(
+        fileMapSnapshot,
+        selectedPreviewHtml,
+        previewDependencyIndexRef.current[selectedPreviewHtml],
       );
+      previewDocCacheRef.current[selectedPreviewHtml] = doc;
+      setSelectedPreviewDoc(doc);
     };
 
     void preloadPreviewDependencies();
@@ -3355,6 +3939,7 @@ const App: React.FC = () => {
   }, [
     loadFileContent,
     selectedPreviewHtml,
+    shouldPrepareEditPreviewDoc,
   ]);
   useEffect(() => {
     if (!selectedPreviewHtml) return;
@@ -3665,6 +4250,40 @@ const App: React.FC = () => {
             />
             {interactionMode === "preview" ? "LIVE" : "Run"}
           </button>
+          {interactionMode === "preview" && (
+            <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+              <button
+                onClick={() => setPreviewMode("edit")}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                  previewMode === "edit"
+                    ? theme === "light"
+                      ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                      : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                    : theme === "light"
+                      ? "text-slate-500 hover:bg-slate-200/70"
+                      : "text-gray-300 hover:bg-white/10"
+                }`}
+                title="LIVE Edit mode: select and edit elements"
+              >
+                Edit
+              </button>
+              <button
+                onClick={() => setPreviewMode("preview")}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                  previewMode === "preview"
+                    ? theme === "light"
+                      ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                      : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                    : theme === "light"
+                      ? "text-slate-500 hover:bg-slate-200/70"
+                      : "text-gray-300 hover:bg-white/10"
+                }`}
+                title="LIVE Preview mode: navigate and interact"
+              >
+                Preview
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {isZenMode && (
@@ -4102,11 +4721,11 @@ const App: React.FC = () => {
                           <iframe
                             ref={previewFrameRef}
                             title="project-preview"
-                            src={isMountedPreview ? selectedPreviewSrc || undefined : undefined}
-                            srcDoc={isMountedPreview ? undefined : selectedPreviewDoc}
+                            src={selectedPreviewSrc || undefined}
+                            srcDoc={selectedPreviewSrc ? undefined : selectedPreviewDoc}
                             loading="eager"
                             onLoad={handlePreviewFrameLoad}
-                            className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-200 ${
+                            className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-150 ${
                               interactionMode === "preview"
                                 ? "opacity-100 pointer-events-auto"
                                 : "opacity-0 pointer-events-none"
@@ -4486,6 +5105,11 @@ const App: React.FC = () => {
                   }}
                   onClick={() => {
                     previewConsoleSeqRef.current = 0;
+                    previewConsoleBufferRef.current = [];
+                    if (previewConsoleFlushTimerRef.current !== null) {
+                      window.clearTimeout(previewConsoleFlushTimerRef.current);
+                      previewConsoleFlushTimerRef.current = null;
+                    }
                     setPreviewConsoleEntries([]);
                   }}
                 >
