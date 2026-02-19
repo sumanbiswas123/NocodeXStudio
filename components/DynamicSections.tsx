@@ -92,13 +92,21 @@ const SelectInput: React.FC<{
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const filteredOptions = options.filter(opt => opt.toLowerCase().includes((search || value || '').toLowerCase()));
+    const query = search.trim().toLowerCase();
+    const filteredOptions = query
+      ? options.filter((opt) => opt.toLowerCase().includes(query))
+      : options;
 
     return (
         <div className="relative w-full" ref={containerRef}>
             <div 
                 className="input-dynamic flex items-center justify-between p-1.5 text-xs cursor-pointer hover:border-indigo-500 transition-colors rounded font-medium shadow-sm"
-                onClick={() => setIsOpen(!isOpen)}
+                onClick={() => {
+                    setIsOpen(!isOpen);
+                    if (!isOpen && !editable) {
+                        setSearch('');
+                    }
+                }}
             >
                 {editable ? (
                      <input 
@@ -136,11 +144,12 @@ const SelectInput: React.FC<{
                                 }}
                                 onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-glow)')}
                                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = value === opt ? 'var(--accent-glow)' : 'transparent')}
-                                onClick={() => {
-                                    onChange(opt);
-                                    setIsOpen(false);
-                                }}
-                             >
+                                 onClick={() => {
+                                     onChange(opt);
+                                     setIsOpen(false);
+                                     setSearch('');
+                                 }}
+                              >
                                  {opt}
                              </div>
                          )) : <div className="p-2 text-xs italic" style={{ color: 'var(--text-muted)' }}>No matches</div>}

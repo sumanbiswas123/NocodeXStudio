@@ -1038,6 +1038,87 @@ const buildPreviewRuntimeScript = (
       return path;
     }
 
+    function readElementByPath(path) {
+      if (!document.body || !path || !path.length) return null;
+      var cursor = document.body;
+      for (var i = 0; i < path.length; i++) {
+        var idx = Number(path[i]);
+        if (!isFinite(idx) || idx < 0) return null;
+        var children = cursor.children || [];
+        cursor = children[idx];
+        if (!cursor) return null;
+      }
+      return cursor;
+    }
+
+    function toCamelStyleKey(raw) {
+      return String(raw || '').replace(/-([a-z])/g, function(_all, c) { return c.toUpperCase(); });
+    }
+
+    function toCssStyleKey(raw) {
+      return String(raw || '').replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
+    }
+
+    function normalizeFontFamilyValue(raw) {
+      var value = String(raw || '').trim();
+      if (!value) return '';
+      if (value.indexOf(',') > -1) return value;
+      if (
+        (value.charAt(0) === "'" && value.charAt(value.length - 1) === "'") ||
+        (value.charAt(0) === '"' && value.charAt(value.length - 1) === '"')
+      ) {
+        return value;
+      }
+      var lower = value.toLowerCase();
+      if (
+        lower === 'serif' ||
+        lower === 'sans-serif' ||
+        lower === 'monospace' ||
+        lower === 'cursive' ||
+        lower === 'fantasy' ||
+        lower === 'system-ui'
+      ) {
+        return value;
+      }
+      if (/\\s/.test(value)) {
+        return "'" + value.replace(/'/g, "\\\\'") + "'";
+      }
+      return value;
+    }
+
+    function getElementComputedStyles(el) {
+      var out = {};
+      if (!el || !window.getComputedStyle) return out;
+      try {
+        var computed = window.getComputedStyle(el);
+        for (var i = 0; i < computed.length; i++) {
+          var key = computed[i];
+          var value = computed.getPropertyValue(key);
+          if (!value) continue;
+          out[toCamelStyleKey(key)] = value;
+        }
+      } catch (e) {}
+      return out;
+    }
+
+    function applyStylePatchToElement(el, styles) {
+      if (!el || !el.style || !styles || typeof styles !== 'object') return;
+      for (var key in styles) {
+        if (!Object.prototype.hasOwnProperty.call(styles, key)) continue;
+        var cssKey = toCssStyleKey(key);
+        var rawValue = styles[key];
+        var value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+        if (cssKey === 'font-family') {
+          value = normalizeFontFamilyValue(value);
+        }
+        if (!value) {
+          el.style.removeProperty(cssKey);
+        } else {
+          el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
+        }
+      }
+    }
+
     function canInlineEdit(el) {
       if (!el) return false;
       if (el.isContentEditable) return false;
@@ -1168,14 +1249,32 @@ const buildPreviewRuntimeScript = (
           return;
         }
       }
-      if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
-      var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
-      __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
-      __previewMode = nextMode;
-      if (nextMode !== 'edit') {
-        clearPreviewSelection();
+      if (!payload || !payload.type) return;
+      if (payload.type === 'PREVIEW_SET_MODE') {
+        var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+        __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
+        __previewMode = nextMode;
+        if (nextMode !== 'edit') {
+          clearPreviewSelection();
+        }
+        applySelectionModeDecorations();
+        return;
       }
-      applySelectionModeDecorations();
+      if (payload.type === 'PREVIEW_APPLY_STYLE') {
+        var target = null;
+        if (payload.path && payload.path.length) {
+          target = readElementByPath(payload.path);
+        }
+        if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
+          target = __previewSelectedEl;
+        }
+        if (!target) {
+          target = document.querySelector('.__nx-preview-selected');
+        }
+        if (target) {
+          applyStylePatchToElement(target, payload.styles);
+        }
+      }
     });
 
     document.addEventListener('click', function(event) {
@@ -1216,7 +1315,8 @@ const buildPreviewRuntimeScript = (
           text: __previewSelectedEl.textContent || '',
           src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
           href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
-          inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
+          inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
+          computedStyles: getElementComputedStyles(__previewSelectedEl)
         });
       }
 
@@ -1665,6 +1765,87 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     return path;
   }
 
+  function readElementByPath(path) {
+    if (!document.body || !path || !path.length) return null;
+    var cursor = document.body;
+    for (var i = 0; i < path.length; i++) {
+      var idx = Number(path[i]);
+      if (!isFinite(idx) || idx < 0) return null;
+      var children = cursor.children || [];
+      cursor = children[idx];
+      if (!cursor) return null;
+    }
+    return cursor;
+  }
+
+  function toCamelStyleKey(raw) {
+    return String(raw || '').replace(/-([a-z])/g, function(_all, c) { return c.toUpperCase(); });
+  }
+
+  function toCssStyleKey(raw) {
+    return String(raw || '').replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
+  }
+
+  function normalizeFontFamilyValue(raw) {
+    var value = String(raw || '').trim();
+    if (!value) return '';
+    if (value.indexOf(',') > -1) return value;
+    if (
+      (value.charAt(0) === "'" && value.charAt(value.length - 1) === "'") ||
+      (value.charAt(0) === '"' && value.charAt(value.length - 1) === '"')
+    ) {
+      return value;
+    }
+    var lower = value.toLowerCase();
+    if (
+      lower === 'serif' ||
+      lower === 'sans-serif' ||
+      lower === 'monospace' ||
+      lower === 'cursive' ||
+      lower === 'fantasy' ||
+      lower === 'system-ui'
+    ) {
+      return value;
+    }
+    if (/\\s/.test(value)) {
+      return "'" + value.replace(/'/g, "\\\\'") + "'";
+    }
+    return value;
+  }
+
+  function getElementComputedStyles(el) {
+    var out = {};
+    if (!el || !window.getComputedStyle) return out;
+    try {
+      var computed = window.getComputedStyle(el);
+      for (var i = 0; i < computed.length; i++) {
+        var key = computed[i];
+        var value = computed.getPropertyValue(key);
+        if (!value) continue;
+        out[toCamelStyleKey(key)] = value;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function applyStylePatchToElement(el, styles) {
+    if (!el || !el.style || !styles || typeof styles !== 'object') return;
+    for (var key in styles) {
+      if (!Object.prototype.hasOwnProperty.call(styles, key)) continue;
+      var cssKey = toCssStyleKey(key);
+      var rawValue = styles[key];
+      var value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+      if (cssKey === 'font-family') {
+        value = normalizeFontFamilyValue(value);
+      }
+      if (!value) {
+        el.style.removeProperty(cssKey);
+      } else {
+        el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
+      }
+    }
+  }
+
   function canInlineEdit(el) {
     if (!el) return false;
     if (el.isContentEditable) return false;
@@ -1912,17 +2093,35 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         return;
       }
     }
-    if (!payload || payload.type !== 'PREVIEW_SET_MODE') return;
-    var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
-    __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
-    __previewMode = nextMode;
-    if (nextMode !== 'edit') {
-      clearPreviewSelection();
-      clearPreviewHover();
-      applySelectionModeDecorations();
-    } else {
-      applySelectionModeDecorations();
-      requestHoverUpdate();
+    if (!payload || !payload.type) return;
+    if (payload.type === 'PREVIEW_SET_MODE') {
+      var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+      __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
+      __previewMode = nextMode;
+      if (nextMode !== 'edit') {
+        clearPreviewSelection();
+        clearPreviewHover();
+        applySelectionModeDecorations();
+      } else {
+        applySelectionModeDecorations();
+        requestHoverUpdate();
+      }
+      return;
+    }
+    if (payload.type === 'PREVIEW_APPLY_STYLE') {
+      var target = null;
+      if (payload.path && payload.path.length) {
+        target = readElementByPath(payload.path);
+      }
+      if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
+        target = __previewSelectedEl;
+      }
+      if (!target) {
+        target = document.querySelector('.__nx-preview-selected');
+      }
+      if (target) {
+        applyStylePatchToElement(target, payload.styles);
+      }
     }
   });
 
@@ -2032,7 +2231,8 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         text: __previewSelectedEl.textContent || '',
         src: extractImageSource(__previewSelectedEl),
         href: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : '',
-        inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
+        inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
+        computedStyles: getElementComputedStyles(__previewSelectedEl)
       });
     }
 
@@ -4123,6 +4323,19 @@ const App: React.FC = () => {
     },
     [],
   );
+  const postPreviewPatchToFrame = useCallback((payload: Record<string, unknown>) => {
+    const frameWindow =
+      previewFrameRef.current?.contentWindow ??
+      previewFrameRef.current?.contentDocument?.defaultView ??
+      null;
+    if (!frameWindow) return;
+    if (interactionModeRef.current !== "preview") return;
+    try {
+      frameWindow.postMessage(JSON.stringify(payload), "*");
+    } catch {
+      // Ignore transient frame messaging errors.
+    }
+  }, []);
 
   const handlePreviewFrameLoad = useCallback((event: React.SyntheticEvent<HTMLIFrameElement>) => {
     const frame = event.currentTarget;
@@ -4314,6 +4527,7 @@ const App: React.FC = () => {
       const target = readElementByPath(parsed.body, previewSelectedPath);
       const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
       if (!(target instanceof HTMLElement) && !(liveTarget instanceof HTMLElement)) return;
+      const previewStylePatch: Record<string, string> = {};
 
       for (const [key, rawValue] of Object.entries(styles)) {
         const cssKey = toCssPropertyName(key);
@@ -4323,6 +4537,7 @@ const App: React.FC = () => {
           cssKey === "font-family"
             ? normalizeFontFamilyCssValue(valueRaw)
             : valueRaw;
+        previewStylePatch[key] = value;
         if (!value) {
           if (target instanceof HTMLElement) {
             target.style.removeProperty(cssKey);
@@ -4347,6 +4562,11 @@ const App: React.FC = () => {
           );
         }
       }
+      postPreviewPatchToFrame({
+        type: "PREVIEW_APPLY_STYLE",
+        path: previewSelectedPath,
+        styles: previewStylePatch,
+      });
 
       if (target instanceof HTMLElement) {
         const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
@@ -4380,6 +4600,7 @@ const App: React.FC = () => {
     [
       getLivePreviewSelectedElement,
       loadFileContent,
+      postPreviewPatchToFrame,
       persistPreviewHtmlContent,
       previewSelectedPath,
       selectedPreviewHtml,
@@ -4593,7 +4814,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
       if (!isActivePreviewMessageSource(event.source)) return;
-      const payload = event.data as
+      let payload = event.data as
         | {
             type?: string;
             path?: string | number[];
@@ -4608,8 +4829,16 @@ const App: React.FC = () => {
             inlineStyle?: string;
             src?: string;
             href?: string;
+            computedStyles?: Record<string, string>;
           }
         | undefined;
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          return;
+        }
+      }
       if (!payload || !payload.type) return;
 
       if (payload.type === "PREVIEW_CONSOLE") {
@@ -4681,9 +4910,14 @@ const App: React.FC = () => {
         const inlineStyles = parseInlineStyleText(
           typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
         );
+        const payloadComputedStyles =
+          payload.computedStyles && typeof payload.computedStyles === "object"
+            ? (payload.computedStyles as React.CSSProperties)
+            : null;
 
         const liveElement = getLivePreviewSelectedElement(nextPath);
-        const computedStyles = extractComputedStylesFromElement(liveElement);
+        const computedStyles =
+          payloadComputedStyles || extractComputedStylesFromElement(liveElement);
 
         const editableText = liveElement
           ? extractTextWithBreaks(liveElement)
