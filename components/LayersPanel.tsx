@@ -7,9 +7,10 @@ interface LayersPanelProps {
     root: VirtualElement;
     selectedId: string | null;
     onSelect: (id: string) => void;
+    theme: 'light' | 'dark';
 }
 
-const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect }) => {
+const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, theme }) => {
     const [expanded, setExpanded] = useState<Set<string>>(new Set(['root']));
     const [searchQuery, setSearchQuery] = useState('');
     const [searchFocused, setSearchFocused] = useState(false);
@@ -124,7 +125,13 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect })
                             {element.type}
                         </span>
                         {element.name && element.type !== element.name && (
-                            <span className="text-[9px] truncate opacity-60" style={{ color: 'var(--text-muted)' }}>
+                            <span
+                                className="text-[9px] truncate"
+                                style={{
+                                    color: theme === 'dark' ? '#94a3b8' : 'var(--text-muted)',
+                                    opacity: theme === 'dark' ? 1 : 0.6,
+                                }}
+                            >
                                 {element.name}
                             </span>
                         )}

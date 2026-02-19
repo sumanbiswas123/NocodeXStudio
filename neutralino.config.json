@@ -27,7 +27,7 @@
       "center": true,
       "fullScreen": false,
       "alwaysOnTop": false,
-      "enableInspector": false,
+      "enableInspector": true,
       "borderless": true,
       "maximize": false,
       "hidden": false,

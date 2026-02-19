@@ -65,14 +65,14 @@ const AccordionSection: React.FC<{
 // Element type to gradient mapping
 const TYPE_GRADIENTS: Record<string, string> = {
   div: 'from-blue-600/20 to-blue-800/10',
-  section: 'from-indigo-600/20 to-indigo-800/10',
+  section: 'from-cyan-600/20 to-cyan-800/10',
   h1: 'from-amber-600/20 to-amber-800/10',
   h2: 'from-amber-500/20 to-amber-700/10',
   h3: 'from-amber-400/20 to-amber-600/10',
   p: 'from-slate-500/20 to-slate-700/10',
   span: 'from-teal-600/20 to-teal-800/10',
   button: 'from-green-600/20 to-green-800/10',
-  img: 'from-purple-600/20 to-purple-800/10',
+  img: 'from-cyan-600/20 to-cyan-800/10',
   a: 'from-cyan-600/20 to-cyan-800/10',
 };
 
@@ -151,7 +151,16 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   const hasContent = element.content !== undefined || ['img', 'a', 'p', 'h1', 'h2', 'h3', 'button', 'span'].includes(element.type);
 
   return (
-    <div className="h-full flex flex-col backdrop-blur-xl border-l custom-scrollbar" style={{ backgroundColor: 'var(--bg-glass)', borderColor: 'var(--border-color)', color: 'var(--text-main)' }}>
+    <div
+      className="h-full flex flex-col backdrop-blur-xl no-scrollbar"
+      style={{
+        backgroundColor: 'var(--bg-glass)',
+        borderColor: 'var(--border-color)',
+        color: 'var(--text-main)',
+        ['--accent-primary' as any]: '#06b6d4',
+        ['--accent-glow' as any]: 'rgba(6, 182, 212, 0.22)',
+      } as React.CSSProperties}
+    >
       
       {/* ─── Element Header Card ─── */}
       <div 
@@ -164,7 +173,7 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                className="p-2 rounded-xl shadow-sm"
                style={{ backgroundColor: 'var(--accent-glow)' }}
              >
-                {element.type === 'img' ? <ImageIcon size={16} style={{ color: '#a855f7' }}/> : <Layout size={16} style={{ color: 'var(--accent-primary)' }}/>}
+                {element.type === 'img' ? <ImageIcon size={16} style={{ color: '#06b6d4' }}/> : <Layout size={16} style={{ color: 'var(--accent-primary)' }}/>}
              </div>
              <div>
                 <h2 className="font-bold text-xs uppercase tracking-wide" style={{ color: 'var(--text-main)' }}>
@@ -218,7 +227,7 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             onClick={() => setActiveTab(tab.key)}
             className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1 transition-all duration-200 border-b-2 ${
               activeTab === tab.key
-                ? 'border-indigo-500'
+                ? 'border-cyan-500'
                 : 'border-transparent hover:bg-black/5'
             }`}
             style={{ color: activeTab === tab.key ? 'var(--accent-primary)' : 'var(--text-muted)' }}
@@ -229,7 +238,7 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
       </div>
 
       {/* ─── Tab Content ─── */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar pb-20">
+      <div className="flex-1 overflow-y-auto no-scrollbar">
 
         {/* CONTENT TAB */}
         {activeTab === 'content' && (
@@ -343,7 +352,7 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             </AccordionSection>
 
             {/* Add Child */}
-            <AccordionSection title="Insert Element" icon={<Plus size={13}/>} accentColor="#8b5cf6" defaultOpen={false}>
+            <AccordionSection title="Insert Element" icon={<Plus size={13}/>} accentColor="#06b6d4" defaultOpen={false}>
                 <div className="grid grid-cols-3 gap-1.5">
                    <div className="col-span-3 flex p-0.5 rounded-lg mb-2" style={{ backgroundColor: 'var(--input-bg)' }}>
                      {(['inside', 'before', 'after'] as const).map(mode => (
@@ -352,7 +361,7 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                            onClick={() => setInsertMode(mode)}
                            className={`flex-1 py-1 text-[10px] rounded-md capitalize transition-all font-medium ${
                              insertMode === mode 
-                               ? 'bg-indigo-600 text-white shadow-sm' 
+                               ? 'bg-cyan-600 text-white shadow-sm' 
                                : ''
                            }`}
                            style={insertMode !== mode ? { color: 'var(--text-muted)' } : undefined}

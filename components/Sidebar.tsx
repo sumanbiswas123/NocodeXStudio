@@ -18,6 +18,7 @@ interface SidebarProps {
   setInteractionMode: (mode: 'edit' | 'preview' | 'inspect' | 'draw') => void;
   drawElementTag: string;
   setDrawElementTag: (tag: string) => void;
+  theme: 'light' | 'dark';
 }
 
 const TAB_ITEMS = [
@@ -40,12 +41,23 @@ const Sidebar: React.FC<SidebarProps> = ({
   interactionMode,
   setInteractionMode,
   drawElementTag,
-  setDrawElementTag
+  setDrawElementTag,
+  theme
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('files');
+  const selectedAccent = theme === 'dark' ? '#67e8f9' : '#0891b2';
+  const selectedGlow = theme === 'dark' ? 'rgba(103, 232, 249, 0.4)' : 'rgba(8, 145, 178, 0.22)';
 
   return (
-    <div className="flex h-full shrink-0 z-10">
+    <div
+      className="flex h-full shrink-0 z-10"
+      style={
+        {
+          ['--accent-primary' as any]: selectedAccent,
+          ['--accent-glow' as any]: selectedGlow,
+        } as React.CSSProperties
+      }
+    >
       {/* ─── Icon Rail ─── */}
       <div 
         className="w-12 flex flex-col items-center py-3 gap-1 border-r shrink-0"
@@ -64,7 +76,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                 ? 'tab-active-glow animate-neonPulse'
                 : 'hover:bg-black/5'
             }`}
-            style={{ color: (interactionMode === 'edit' || interactionMode === 'inspect') ? 'var(--accent-primary)' : 'var(--icon-color)' }}
+            style={{
+              color:
+                (interactionMode === 'edit' || interactionMode === 'inspect')
+                  ? selectedAccent
+                  : 'var(--icon-color)'
+            }}
           >
             <MousePointer2 size={16} />
           </button>
@@ -91,12 +108,20 @@ const Sidebar: React.FC<SidebarProps> = ({
             className={`p-2 rounded-lg transition-all duration-200 relative glow-indicator ${
               activeTab === key ? 'tab-active-glow' : 'hover:bg-black/5'
             }`}
-            style={{ color: activeTab === key ? 'var(--accent-primary)' : 'var(--icon-color)' }}
+            style={{
+              color:
+                activeTab === key
+                  ? selectedAccent
+                  : 'var(--icon-color)'
+            }}
           >
             <Icon size={16} />
             {/* Active dot indicator */}
             {activeTab === key && (
-              <span className="absolute -right-[7px] top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-l-full bg-indigo-500 transition-all" />
+              <span
+                className="absolute -right-[7px] top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-l-full transition-all"
+                style={{ backgroundColor: selectedAccent }}
+              />
             )}
           </button>
         ))}
@@ -108,7 +133,11 @@ const Sidebar: React.FC<SidebarProps> = ({
         <button
           onClick={() => { setActiveTab('toolbox'); }}
           title="Quick Add Element"
-          className="p-2 pb-7 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:scale-110 active:scale-95 transition-all duration-200"
+          className={`p-2 rounded-xl text-white shadow-lg hover:scale-110 active:scale-95 transition-all duration-200 ${
+            theme === 'dark'
+              ? 'bg-gradient-to-br from-cyan-500 to-blue-500 shadow-cyan-500/35 hover:shadow-cyan-400/55'
+              : 'bg-gradient-to-br from-cyan-600 to-sky-600 shadow-cyan-500/25 hover:shadow-cyan-500/45'
+          }`}
         >
           <Plus size={16} />
         </button>
@@ -122,7 +151,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-glass-strong)' }}
         >
           <div className="flex items-center gap-2">
-            <Sparkles size={12} style={{ color: 'var(--accent-primary)' }} />
+            <Sparkles size={12} style={{ color: selectedAccent }} />
             <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
               {TAB_ITEMS.find(t => t.key === activeTab)?.label}
             </span>
@@ -157,9 +186,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Tab Content */}
         <div className="flex-1 overflow-hidden custom-scrollbar animate-slideInLeft">
           {activeTab === 'files' ? (
-            <FileExplorer files={files} projectPath={projectPath} activeFile={activeFile} onSelectFile={onSelectFile} />
+            <FileExplorer files={files} projectPath={projectPath} activeFile={activeFile} onSelectFile={onSelectFile} theme={theme} />
           ) : activeTab === 'layers' ? (
-            <LayersPanel root={root} selectedId={selectedId} onSelect={onSelectElement} />
+            <LayersPanel root={root} selectedId={selectedId} onSelect={onSelectElement} theme={theme} />
           ) : (
             <Toolbox onAddElement={onAddElement} />
           )}

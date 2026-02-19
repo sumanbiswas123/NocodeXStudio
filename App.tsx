@@ -39,6 +39,10 @@ import {
   Wifi,
   Sun,
   Moon,
+  Save,
+  Undo2,
+  Redo2,
+  Settings2,
 } from "lucide-react";
 
 // --- Helper Functions (Same as before) ---
@@ -108,6 +112,7 @@ const IGNORED_FOLDERS = new Set([
   "coverage",
 ]);
 const THEME_STORAGE_KEY = "nocode-x-studio-theme";
+const PREVIEW_AUTOSAVE_STORAGE_KEY = "nocode-x-studio-preview-autosave";
 
 const inferFileType = (name: string): ProjectFile["type"] => {
   const lower = name.toLowerCase();
@@ -716,9 +721,221 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
       } catch (e) {}
     }
 
+    var __previewSelectedEl = null;
+    var __previewEditingEl = null;
+    var __previewEditableTags = {
+      p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+      a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
+      i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
+    };
+
+    function postPreviewMessage(type, payload) {
+      if (!window.parent || window.parent === window) return;
+      try {
+        var message = { type: type };
+        if (payload && typeof payload === 'object') {
+          for (var key in payload) {
+            if (Object.prototype.hasOwnProperty.call(payload, key)) {
+              message[key] = payload[key];
+            }
+          }
+        }
+        window.parent.postMessage(message, '*');
+      } catch (e) {}
+    }
+
+    function clearPreviewSelection() {
+      if (__previewSelectedEl && __previewSelectedEl.classList) {
+        __previewSelectedEl.classList.remove('__nx-preview-selected');
+      }
+      __previewSelectedEl = null;
+    }
+
+    function getPreviewSelectableTarget(node) {
+      var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+      while (current && current !== document.body) {
+        var tag = String(current.tagName || '').toLowerCase();
+        if (
+          tag &&
+          tag !== 'script' &&
+          tag !== 'style' &&
+          tag !== 'head' &&
+          tag !== 'meta' &&
+          tag !== 'link' &&
+          tag !== 'html' &&
+          tag !== 'body'
+        ) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    }
+
+    function getPreviewElementPath(el) {
+      if (!el || !document.body || !document.body.contains(el)) return null;
+      var path = [];
+      var cursor = el;
+      while (cursor && cursor !== document.body) {
+        var parent = cursor.parentElement;
+        if (!parent) return null;
+        var children = parent.children;
+        var idx = -1;
+        for (var i = 0; i < children.length; i++) {
+          if (children[i] === cursor) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx < 0) return null;
+        path.unshift(idx);
+        cursor = parent;
+      }
+      return path;
+    }
+
+    function canInlineEdit(el) {
+      if (!el) return false;
+      if (el.isContentEditable) return false;
+      var tag = String(el.tagName || '').toLowerCase();
+      if (!__previewEditableTags[tag]) return false;
+      if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
+      return true;
+    }
+
+    function beginInlineEdit(el) {
+      if (!el || !canInlineEdit(el)) return;
+      if (__previewEditingEl && __previewEditingEl !== el) {
+        __previewEditingEl.blur();
+      }
+      var path = getPreviewElementPath(el);
+      if (!path) return;
+
+      __previewEditingEl = el;
+      el.classList.add('__nx-preview-editing');
+      el.setAttribute('contenteditable', 'true');
+      el.setAttribute('data-nx-inline-editing', 'true');
+      try {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      } catch (e) {}
+      try { el.focus(); } catch (e) {}
+
+      var done = false;
+      var normalizeEditableHtml = function(raw) {
+        var html = String(raw || '');
+        // Normalize block splits produced by contentEditable Enter behavior.
+        html = html.split('<div><br></div>').join('<br>');
+        html = html.split('<div>').join('<br>');
+        html = html.split('</div>').join('');
+        html = html.split('<p>').join('<br>');
+        html = html.split('</p>').join('');
+        while (
+          html.startsWith('<br>') ||
+          html.startsWith('<br/>') ||
+          html.startsWith('<br />')
+        ) {
+          if (html.startsWith('<br />')) {
+            html = html.slice(6);
+          } else if (html.startsWith('<br/>')) {
+            html = html.slice(5);
+          } else {
+            html = html.slice(4);
+          }
+        }
+        return html;
+      };
+      var insertLineBreakAtCursor = function() {
+        try {
+          var sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return;
+          var range = sel.getRangeAt(0);
+          range.deleteContents();
+          var br = document.createElement('br');
+          range.insertNode(br);
+          range.setStartAfter(br);
+          range.setEndAfter(br);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch (e) {}
+      };
+      var finish = function(commit) {
+        if (done) return;
+        done = true;
+        el.removeEventListener('blur', onBlur, true);
+        el.removeEventListener('keydown', onKeyDown, true);
+        el.removeAttribute('contenteditable');
+        el.removeAttribute('data-nx-inline-editing');
+        el.classList.remove('__nx-preview-editing');
+        __previewEditingEl = null;
+        if (commit) {
+          postPreviewMessage('PREVIEW_INLINE_EDIT', {
+            path: path,
+            html: normalizeEditableHtml(el.innerHTML)
+          });
+        }
+      };
+
+      var onBlur = function() {
+        finish(true);
+      };
+      var onKeyDown = function(event) {
+        if (!event) return;
+        if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+          event.preventDefault();
+          insertLineBreakAtCursor();
+        } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          finish(true);
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+        }
+      };
+
+      el.addEventListener('blur', onBlur, true);
+      el.addEventListener('keydown', onKeyDown, true);
+    }
+
+    try {
+      var __previewStyle = document.createElement('style');
+      __previewStyle.setAttribute('data-preview-inline-editor', 'true');
+      __previewStyle.textContent =
+        '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
+        '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
+        '[data-nx-inline-editing=\"true\"]{cursor:text!important;}';
+      if (document.head) document.head.appendChild(__previewStyle);
+    } catch (e) {}
+
     document.addEventListener('click', function(event) {
       var target = event && event.target;
+      var selected = getPreviewSelectableTarget(target);
+      if (selected) {
+        clearPreviewSelection();
+        __previewSelectedEl = selected;
+        if (__previewSelectedEl.classList) {
+          __previewSelectedEl.classList.add('__nx-preview-selected');
+        }
+        postPreviewMessage('PREVIEW_SELECT', {
+          path: getPreviewElementPath(__previewSelectedEl),
+          tag: String(__previewSelectedEl.tagName || '').toLowerCase(),
+          id: __previewSelectedEl.id || '',
+          className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
+          text: __previewSelectedEl.textContent || '',
+          inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : ''
+        });
+      }
+
+      if (__previewEditingEl) return;
+      var target = event && event.target;
       if (!target || !target.closest) return;
+      if (event.detail && event.detail > 1) return;
       var anchor = target.closest('a[href]');
       if (!anchor) return;
       var href = anchor.getAttribute('href');
@@ -727,6 +944,16 @@ const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string =
       event.preventDefault();
       event.stopPropagation();
       notifyNavigate(navTarget);
+    }, true);
+
+    document.addEventListener('dblclick', function(event) {
+      if (__previewEditingEl) return;
+      var target = event && event.target;
+      var selected = getPreviewSelectableTarget(target);
+      if (!selected || !canInlineEdit(selected)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      beginInlineEdit(selected);
     }, true);
 
     var __LOCATION_ASSIGN = window.location.assign ? window.location.assign.bind(window.location) : null;
@@ -902,6 +1129,120 @@ const pickDefaultHtmlFile = (fileMap: FileMap): string | null => {
     htmlFiles.find((f) => f.path.toLowerCase() === "index.html") ||
     htmlFiles.find((f) => f.name.toLowerCase() === "index.html");
   return (indexHtml || htmlFiles[0]).path;
+};
+
+const toCssPropertyName = (key: string): string =>
+  key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+
+const readElementByPath = (root: Element, path: number[]): Element | null => {
+  let cursor: Element | null = root;
+  for (const step of path) {
+    if (!cursor) return null;
+    const children = Array.from(cursor.children);
+    cursor = children[step] ?? null;
+  }
+  return cursor;
+};
+
+const parseInlineStyleText = (styleText: string): React.CSSProperties => {
+  const styles: Record<string, string> = {};
+  if (!styleText) return styles as React.CSSProperties;
+  const entries = styleText
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
+    const colonIndex = entry.indexOf(":");
+    if (colonIndex <= 0) continue;
+    const rawKey = entry.slice(0, colonIndex).trim();
+    const rawValue = entry.slice(colonIndex + 1).trim();
+    if (!rawKey) continue;
+    const camelKey = rawKey.replace(/-([a-z])/g, (_all, c: string) =>
+      c.toUpperCase(),
+    );
+    styles[camelKey] = rawValue;
+  }
+  return styles as React.CSSProperties;
+};
+
+const extractComputedStylesFromElement = (
+  element: Element | null,
+): React.CSSProperties | null => {
+  if (!element || !(element instanceof HTMLElement)) return null;
+  const computed = window.getComputedStyle(element);
+  const out: Record<string, string> = {};
+  for (let i = 0; i < computed.length; i += 1) {
+    const key = computed[i];
+    const value = computed.getPropertyValue(key);
+    if (!value) continue;
+    const camelKey = key.replace(/-([a-z])/g, (_all, c: string) => c.toUpperCase());
+    out[camelKey] = value;
+  }
+  return out as React.CSSProperties;
+};
+
+const escapeHtmlText = (raw: string): string =>
+  raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+const multilineTextToHtml = (raw: string): string =>
+  escapeHtmlText(raw.replace(/\r\n?/g, "\n")).replace(/\n/g, "<br>");
+
+const normalizeEditorMultilineText = (raw: string): string => {
+  const normalized = raw.replace(/\r\n?/g, "\n");
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim());
+
+  let start = 0;
+  let end = lines.length - 1;
+  while (start <= end && !lines[start]) start += 1;
+  while (end >= start && !lines[end]) end -= 1;
+  if (start > end) return "";
+
+  return lines.slice(start, end + 1).join("\n");
+};
+
+const extractTextWithBreaks = (element: Element | null): string => {
+  if (!element) return "";
+  let out = "";
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent || "";
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as Element;
+    if (el.tagName.toLowerCase() === "br") {
+      out += "\n";
+      return;
+    }
+    Array.from(el.childNodes).forEach(walk);
+  };
+  Array.from(element.childNodes).forEach(walk);
+  return normalizeEditorMultilineText(out);
+};
+
+const applyMultilineTextToElement = (element: Element, text: string): void => {
+  const normalized = normalizeEditorMultilineText(text);
+  while (element.firstChild) {
+    element.removeChild(element.firstChild);
+  }
+  const lines = normalized.split("\n");
+  lines.forEach((line, index) => {
+    element.appendChild(element.ownerDocument.createTextNode(line));
+    if (index < lines.length - 1) {
+      element.appendChild(element.ownerDocument.createElement("br"));
+    }
+  });
+};
+
+type PreviewHistoryEntry = {
+  past: string[];
+  present: string;
+  future: string[];
 };
 
 const addElementToTree = (
@@ -1108,6 +1449,7 @@ const App: React.FC = () => {
   >("edit");
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
+  const [isZenMode, setIsZenMode] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
@@ -1123,6 +1465,18 @@ const App: React.FC = () => {
     }
     return "light";
   });
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(PREVIEW_AUTOSAVE_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
+  const [dirtyFiles, setDirtyFiles] = useState<string[]>([]);
+  const [dirtyPathKeysByFile, setDirtyPathKeysByFile] = useState<
+    Record<string, string[]>
+  >({});
 
   // Design Revamp States
   const [mobileFrameStyle, setMobileFrameStyle] = useState<
@@ -1144,7 +1498,14 @@ const App: React.FC = () => {
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  // Keep both implementations available: switch to "docked" anytime.
+  const panelLayoutMode: "docked" | "floating" = "floating";
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState("");
+  const [previewSelectedPath, setPreviewSelectedPath] = useState<number[] | null>(null);
+  const [previewSelectedElement, setPreviewSelectedElement] =
+    useState<VirtualElement | null>(null);
+  const [previewSelectedComputedStyles, setPreviewSelectedComputedStyles] =
+    useState<React.CSSProperties | null>(null);
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState(256);
   const [isResizingLeftPanel, setIsResizingLeftPanel] = useState(false);
@@ -1156,7 +1517,14 @@ const App: React.FC = () => {
   >({});
   const filesRef = useRef<FileMap>({});
   const activeFileRef = useRef<string | null>(null);
+  const selectedPreviewHtmlRef = useRef<string | null>(null);
   const interactionModeRef = useRef<"edit" | "preview" | "inspect" | "draw">("edit");
+  const zenRestoreRef = useRef<{
+    isLeftPanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    showTerminal: boolean;
+    interactionMode: "edit" | "preview" | "inspect" | "draw";
+  } | null>(null);
   const lastPreviewSyncRef = useRef<{
     path: string;
     at: number;
@@ -1169,6 +1537,10 @@ const App: React.FC = () => {
   const leftPanelPendingWidthRef = useRef(256);
   const leftPanelResizeRafRef = useRef<number | null>(null);
   const previewConsoleSeqRef = useRef(0);
+  const saveMenuRef = useRef<HTMLDivElement | null>(null);
+  const pendingPreviewWritesRef = useRef<Record<string, string>>({});
+  const previewHistoryRef = useRef<Record<string, PreviewHistoryEntry>>({});
+  const autoSaveTimerRef = useRef<number | null>(null);
   const BASE_STAGE_PADDING = 40;
   const LEFT_PANEL_MIN_WIDTH = 220;
   const LEFT_PANEL_MAX_WIDTH = 520;
@@ -1205,9 +1577,14 @@ const App: React.FC = () => {
   );
 
   // Desktop only: both panels open in overlay mode with horizontal scroll.
+  const isFloatingPanels = panelLayoutMode === "floating";
   const bothPanelsOpen =
-    isLeftPanelOpen && isRightPanelOpen && deviceMode !== "mobile";
+    !isFloatingPanels && isLeftPanelOpen && isRightPanelOpen && deviceMode !== "mobile";
   const rightOverlayInset = bothPanelsOpen ? RIGHT_PANEL_WIDTH : 0;
+  const floatingHorizontalInset =
+    isFloatingPanels && deviceMode !== "mobile"
+      ? (isLeftPanelOpen ? leftPanelWidth : 0) + (isRightPanelOpen ? leftPanelWidth : 0)
+      : 0;
   useEffect(() => {
     filesRef.current = files;
   }, [files]);
@@ -1261,7 +1638,7 @@ const App: React.FC = () => {
     });
   }, [bothPanelsOpen, isLeftPanelOpen, isRightPanelOpen, deviceMode]);
   useLayoutEffect(() => {
-    if (bothPanelsOpen && scrollerRef.current) {
+    if ((bothPanelsOpen || floatingHorizontalInset > 0) && scrollerRef.current) {
       const el = scrollerRef.current;
       const alignInitialScroll = () => {
         // Center default view; user can still scroll both sides manually.
@@ -1280,11 +1657,25 @@ const App: React.FC = () => {
     }
   }, [
     bothPanelsOpen,
+    floatingHorizontalInset,
     desktopResolution,
     deviceMode,
     isLeftPanelOpen,
     isRightPanelOpen,
   ]);
+  useLayoutEffect(() => {
+    if (!scrollerRef.current) return;
+    const el = scrollerRef.current;
+    const recenter = () => {
+      el.scrollLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
+    };
+    recenter();
+    requestAnimationFrame(() => {
+      recenter();
+      setTimeout(recenter, 120);
+      setTimeout(recenter, 260);
+    });
+  }, [frameZoom]);
 
   useEffect(() => {
     try {
@@ -1293,6 +1684,34 @@ const App: React.FC = () => {
       // Ignore storage errors.
     }
   }, [theme]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        PREVIEW_AUTOSAVE_STORAGE_KEY,
+        autoSaveEnabled ? "1" : "0",
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [autoSaveEnabled]);
+  useEffect(() => {
+    const onClickOutside = (event: MouseEvent) => {
+      if (!saveMenuRef.current) return;
+      if (!saveMenuRef.current.contains(event.target as Node)) {
+        setIsSaveMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+  useEffect(
+    () => () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!appRootRef.current) return;
@@ -1388,50 +1807,301 @@ const App: React.FC = () => {
       };
     });
   }, []);
+  const pushPreviewHistory = useCallback((filePath: string, nextHtml: string) => {
+    const current = previewHistoryRef.current[filePath];
+    if (!current) {
+      previewHistoryRef.current[filePath] = {
+        past: [],
+        present: nextHtml,
+        future: [],
+      };
+      return;
+    }
+    if (current.present === nextHtml) return;
+    const cappedPast = current.past.length > 120 ? current.past.slice(-120) : current.past;
+    previewHistoryRef.current[filePath] = {
+      past: [...cappedPast, current.present],
+      present: nextHtml,
+      future: [],
+    };
+  }, []);
 
-  // --- Keyboard Shortcuts ---
+  const markPreviewPathDirty = useCallback((filePath: string, elementPath: number[]) => {
+    if (!elementPath || elementPath.length === 0) return;
+    const key = elementPath.join(".");
+    setDirtyPathKeysByFile((prev) => {
+      const curr = prev[filePath] || [];
+      if (curr.includes(key)) return prev;
+      return { ...prev, [filePath]: [...curr, key] };
+    });
+
+    const frameDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!frameDocument?.body) return;
+    const liveTarget = readElementByPath(frameDocument.body, elementPath);
+    if (liveTarget instanceof HTMLElement) {
+      liveTarget.classList.add("__nx-preview-dirty");
+    }
+  }, []);
+  const flushPendingPreviewSaves = useCallback(async () => {
+    const entries = Object.entries(pendingPreviewWritesRef.current);
+    if (entries.length === 0) return;
+
+    const savedPaths: string[] = [];
+    for (const [filePath, content] of entries) {
+      const absolutePath = filePathIndexRef.current[filePath];
+      if (!absolutePath) continue;
+      try {
+        await (Neutralino as any).filesystem.writeFile(absolutePath, content);
+        delete pendingPreviewWritesRef.current[filePath];
+        savedPaths.push(filePath);
+      } catch (error) {
+        console.warn(`Failed to save ${filePath}:`, error);
+      }
+    }
+    if (savedPaths.length === 0) return;
+
+    setDirtyFiles((prev) => prev.filter((path) => !savedPaths.includes(path)));
+    setDirtyPathKeysByFile((prev) => {
+      const next = { ...prev };
+      for (const path of savedPaths) {
+        delete next[path];
+      }
+      return next;
+    });
+
+    const activePath = selectedPreviewHtmlRef.current;
+    if (activePath && savedPaths.includes(activePath)) {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (frameDocument) {
+        Array.from(frameDocument.querySelectorAll(".__nx-preview-dirty")).forEach((el) => {
+          el.classList.remove("__nx-preview-dirty");
+        });
+      }
+    }
+  }, []);
+  const schedulePreviewAutoSave = useCallback(() => {
+    if (!autoSaveEnabled) return;
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void flushPendingPreviewSaves();
+    }, 1200);
+  }, [autoSaveEnabled, flushPendingPreviewSaves]);
+
+  const handlePreviewUndo = useCallback(async () => {
+    const filePath = selectedPreviewHtmlRef.current;
+    if (!filePath) return;
+    const current = previewHistoryRef.current[filePath];
+    if (!current || current.past.length === 0) return;
+    const previous = current.past[current.past.length - 1];
+    previewHistoryRef.current[filePath] = {
+      past: current.past.slice(0, -1),
+      present: previous,
+      future: [current.present, ...current.future],
+    };
+    setFiles((prev) => {
+      const existing = prev[filePath];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [filePath]: {
+          ...existing,
+          content: previous,
+        },
+      };
+    });
+    pendingPreviewWritesRef.current[filePath] = previous;
+    setDirtyFiles((prev) =>
+      prev.includes(filePath) ? prev : [...prev, filePath],
+    );
+    setDirtyPathKeysByFile((prev) => ({
+      ...prev,
+      [filePath]: [],
+    }));
+    const currentEntry = filesRef.current[filePath];
+    if (currentEntry) {
+      const previewSnapshot: FileMap = {
+        ...filesRef.current,
+        [filePath]: {
+          ...currentEntry,
+          content: previous,
+        },
+      };
+      setSelectedPreviewDoc(
+        createPreviewDocument(previewSnapshot, filePath),
+      );
+    }
+    schedulePreviewAutoSave();
+  }, [schedulePreviewAutoSave]);
+
+  const handlePreviewRedo = useCallback(async () => {
+    const filePath = selectedPreviewHtmlRef.current;
+    if (!filePath) return;
+    const current = previewHistoryRef.current[filePath];
+    if (!current || current.future.length === 0) return;
+    const next = current.future[0];
+    previewHistoryRef.current[filePath] = {
+      past: [...current.past, current.present],
+      present: next,
+      future: current.future.slice(1),
+    };
+    setFiles((prev) => {
+      const existing = prev[filePath];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [filePath]: {
+          ...existing,
+          content: next,
+        },
+      };
+    });
+    pendingPreviewWritesRef.current[filePath] = next;
+    setDirtyFiles((prev) =>
+      prev.includes(filePath) ? prev : [...prev, filePath],
+    );
+    setDirtyPathKeysByFile((prev) => ({
+      ...prev,
+      [filePath]: [],
+    }));
+    const currentEntry = filesRef.current[filePath];
+    if (currentEntry) {
+      const previewSnapshot: FileMap = {
+        ...filesRef.current,
+        [filePath]: {
+          ...currentEntry,
+          content: next,
+        },
+      };
+      setSelectedPreviewDoc(
+        createPreviewDocument(previewSnapshot, filePath),
+      );
+    }
+    schedulePreviewAutoSave();
+  }, [schedulePreviewAutoSave]);
+
+  const toggleZenMode = useCallback(() => {
+    setIsZenMode((prev) => {
+      if (!prev) {
+        zenRestoreRef.current = {
+          isLeftPanelOpen,
+          isRightPanelOpen,
+          showTerminal,
+          interactionMode,
+        };
+        setIsLeftPanelOpen(false);
+        setIsRightPanelOpen(false);
+        setShowTerminal(false);
+        setInteractionMode("preview");
+        return true;
+      }
+
+      const restore = zenRestoreRef.current;
+      if (restore) {
+        setIsLeftPanelOpen(restore.isLeftPanelOpen);
+        setIsRightPanelOpen(restore.isRightPanelOpen);
+        setShowTerminal(restore.showTerminal);
+        setInteractionMode(restore.interactionMode);
+      }
+      zenRestoreRef.current = null;
+      return false;
+    });
+  }, [interactionMode, isLeftPanelOpen, isRightPanelOpen, showTerminal]);  // --- Keyboard Shortcuts ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isZenMode) {
+        e.preventDefault();
+        toggleZenMode();
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey)) return;
 
       const key = e.key.toLowerCase();
 
-      // Ctrl+K — Command Palette
       if (key === "k") {
         e.preventDefault();
         setIsCommandPaletteOpen((prev) => !prev);
+        return;
       }
-      // Ctrl+A — Toggle Left Panel
-      if (key === "a") {
+      if (key === "q") {
         e.preventDefault();
         setIsLeftPanelOpen((prev) => !prev);
+        return;
       }
-      // Ctrl+B — Toggle Right Panel
-      if (key === "b") {
+      if (key === "w") {
         e.preventDefault();
         setIsRightPanelOpen((prev) => !prev);
+        return;
       }
-      // Ctrl+F — Toggle Both Panels (open both, or close both if already open)
-      if (key === "f") {
+      if (key === "e") {
         e.preventDefault();
         const shouldOpen = !(isLeftPanelOpen && isRightPanelOpen);
         setIsLeftPanelOpen(shouldOpen);
         setIsRightPanelOpen(shouldOpen);
+        return;
       }
-      // Ctrl+` — Toggle Terminal
       if (key === "`") {
         e.preventDefault();
         setShowTerminal((prev) => !prev);
+        return;
+      }
+      if (key === "j") {
+        e.preventDefault();
+        toggleZenMode();
+        return;
+      }
+      if (key === "s") {
+        e.preventDefault();
+        void flushPendingPreviewSaves();
+        return;
+      }
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        if (interactionModeRef.current === "preview" && selectedPreviewHtmlRef.current) {
+          void handlePreviewUndo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      if (key === "y" || (key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        if (interactionModeRef.current === "preview" && selectedPreviewHtmlRef.current) {
+          void handlePreviewRedo();
+        } else {
+          handleRedo();
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLeftPanelOpen, isRightPanelOpen]);
+  }, [
+    flushPendingPreviewSaves,
+    handlePreviewRedo,
+    handlePreviewUndo,
+    handleRedo,
+    handleUndo,
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    isZenMode,
+    toggleZenMode,
+  ]);
 
   // --- Actions ---
   const handleSelect = useCallback(
     (id: string) => {
       setSelectedId(id);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
       if (deviceMode === "tablet") {
         setIsRightPanelOpen(true);
       }
@@ -1544,10 +2214,18 @@ const App: React.FC = () => {
   const handleCommandAction = (actionId: string, payload?: any) => {
     switch (actionId) {
       case "undo":
-        handleUndo();
+        if (interactionMode === "preview" && selectedPreviewHtmlRef.current) {
+          void handlePreviewUndo();
+        } else {
+          handleUndo();
+        }
         break;
       case "redo":
-        handleRedo();
+        if (interactionMode === "preview" && selectedPreviewHtmlRef.current) {
+          void handlePreviewRedo();
+        } else {
+          handleRedo();
+        }
         break;
       case "view-desktop":
         setDeviceMode("desktop");
@@ -1915,6 +2593,10 @@ const App: React.FC = () => {
       loadingFilePromisesRef.current = {};
       previewConsoleSeqRef.current = 0;
       setPreviewConsoleEntries([]);
+      pendingPreviewWritesRef.current = {};
+      previewHistoryRef.current = {};
+      setDirtyFiles([]);
+      setDirtyPathKeysByFile({});
       setFiles(fsFiles);
       setProjectPath(rootPath);
       setPreviewMountBasePath(mountBasePath);
@@ -1954,6 +2636,7 @@ const App: React.FC = () => {
     [files, syncPreviewActiveFile],
   );
   const selectedElement = selectedId ? findElementById(root, selectedId) : null;
+  const inspectorElement = previewSelectedElement ?? selectedElement;
   const selectedPreviewHtml = useMemo(() => {
     if (!projectPath) return null;
     if (activeFile && files[activeFile]?.type === "html") return activeFile;
@@ -1977,7 +2660,18 @@ const App: React.FC = () => {
     previewMountBasePath,
     projectPath,
   ]);
-  const hasPreviewContent = Boolean(projectPath && (selectedPreviewSrc || selectedPreviewDoc));
+  const forceInteractiveSrcDoc = true;
+  const isMountedPreview = Boolean(selectedPreviewSrc && !forceInteractiveSrcDoc);
+  const hasPreviewContent = Boolean(
+    projectPath &&
+      (isMountedPreview ? selectedPreviewSrc : selectedPreviewDoc),
+  );
+  useEffect(() => {
+    selectedPreviewHtmlRef.current = selectedPreviewHtml;
+    setPreviewSelectedPath(null);
+    setPreviewSelectedElement(null);
+    setPreviewSelectedComputedStyles(null);
+  }, [selectedPreviewHtml]);
 
   const resolveVirtualPathFromMountRelative = useCallback(
     (mountRelativePath: string): string | null => {
@@ -2042,16 +2736,374 @@ const App: React.FC = () => {
     resolveVirtualPathFromMountRelative,
     syncPreviewActiveFile,
   ]);
+  const persistPreviewHtmlContent = useCallback(
+    async (
+      updatedPath: string,
+      serialized: string,
+      options?: {
+        refreshPreviewDoc?: boolean;
+        saveNow?: boolean;
+        elementPath?: number[];
+        pushToHistory?: boolean;
+      },
+    ) => {
+      const shouldRefreshPreviewDoc = options?.refreshPreviewDoc ?? false;
+      const shouldSaveNow = options?.saveNow ?? false;
+      const shouldPushToHistory = options?.pushToHistory ?? true;
+      setFiles((prev) => {
+        const current = prev[updatedPath];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [updatedPath]: {
+            ...current,
+            content: serialized,
+          },
+        };
+      });
+      pendingPreviewWritesRef.current[updatedPath] = serialized;
+      setDirtyFiles((prev) =>
+        prev.includes(updatedPath) ? prev : [...prev, updatedPath],
+      );
+      if (options?.elementPath && options.elementPath.length > 0) {
+        markPreviewPathDirty(updatedPath, options.elementPath);
+      }
+      if (shouldPushToHistory) {
+        pushPreviewHistory(updatedPath, serialized);
+      }
+
+      const currentEntry = filesRef.current[updatedPath];
+      if (shouldRefreshPreviewDoc && !isMountedPreview && currentEntry) {
+        const previewSnapshot: FileMap = {
+          ...filesRef.current,
+          [updatedPath]: {
+            ...currentEntry,
+            content: serialized,
+          },
+        };
+        setSelectedPreviewDoc(createPreviewDocument(previewSnapshot, updatedPath));
+      }
+
+      if (shouldSaveNow) {
+        await flushPendingPreviewSaves();
+        return;
+      }
+      schedulePreviewAutoSave();
+    },
+    [
+      flushPendingPreviewSaves,
+      isMountedPreview,
+      markPreviewPathDirty,
+      pushPreviewHistory,
+      schedulePreviewAutoSave,
+    ],
+  );
+  const applyPreviewInlineEdit = useCallback(
+    async (elementPath: number[], nextInnerHtml: string) => {
+      if (!selectedPreviewHtml || !Array.isArray(elementPath) || elementPath.length === 0) {
+        return;
+      }
+
+      const normalizedPath = elementPath
+        .map((segment) => {
+          const numeric = Number(segment);
+          if (!Number.isFinite(numeric)) return -1;
+          return Math.max(0, Math.trunc(numeric));
+        })
+        .filter((segment) => segment >= 0);
+
+      if (normalizedPath.length !== elementPath.length) return;
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, normalizedPath);
+      if (!target) return;
+
+      target.innerHTML = nextInnerHtml;
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: normalizedPath,
+      });
+    },
+    [loadFileContent, persistPreviewHtmlContent, selectedPreviewHtml],
+  );
+  const applyPreviewStyleUpdate = useCallback(
+    async (styles: Partial<React.CSSProperties>) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      if (!target || !(target instanceof HTMLElement)) return;
+
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const liveTarget = frameDocument
+        ? readElementByPath(frameDocument.body, previewSelectedPath)
+        : null;
+
+      for (const [key, rawValue] of Object.entries(styles)) {
+        const cssKey = toCssPropertyName(key);
+        const value =
+          rawValue === undefined || rawValue === null ? "" : String(rawValue);
+        if (!value) {
+          target.style.removeProperty(cssKey);
+          if (liveTarget instanceof HTMLElement) {
+            liveTarget.style.removeProperty(cssKey);
+          }
+          continue;
+        }
+        target.style.setProperty(cssKey, value);
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.style.setProperty(cssKey, value);
+        }
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: previewSelectedPath,
+      });
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              styles: {
+                ...prev.styles,
+                ...styles,
+              },
+            }
+          : prev,
+      );
+    },
+    [
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewContentUpdate = useCallback(
+    async (data: { content?: string; src?: string; href?: string }) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      if (!target) return;
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const liveTarget = frameDocument
+        ? readElementByPath(frameDocument.body, previewSelectedPath)
+        : null;
+
+      if (typeof data.content === "string") {
+        const normalizedText = data.content.replace(/\r\n?/g, "\n");
+        const nextHtml = multilineTextToHtml(normalizedText);
+        if (target instanceof HTMLElement) {
+          target.innerHTML = nextHtml;
+        } else {
+          target.textContent = normalizedText;
+        }
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.innerHTML = nextHtml;
+          if (normalizedText.includes("\n")) {
+            liveTarget.style.whiteSpace = "pre-line";
+          }
+        } else if (liveTarget) {
+          liveTarget.textContent = normalizedText;
+        }
+      }
+      if (typeof data.src === "string" && target instanceof HTMLElement) {
+        target.setAttribute("src", data.src);
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.setAttribute("src", data.src);
+        }
+      }
+      if (typeof data.href === "string" && target instanceof HTMLElement) {
+        target.setAttribute("href", data.href);
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.setAttribute("href", data.href);
+        }
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: previewSelectedPath,
+      });
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...(typeof data.content === "string"
+                ? { content: data.content.replace(/\r\n?/g, "\n") }
+                : {}),
+              ...(typeof data.src === "string" ? { src: data.src } : {}),
+              ...(typeof data.href === "string" ? { href: data.href } : {}),
+            }
+          : prev,
+      );
+    },
+    [
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewAttributesUpdate = useCallback(
+    async (attributes: Record<string, string>) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      if (!target) return;
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const liveTarget = frameDocument
+        ? readElementByPath(frameDocument.body, previewSelectedPath)
+        : null;
+
+      const reserved = new Set(["id", "class", "style", "src", "href"]);
+      Array.from(target.attributes).forEach((attr) => {
+        if (!reserved.has(attr.name.toLowerCase())) {
+          target.removeAttribute(attr.name);
+        }
+      });
+      if (liveTarget) {
+        Array.from(liveTarget.attributes).forEach((attr) => {
+          if (!reserved.has(attr.name.toLowerCase())) {
+            liveTarget.removeAttribute(attr.name);
+          }
+        });
+      }
+      Object.entries(attributes || {}).forEach(([key, value]) => {
+        if (!key) return;
+        target.setAttribute(key, value);
+        if (liveTarget) {
+          liveTarget.setAttribute(key, value);
+        }
+      });
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: previewSelectedPath,
+      });
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              attributes,
+            }
+          : prev,
+      );
+    },
+    [
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewAnimationUpdate = useCallback(
+    async (animation: string) => {
+      await applyPreviewStyleUpdate({ animation });
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              animation,
+            }
+          : prev,
+      );
+    },
+    [applyPreviewStyleUpdate],
+  );
 
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
       const payload = event.data as
         | {
             type?: string;
-            path?: string;
+            path?: string | number[];
             level?: PreviewConsoleLevel;
             message?: string;
             source?: string;
+            html?: string;
+            tag?: string;
+            id?: string;
+            className?: string;
+            text?: string;
+            inlineStyle?: string;
           }
         | undefined;
       if (!payload || !payload.type) return;
@@ -2073,7 +3125,7 @@ const App: React.FC = () => {
         );
         if (!target) return;
         console.log("[Preview] Current page:", target);
-        if (selectedPreviewSrc) {
+        if (isMountedPreview) {
           setPreviewSyncedFile((prev) => (prev === target ? prev : target));
           if (interactionModeRef.current !== "preview") {
             setInteractionMode("preview");
@@ -2097,6 +3149,65 @@ const App: React.FC = () => {
         if (resolvedVirtualPath === activeFileRef.current) return;
         console.log("[Preview] Current page:", resolvedVirtualPath);
         syncPreviewActiveFile(resolvedVirtualPath, "path_changed");
+        return;
+      }
+
+      if (payload.type === "PREVIEW_INLINE_EDIT") {
+        if (!Array.isArray(payload.path)) return;
+        void applyPreviewInlineEdit(
+          payload.path as number[],
+          typeof payload.html === "string" ? payload.html : "",
+        );
+        return;
+      }
+
+      if (payload.type === "PREVIEW_SELECT") {
+        if (!Array.isArray(payload.path)) return;
+        const nextPath = (payload.path as number[])
+          .map((segment) => Number(segment))
+          .filter((segment) => Number.isFinite(segment))
+          .map((segment) => Math.max(0, Math.trunc(segment)));
+        if (nextPath.length === 0) return;
+
+        const tag = (payload.tag || "div").toLowerCase();
+        const id = payload.id ? String(payload.id) : `preview-${Date.now()}`;
+        const inlineStyles = parseInlineStyleText(
+          typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
+        );
+
+        const frameDocument =
+          previewFrameRef.current?.contentDocument ??
+          previewFrameRef.current?.contentWindow?.document ??
+          null;
+        const liveElement = frameDocument
+          ? readElementByPath(frameDocument.body, nextPath)
+          : null;
+        const computedStyles = extractComputedStylesFromElement(liveElement);
+
+        const editableText = liveElement
+          ? extractTextWithBreaks(liveElement)
+          : normalizeEditorMultilineText(
+              typeof payload.text === "string" ? payload.text : "",
+            );
+
+        const nextElement: VirtualElement = {
+          id,
+          type: tag,
+          name: tag.toUpperCase(),
+          content: editableText,
+          className:
+            typeof payload.className === "string" && payload.className.length > 0
+              ? payload.className
+              : undefined,
+          styles: inlineStyles,
+          children: [],
+        };
+
+        setPreviewSelectedPath(nextPath);
+        setPreviewSelectedElement(nextElement);
+        setPreviewSelectedComputedStyles(computedStyles);
+        setSelectedId(null);
+        setIsRightPanelOpen(true);
       }
     };
 
@@ -2104,11 +3215,12 @@ const App: React.FC = () => {
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [
     appendPreviewConsole,
-    selectedPreviewSrc,
+    isMountedPreview,
     extractMountRelativePath,
     resolveVirtualPathFromMountRelative,
     selectedPreviewHtml,
     syncPreviewActiveFile,
+    applyPreviewInlineEdit,
   ]);
   useEffect(() => {
     if (!activeFile) return;
@@ -2147,6 +3259,14 @@ const App: React.FC = () => {
         }
       }
       if (!html) return;
+
+      if (!previewHistoryRef.current[selectedPreviewHtml]) {
+        previewHistoryRef.current[selectedPreviewHtml] = {
+          past: [],
+          present: html,
+          future: [],
+        };
+      }
 
       if (fileMapSnapshot[selectedPreviewHtml]) {
         fileMapSnapshot[selectedPreviewHtml] = {
@@ -2189,36 +3309,13 @@ const App: React.FC = () => {
       });
 
       // Legacy projects often request shared HTML fragments dynamically.
-      // Preload only these lightweight content fragments to avoid heavy startup cost.
+      // Keep preload intentionally narrow; avoid eager icon/font loading.
       for (const path of Object.keys(fileMapSnapshot)) {
         const lowerPath = path.toLowerCase();
         if (
           (lowerPath.includes("shared/media/content/") ||
             lowerPath.includes("/shared/media/content/")) &&
           (lowerPath.endsWith(".html") || lowerPath.endsWith(".htm"))
-        ) {
-          dependencyPaths.add(path);
-        }
-        if (
-          (lowerPath.includes("shared/media/icons/") ||
-            lowerPath.includes("/shared/media/icons/")) &&
-          (lowerPath.endsWith(".svg") ||
-            lowerPath.endsWith(".png") ||
-            lowerPath.endsWith(".jpg") ||
-            lowerPath.endsWith(".jpeg") ||
-            lowerPath.endsWith(".webp") ||
-            lowerPath.endsWith(".gif"))
-        ) {
-          dependencyPaths.add(path);
-        }
-        if (
-          (lowerPath.includes("shared/media/fonts/") ||
-            lowerPath.includes("/shared/media/fonts/")) &&
-          (lowerPath.endsWith(".woff") ||
-            lowerPath.endsWith(".woff2") ||
-            lowerPath.endsWith(".ttf") ||
-            lowerPath.endsWith(".otf") ||
-            lowerPath.endsWith(".eot"))
         ) {
           dependencyPaths.add(path);
         }
@@ -2259,6 +3356,30 @@ const App: React.FC = () => {
     loadFileContent,
     selectedPreviewHtml,
   ]);
+  useEffect(() => {
+    if (!selectedPreviewHtml) return;
+    const keys = dirtyPathKeysByFile[selectedPreviewHtml] || [];
+    if (keys.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument?.body) return;
+      for (const key of keys) {
+        const path = key
+          .split(".")
+          .map((segment) => Number(segment))
+          .filter((segment) => Number.isFinite(segment))
+          .map((segment) => Math.max(0, Math.trunc(segment)));
+        const element = readElementByPath(frameDocument.body, path);
+        if (element instanceof HTMLElement) {
+          element.classList.add("__nx-preview-dirty");
+        }
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [dirtyPathKeysByFile, selectedPreviewDoc, selectedPreviewHtml]);
 
   const tabletMetrics = useMemo(() => {
     const base =
@@ -2301,7 +3422,38 @@ const App: React.FC = () => {
       usableHeight / tabletMetrics.contentHeight,
     );
   }, [tabletMetrics]);
+  const currentDevicePixelRatio =
+    typeof window !== "undefined" && window.devicePixelRatio
+      ? window.devicePixelRatio
+      : 1;
+  const shouldPushTabletFrame =
+    deviceMode === "tablet" && frameZoom === 75 && currentDevicePixelRatio !== 1;
+  const tabletPanelPushX = useMemo(() => {
+    if (!shouldPushTabletFrame) return 0;
+    if (isLeftPanelOpen === isRightPanelOpen) return 0;
+    const push = Math.round(leftPanelWidth * 0.42);
+    return isLeftPanelOpen ? push : -push;
+  }, [isLeftPanelOpen, isRightPanelOpen, leftPanelWidth, shouldPushTabletFrame]);
+  const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
+  const isTabletZoomMode = deviceMode === "tablet";
+  const lockAllScrollAt50 = isTabletZoomMode && frameZoom === 50;
+  const lockVerticalAt75Landscape =
+    isTabletZoomMode && frameZoom === 75 && tabletOrientation === "landscape";
+  const lockHorizontalAt75Portrait =
+    isTabletZoomMode && frameZoom === 75 && tabletOrientation === "portrait";
+  const shouldLockHorizontalScroll = lockAllScrollAt50 || lockHorizontalAt75Portrait;
+  const shouldLockVerticalScroll = lockAllScrollAt50 || lockVerticalAt75Landscape;
   const frameScale = frameZoom / 100;
+  const darkTabletReflectionOpacity =
+    theme === "dark" && deviceMode === "tablet"
+      ? Math.min(
+          0.72,
+          0.28 +
+            (isLeftPanelOpen ? 0.12 : 0) +
+            (isRightPanelOpen ? 0.12 : 0) +
+            (showTerminal ? 0.14 : 0),
+        )
+      : 0;
 
   return (
     <div
@@ -2327,7 +3479,7 @@ const App: React.FC = () => {
       />
 
       {/* --- Floating Toolbar --- */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-4 glass-toolbar rounded-full px-6 py-2 transition-all hover:scale-[1.02] animate-slideDown">
+      <div className={`absolute top-6 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-4 glass-toolbar rounded-full px-6 py-2 transition-all animate-slideDown ${isZenMode ? "opacity-65 hover:opacity-90" : "hover:scale-[1.02]"}`}>
         <div className="flex items-center gap-2 pr-4 border-r border-gray-500/20">
           <div className="w-2.5 h-2.5 rounded-full bg-red-500/80 shadow-red-500/50 shadow-sm"></div>
           <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80 shadow-yellow-500/50 shadow-sm"></div>
@@ -2385,8 +3537,12 @@ const App: React.FC = () => {
                 onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
                 className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
                   frameZoom === zoom
-                    ? "bg-indigo-500/25 text-indigo-300"
-                    : "text-gray-300 hover:bg-white/10"
+                    ? theme === "light"
+                      ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                      : "bg-indigo-500/25 text-indigo-300"
+                    : theme === "light"
+                      ? "text-slate-500 hover:bg-slate-200/70"
+                      : "text-gray-300 hover:bg-white/10"
                 }`}
                 title={`Set frame zoom to ${zoom}%`}
               >
@@ -2406,10 +3562,95 @@ const App: React.FC = () => {
           </button>
           <div className="h-4 w-px bg-gray-500/20"></div>
           <button
+            className="glass-icon-btn"
+            onClick={() => {
+              if (interactionMode === "preview" && selectedPreviewHtml) {
+                void handlePreviewUndo();
+              } else {
+                handleUndo();
+              }
+            }}
+            title="Undo (Ctrl+Z)"
+          >
+            <Undo2 size={16} />
+          </button>
+          <button
+            className="glass-icon-btn"
+            onClick={() => {
+              if (interactionMode === "preview" && selectedPreviewHtml) {
+                void handlePreviewRedo();
+              } else {
+                handleRedo();
+              }
+            }}
+            title="Redo (Ctrl+Y / Ctrl+Shift+Z)"
+          >
+            <Redo2 size={16} />
+          </button>
+          <div className="relative" ref={saveMenuRef}>
+            <button
+              className={`glass-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
+              onClick={() => setIsSaveMenuOpen((prev) => !prev)}
+              title="Save settings"
+            >
+              <Settings2 size={16} />
+            </button>
+            {dirtyFiles.length > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full text-[9px] leading-4 text-center bg-amber-500 text-black font-bold">
+                {dirtyFiles.length}
+              </span>
+            )}
+            {isSaveMenuOpen && (
+              <div
+                className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+                style={{
+                  background: theme === "dark" ? "rgba(15,23,42,0.98)" : "rgba(255,255,255,0.98)",
+                  borderColor: theme === "dark" ? "rgba(148,163,184,0.35)" : "rgba(15,23,42,0.15)",
+                  color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                }}
+              >
+                <button
+                  className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
+                  onClick={() => {
+                    void flushPendingPreviewSaves();
+                    setIsSaveMenuOpen(false);
+                  }}
+                >
+                  <span className="flex items-center gap-2">
+                    <Save size={13} />
+                    Save Now
+                  </span>
+                  <span className="opacity-70">Ctrl+S</span>
+                </button>
+                <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                  <span>Auto Save</span>
+                  <input
+                    type="checkbox"
+                    checked={autoSaveEnabled}
+                    onChange={(e) => setAutoSaveEnabled(e.target.checked)}
+                  />
+                </label>
+                <div className="px-2 pt-1 text-[10px] opacity-70">
+                  Smart debounce (about 1.2s idle), not every keystroke.
+                </div>
+                {dirtyFiles.length > 0 && (
+                  <div className="px-2 pt-2 text-[10px] text-amber-400">
+                    {dirtyFiles.length} unsaved file{dirtyFiles.length > 1 ? "s" : ""}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="h-4 w-px bg-gray-500/20"></div>
+          <button
             className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${
               interactionMode === "preview"
-                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20"
+                ? theme === "light"
+                  ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                  : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/35"
+                : theme === "light"
+                  ? "bg-cyan-500/10 text-cyan-600 border border-cyan-500/25 hover:bg-cyan-500/20"
+                  : "bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 hover:bg-cyan-500/20"
             }`}
             onClick={() =>
               setInteractionMode((prev) =>
@@ -2426,6 +3667,11 @@ const App: React.FC = () => {
           </button>
         </div>
       </div>
+      {isZenMode && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[999] px-3 py-1 rounded-full text-[10px] font-semibold tracking-wider border backdrop-blur-md bg-black/20 text-white/90 border-white/20">
+          Zen Mode Active • Press Esc to exit
+        </div>
+      )}
 
       {/* Device Context Menu */}
       {deviceCtxMenu && (
@@ -2445,13 +3691,82 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute left-0 top-0 bottom-0 z-40 ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isLeftPanelOpen ? "translate-x-0" : "-translate-x-full"}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "left-10 top-24" : "left-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isLeftPanelOpen ? "animate-panelInLeft" : ""}`}
           style={{
+            transform: isLeftPanelOpen
+              ? "translateX(0)"
+              : isFloatingPanels
+                ? "translateX(calc(-100% - 2.5rem))"
+                : "translateX(-100%)",
             width: "var(--left-panel-width)",
+            minHeight: isFloatingPanels ? "30vh" : undefined,
+            maxHeight: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            height: isFloatingPanels ? "fit-content" : undefined,
+            borderRadius: isFloatingPanels ? "1rem" : undefined,
+            border: isFloatingPanels
+              ? theme === "light"
+                ? "1px solid rgba(15, 23, 42, 0.18)"
+                : "1px solid rgba(255, 255, 255, 0.25)"
+              : undefined,
+            background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+            overflowY: isFloatingPanels ? "auto" : undefined,
+            overflowX: isFloatingPanels ? "hidden" : undefined,
             transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
           }}
         >
-          <div className="h-full glass-panel-strong flex flex-col">
+          <div
+            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+              isFloatingPanels
+                ? "rounded-2xl overflow-hidden"
+                : ""
+            }`}
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(248,250,252,0.74) 100%)",
+              backdropFilter: "blur(14px)",
+            }}
+          >
+            <div
+              className="h-11 shrink-0 px-3 flex items-center justify-between"
+              style={{
+                borderBottom:
+                  theme === "dark"
+                    ? "1px solid rgba(148,163,184,0.28)"
+                    : "1px solid rgba(0,0,0,0.1)",
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(90deg, rgba(14,165,233,0.18), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
+                    : "linear-gradient(90deg,rgba(14,165,233,0.12),rgba(99,102,241,0.1),transparent)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />
+                <span
+                  className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                  style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
+                >
+                  Explorer
+                </span>
+              </div>
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                style={{
+                  background: theme === "dark" ? "rgba(15,23,42,0.7)" : "rgba(255,255,255,0.7)",
+                  border:
+                    theme === "dark"
+                      ? "1px solid rgba(148,163,184,0.32)"
+                      : "1px solid rgba(0,0,0,0.1)",
+                  color: theme === "dark" ? "#94a3b8" : "#64748b",
+                }}
+              >
+                {Object.keys(files).length} files
+              </span>
+            </div>
+            <div className="min-h-0 flex-1">
               <Sidebar
                 files={files}
                 projectPath={projectPath}
@@ -2465,25 +3780,26 @@ const App: React.FC = () => {
               setInteractionMode={setInteractionMode}
               drawElementTag={drawElementTag}
               setDrawElementTag={setDrawElementTag}
+              theme={theme}
+            />
+            </div>
+            <div
+              className="pointer-events-none absolute inset-0 rounded-2xl"
+              style={{
+                boxShadow:
+                  theme === "dark"
+                    ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                    : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+              }}
             />
           </div>
           {isLeftPanelOpen && (
             <div
               onMouseDown={handleLeftPanelResizeStart}
-              className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize bg-transparent hover:bg-indigo-400/25 transition-colors"
+              className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
               title="Resize panel"
             />
           )}
-          <button
-            onClick={() => setIsLeftPanelOpen(!isLeftPanelOpen)}
-            className="absolute -right-6 top-[3.25rem] glass-button p-1 rounded-r-lg border-l-0 shadow-lg z-50 hover:pl-2 transition-all"
-          >
-            {isLeftPanelOpen ? (
-              <PanelLeftClose size={14} />
-            ) : (
-              <PanelLeft size={14} />
-            )}
-          </button>
         </div>
 
         {/* --- Main Canvas Area ("The Stage") --- */}
@@ -2492,11 +3808,17 @@ const App: React.FC = () => {
           className={`flex-1 flex flex-col relative ${isResizingLeftPanel ? "" : "transition-all duration-500"}`}
           style={{
             marginLeft:
-              deviceMode !== "mobile" && isLeftPanelOpen && !isRightPanelOpen
+              !isFloatingPanels &&
+              deviceMode !== "mobile" &&
+              isLeftPanelOpen &&
+              !isRightPanelOpen
                 ? "var(--left-panel-width)"
                 : 0,
             marginRight:
-              deviceMode !== "mobile" && !isLeftPanelOpen && isRightPanelOpen
+              !isFloatingPanels &&
+              deviceMode !== "mobile" &&
+              !isLeftPanelOpen &&
+              isRightPanelOpen
                 ? "16.5rem"
                 : 0,
             // When both panels open, no margins - content will scroll
@@ -2505,12 +3827,17 @@ const App: React.FC = () => {
           {/* Background & Scroller */}
           <div
             ref={scrollerRef}
-            className={`flex-1 relative transition-all duration-300 ${showTerminal ? "pb-52" : "pb-10"}`}
+            className={`flex-1 relative no-scrollbar transition-all duration-300 ${showTerminal ? "pb-52" : "pb-10"}`}
             style={{
-              overflow: bothPanelsOpen ? "auto" : "auto",
-              overflowX: bothPanelsOpen ? "scroll" : "auto",
+              overflowX: shouldLockHorizontalScroll ? "hidden" : baseOverflowX,
+              overflowY: shouldLockVerticalScroll ? "hidden" : "auto",
             }}
-            onClick={() => setSelectedId(null)}
+            onClick={() => {
+              setSelectedId(null);
+              setPreviewSelectedPath(null);
+              setPreviewSelectedElement(null);
+              setPreviewSelectedComputedStyles(null);
+            }}
           >
             {/* Dynamic Background */}
             <div className="fixed inset-0 pointer-events-none z-0">
@@ -2529,7 +3856,9 @@ const App: React.FC = () => {
                 width: "100%",
                 minWidth: bothPanelsOpen
                   ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
-                  : "100%",
+                  : floatingHorizontalInset > 0
+                    ? `calc(100% + ${floatingHorizontalInset}px)`
+                    : "100%",
               }}
             >
               {/* Safe Spacing for Toolbar */}
@@ -2555,7 +3884,10 @@ const App: React.FC = () => {
                         : desktopResolution === "resizable"
                           ? "75vh"
                           : "518.4px",
-                  transform: `scale(${frameScale})`,
+                  transform:
+                    deviceMode === "tablet"
+                      ? `translateX(${tabletPanelPushX}px) scale(${frameScale})`
+                      : `scale(${frameScale})`,
                   transformOrigin: "top center",
                 }}
               >
@@ -2565,24 +3897,92 @@ const App: React.FC = () => {
                               relative z-10 shrink-0 transition-all duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)]
                               ${
                                 deviceMode === "desktop"
-                                  ? "rounded-xl border-4 border-[#1e293b]"
+                                  ? "rounded-xl border-4"
                                   : deviceMode === "tablet"
-                                    ? "w-full h-full rounded-[42px] border-[10px] border-[#0f172a]"
-                                    : "w-full h-full rounded-[50px] border-[12px] border-black"
+                                    ? "w-full h-full rounded-[42px] border-[10px]"
+                                    : "w-full h-full rounded-[50px] border-[12px]"
                               }
-                              bg-black shadow-[0_20px_50px_-10px_rgba(0,0,0,0.5)]
                           `}
                   style={{
                     position: "relative",
                     width: "100%",
                     height: "100%",
+                    borderColor:
+                      deviceMode === "desktop"
+                        ? "#1e293b"
+                        : deviceMode === "tablet"
+                          ? theme === "dark"
+                            ? "#c7d0dc"
+                            : "#0f172a"
+                          : "#000000",
+                    background:
+                      deviceMode === "tablet" && theme === "dark"
+                        ? [
+                            "linear-gradient(145deg, #eef3fa 0%, #cfd8e5 16%, #9aa7b8 34%, #748396 50%, #9fadbe 68%, #dce4ee 84%, #f3f7fb 100%)",
+                            "linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.06) 24%, rgba(0,0,0,0.12) 100%)",
+                            "radial-gradient(130% 70% at 50% -5%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.0) 62%)",
+                          ].join(", ")
+                        : "#000000",
+                    boxShadow:
+                      deviceMode === "tablet" && theme === "dark"
+                        ? "0 28px 62px -16px rgba(0,0,0,0.62), 0 0 0 1px rgba(203,213,225,0.22), 0 0 28px rgba(148,163,184,0.2), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 rgba(255,255,255,0.22), inset 1px 0 0 rgba(255,255,255,0.2), inset -1px 0 0 rgba(0,0,0,0.26)"
+                        : "0 20px 50px -10px rgba(0,0,0,0.5)",
                     // No transform on the frame itself - it stays fixed visual size
                   }}
                 >
+                  {deviceMode === "tablet" && theme === "dark" && (
+                    <>
+                      <div
+                        className="pointer-events-none absolute inset-[2px] rounded-[34px]"
+                        style={{
+                          background:
+                            "linear-gradient(180deg, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.13) 18%, rgba(255,255,255,0.03) 36%, rgba(0,0,0,0.06) 100%)",
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[1px] rounded-[36px]"
+                        style={{
+                          background:
+                            [
+                              "linear-gradient(120deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.0) 28%, rgba(255,255,255,0.0) 72%, rgba(255,255,255,0.22) 100%)",
+                              "repeating-linear-gradient(90deg, rgba(255,255,255,0.055) 0px, rgba(255,255,255,0.055) 1px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 3px)",
+                            ].join(", "),
+                            opacity: 0.3,
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[0px] rounded-[36px]"
+                        style={{
+                          opacity: darkTabletReflectionOpacity,
+                          mixBlendMode: "screen",
+                          background: [
+                            "radial-gradient(60% 26% at 50% -4%, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.0) 78%)",
+                            "radial-gradient(40% 34% at 6% 18%, rgba(147,197,253,0.42) 0%, rgba(147,197,253,0.0) 72%)",
+                            "radial-gradient(40% 34% at 94% 18%, rgba(167,243,208,0.4) 0%, rgba(167,243,208,0.0) 72%)",
+                          ].join(", "),
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[0px] rounded-[36px]"
+                        style={{
+                          opacity: Math.min(0.56, darkTabletReflectionOpacity * 0.9),
+                          background:
+                            "linear-gradient(112deg, rgba(255,255,255,0.0) 18%, rgba(255,255,255,0.42) 31%, rgba(255,255,255,0.0) 46%, rgba(255,255,255,0.0) 60%, rgba(255,255,255,0.28) 71%, rgba(255,255,255,0.0) 85%)",
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[3px] rounded-[33px]"
+                        style={{
+                          boxShadow:
+                            "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 0 26px rgba(255,255,255,0.08)",
+                        }}
+                      />
+                    </>
+                  )}
                   {/* Morphing Header (Window Bar <-> Notch) */}
                   <div
                     className={`
-                            absolute top-0 left-1/2 -translate-x-1/2 z-20 ${deviceMode === "desktop" ? "bg-[#1e293b]" : deviceMode === "tablet" ? "bg-[#0f172a]" : "bg-black"}
+                            absolute top-0 left-1/2 -translate-x-1/2 z-20 ${deviceMode === "desktop" ? "bg-[#1e293b]" : deviceMode === "tablet" ? theme === "dark" ? "bg-[#5f6f82]" : "bg-[#0f172a]" : "bg-black"}
                             transition-all duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)] flex items-center justify-center overflow-hidden
                             ${
                               deviceMode === "desktop"
@@ -2702,8 +4102,8 @@ const App: React.FC = () => {
                           <iframe
                             ref={previewFrameRef}
                             title="project-preview"
-                            src={selectedPreviewSrc || undefined}
-                            srcDoc={selectedPreviewSrc ? undefined : selectedPreviewDoc}
+                            src={isMountedPreview ? selectedPreviewSrc || undefined : undefined}
+                            srcDoc={isMountedPreview ? undefined : selectedPreviewDoc}
                             loading="eager"
                             onLoad={handlePreviewFrameLoad}
                             className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-200 ${
@@ -2750,23 +4150,137 @@ const App: React.FC = () => {
 
         {/* Right Sidebar */}
         <div
-          className={`absolute right-0 top-0 bottom-0 z-40 transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isRightPanelOpen ? "w-[16.5rem] translate-x-0" : "w-[16.5rem] translate-x-full"}`}
+          className={`absolute z-40 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24" : "right-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? "animate-panelInRight" : ""}`}
+          style={{
+            transform: isRightPanelOpen
+              ? "translateX(0)"
+              : isFloatingPanels
+                ? "translateX(calc(100% + 2.5rem))"
+                : "translateX(100%)",
+            width: isFloatingPanels ? "var(--left-panel-width)" : "16.5rem",
+            minHeight: isFloatingPanels ? "30vh" : undefined,
+            maxHeight: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            height: isFloatingPanels ? "fit-content" : undefined,
+            borderRadius: isFloatingPanels ? "1rem" : undefined,
+            border: isFloatingPanels
+              ? theme === "light"
+                ? "1px solid rgba(15, 23, 42, 0.18)"
+                : "1px solid rgba(255, 255, 255, 0.25)"
+              : undefined,
+            background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+            overflowY: isFloatingPanels ? "auto" : undefined,
+            overflowX: isFloatingPanels ? "hidden" : undefined,
+          }}
         >
-          <div className="h-full glass-panel-strong shadow-2xl">
-            {selectedId && interactionMode === "inspect" ? (
+          <div
+            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+              isFloatingPanels
+                ? "rounded-2xl overflow-hidden"
+                : ""
+            }`}
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
+              backdropFilter: "blur(14px)",
+            }}
+          >
+            <div
+              className="h-11 shrink-0 px-3 flex items-center justify-between"
+              style={{
+                borderBottom:
+                  theme === "dark"
+                    ? "1px solid rgba(148,163,184,0.28)"
+                    : "1px solid rgba(0,0,0,0.1)",
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(90deg, rgba(99,102,241,0.2), rgba(16,185,129,0.16), rgba(15,23,42,0.0))"
+                    : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
+                    boxShadow:
+                      theme === "dark"
+                        ? "0 0 10px rgba(255,255,255,0.8)"
+                        : "0 0 10px rgba(139,92,246,0.8)",
+                  }}
+                />
+                <span
+                  className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                  style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
+                >
+                  Inspector
+                </span>
+              </div>
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                style={{
+                  background: theme === "dark" ? "rgba(15,23,42,0.7)" : "rgba(255,255,255,0.7)",
+                  border:
+                    theme === "dark"
+                      ? "1px solid rgba(148,163,184,0.32)"
+                      : "1px solid rgba(0,0,0,0.1)",
+                  color: theme === "dark" ? "#94a3b8" : "#64748b",
+                }}
+              >
+                {selectedId || previewSelectedElement ? "Element" : "Project"}
+              </span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+            {interactionMode === "inspect" && selectedId ? (
               <StyleInspectorPanel
-                element={selectedElement}
+                element={inspectorElement}
                 onUpdateStyle={handleUpdateStyle}
+                computedStyles={null}
               />
             ) : (
               <PropertiesPanel
-                element={selectedElement}
-                onUpdateStyle={handleUpdateStyle}
-                onUpdateContent={handleUpdateContent}
-                onUpdateAttributes={handleUpdateAttributes}
-                onUpdateAnimation={handleUpdateAnimation}
-                onDelete={handleDeleteElement}
-                onAddElement={handleAddElement}
+                element={interactionMode === "preview" && previewSelectedElement ? previewSelectedElement : selectedElement}
+                onUpdateStyle={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? (styles) => {
+                        void applyPreviewStyleUpdate(styles);
+                      }
+                    : handleUpdateStyle
+                }
+                onUpdateContent={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? (data) => {
+                        void applyPreviewContentUpdate(data);
+                      }
+                    : handleUpdateContent
+                }
+                onUpdateAttributes={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? (attributes) => {
+                        void applyPreviewAttributesUpdate(attributes);
+                      }
+                    : handleUpdateAttributes
+                }
+                onUpdateAnimation={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? (animation) => {
+                        void applyPreviewAnimationUpdate(animation);
+                      }
+                    : handleUpdateAnimation
+                }
+                onDelete={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? () => {}
+                    : handleDeleteElement
+                }
+                onAddElement={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? () => {}
+                    : handleAddElement
+                }
                 onMoveOrder={(dir) => {}}
                 resolveImage={(p) => p}
                 availableFonts={[
@@ -2778,38 +4292,71 @@ const App: React.FC = () => {
                 ]}
               />
             )}
+            </div>
+            <div
+              className="pointer-events-none absolute inset-0 rounded-2xl"
+              style={{
+                boxShadow:
+                  theme === "dark"
+                    ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                    : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+              }}
+            />
           </div>
-          <button
-            onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            className="absolute -left-6 top-[3.25rem] glass-button p-1 rounded-l-lg border-r-0 shadow-lg z-50 hover:pr-2 transition-all flex justify-end"
-          >
-            {isRightPanelOpen ? (
-              <PanelRightClose size={14} />
-            ) : (
-              <PanelRight size={14} />
-            )}
-          </button>
         </div>
       </div>
 
       {/* Terminal Panel — Glass effect with smooth transition */}
       <div
-        className={`fixed bottom-0 left-0 right-0 flex flex-col z-[100] backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden ${showTerminal ? "h-52" : "h-8"}`}
-        style={{
-          backgroundColor: "var(--bg-glass-strong)",
-          borderTop: "1px solid var(--border-color)",
-          boxShadow: showTerminal ? "0 -10px 40px rgba(0,0,0,0.3)" : "none",
-        }}
+        className={`fixed bottom-3 left-10 right-10 flex flex-col z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible rounded-2xl ${isZenMode ? "translate-y-full opacity-0 pointer-events-none" : ""}`}
       >
+        {!showTerminal && (
+          <>
+            <div
+              className="pointer-events-none absolute -inset-3 rounded-[24px] blur-2xl"
+              style={{
+                background:
+                  theme === "dark"
+                    ? "conic-gradient(from 180deg at 50% 50%, rgba(56,189,248,0.42), rgba(16,185,129,0.36), rgba(167,139,250,0.4), rgba(56,189,248,0.42))"
+                    : "conic-gradient(from 180deg at 50% 50%, rgba(56,189,248,0.22), rgba(16,185,129,0.2), rgba(167,139,250,0.2), rgba(56,189,248,0.22))",
+              }}
+            />
+            <div
+              className="pointer-events-none absolute -inset-5 rounded-[28px] blur-3xl"
+              style={{
+                opacity: theme === "dark" ? 0.92 : 0.45,
+                background:
+                  theme === "dark"
+                    ? "radial-gradient(120% 90% at 50% 50%, rgba(99,102,241,0.28) 0%, rgba(14,165,233,0.24) 35%, rgba(16,185,129,0.2) 65%, rgba(0,0,0,0) 100%)"
+                    : "radial-gradient(120% 90% at 50% 50%, rgba(99,102,241,0.16) 0%, rgba(14,165,233,0.14) 35%, rgba(16,185,129,0.1) 65%, rgba(0,0,0,0) 100%)",
+              }}
+            />
+          </>
+        )}
         <div
-          className="px-4 py-1.5 flex justify-between items-center text-xs cursor-pointer select-none transition-colors duration-200 hover:bg-black/5 shrink-0"
+          className={`relative z-10 flex flex-col backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden rounded-2xl ${showTerminal ? "h-56" : "h-11"}`}
+          style={{
+            background:
+              theme === "light"
+                ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
+                : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
+            border: "1px solid var(--border-color)",
+            boxShadow: showTerminal
+              ? "0 20px 45px rgba(15,23,42,0.28)"
+              : "0 8px 20px rgba(15,23,42,0.2)",
+          }}
+        >
+        <div
+          className={`px-4 py-2 flex justify-between items-center text-xs cursor-pointer select-none transition-colors duration-200 shrink-0 ${
+            theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"
+          }`}
           style={{
             borderBottom: "1px solid var(--border-color)",
             color: "var(--text-muted)",
           }}
           onClick={() => setShowTerminal(!showTerminal)}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <button
               type="button"
               onClick={(e) => {
@@ -2817,10 +4364,14 @@ const App: React.FC = () => {
                 setBottomPanelTab("terminal");
                 if (!showTerminal) setShowTerminal(true);
               }}
-              className={`font-bold font-mono text-[10px] tracking-widest uppercase px-2 py-1 rounded-md border transition-colors ${
+              className={`font-bold font-mono text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-lg border transition-all duration-200 ${
                 bottomPanelTab === "terminal"
-                  ? "bg-black/10"
-                  : "hover:bg-black/5"
+                  ? theme === "dark"
+                    ? "bg-indigo-500/30 text-indigo-100 border-indigo-300/70 shadow-[0_0_0_1px_rgba(129,140,248,0.35)_inset]"
+                    : "bg-indigo-500/15 text-indigo-600 border-indigo-400/40"
+                  : theme === "dark"
+                    ? "hover:bg-white/5 text-slate-200"
+                    : "hover:bg-black/5"
               }`}
               style={{ borderColor: "var(--border-color)" }}
             >
@@ -2833,8 +4384,14 @@ const App: React.FC = () => {
                 setBottomPanelTab("console");
                 if (!showTerminal) setShowTerminal(true);
               }}
-              className={`font-bold font-mono text-[10px] tracking-widest uppercase px-2 py-1 rounded-md border transition-colors flex items-center gap-2 ${
-                bottomPanelTab === "console" ? "bg-black/10" : "hover:bg-black/5"
+              className={`font-bold font-mono text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-lg border transition-all duration-200 flex items-center gap-2 ${
+                bottomPanelTab === "console"
+                  ? theme === "dark"
+                    ? "bg-cyan-500/30 text-cyan-100 border-cyan-300/70 shadow-[0_0_0_1px_rgba(103,232,249,0.35)_inset]"
+                    : "bg-cyan-500/15 text-cyan-700 border-cyan-400/40"
+                  : theme === "dark"
+                    ? "hover:bg-white/5 text-slate-200"
+                    : "hover:bg-black/5"
               }`}
               style={{ borderColor: "var(--border-color)" }}
             >
@@ -2846,11 +4403,23 @@ const App: React.FC = () => {
               )}
             </button>
           </div>
-          <span
-            className={`transition-transform duration-300 ${showTerminal ? "rotate-180" : ""}`}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowTerminal((prev) => !prev);
+            }}
+            className={`h-7 w-7 rounded-lg border transition-all duration-300 flex items-center justify-center ${
+              showTerminal
+                ? theme === "dark"
+                  ? "rotate-180 bg-white/10"
+                  : "rotate-180 bg-black/5"
+                : ""
+            }`}
+            style={{ borderColor: "var(--border-color)" }}
           >
             {showTerminal ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </span>
+          </button>
         </div>
         {/* Always mounted, visibility controlled by parent height */}
         <div
@@ -2859,17 +4428,38 @@ const App: React.FC = () => {
           {bottomPanelTab === "terminal" ? (
             <Terminal />
           ) : (
-            <div className="h-full flex flex-col bg-[linear-gradient(180deg,rgba(15,23,42,0.06)_0%,rgba(15,23,42,0.02)_100%)]">
+            <div
+              className="h-full flex flex-col"
+              style={{
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(180deg, rgba(2,6,23,0.58) 0%, rgba(2,6,23,0.42) 100%)"
+                    : "linear-gradient(180deg,rgba(15,23,42,0.06)_0%,rgba(15,23,42,0.02)_100%)",
+              }}
+            >
               <div
                 className="px-3 py-2 text-[11px] font-mono flex items-center justify-between"
                 style={{
                   borderBottom: "1px solid var(--border-color)",
                   background:
-                    "linear-gradient(90deg, rgba(59,130,246,0.08) 0%, rgba(16,185,129,0.04) 100%)",
+                    theme === "dark"
+                      ? "linear-gradient(90deg, rgba(59,130,246,0.2) 0%, rgba(16,185,129,0.14) 100%)"
+                      : "linear-gradient(90deg, rgba(59,130,246,0.08) 0%, rgba(16,185,129,0.04) 100%)",
                 }}
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-slate-400/20 bg-slate-500/10 text-slate-700">
+                  <span
+                    className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.35)"
+                          : "rgba(148,163,184,0.2)",
+                      backgroundColor:
+                        theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(100,116,139,0.1)",
+                      color: theme === "dark" ? "#e2e8f0" : "#334155",
+                    }}
+                  >
                     Logs {previewConsoleEntries.length}
                   </span>
                   {previewConsoleWarnCount > 0 && (
@@ -2885,11 +4475,14 @@ const App: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  className="px-2.5 py-1 rounded-md border text-[10px] uppercase tracking-wider hover:bg-black/5 transition-colors"
+                  className={`px-2.5 py-1 rounded-md border text-[10px] uppercase tracking-wider transition-colors ${
+                    theme === "dark" ? "hover:bg-white/10" : "hover:bg-black/5"
+                  }`}
                   style={{
                     borderColor: "var(--border-color)",
                     color: "var(--text-muted)",
-                    backgroundColor: "rgba(255,255,255,0.35)",
+                    backgroundColor:
+                      theme === "dark" ? "rgba(15,23,42,0.5)" : "rgba(255,255,255,0.35)",
                   }}
                   onClick={() => {
                     previewConsoleSeqRef.current = 0;
@@ -2901,10 +4494,28 @@ const App: React.FC = () => {
               </div>
               <div className="flex-1 overflow-y-auto p-2.5 font-mono text-[11px] space-y-1.5 custom-scrollbar">
                 {previewConsoleEntries.length === 0 ? (
-                  <div className="h-full min-h-[110px] flex items-center justify-center rounded-xl border border-dashed border-slate-400/25 bg-white/30">
+                  <div
+                    className="h-full min-h-[110px] flex items-center justify-center rounded-xl border border-dashed"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.35)"
+                          : "rgba(148,163,184,0.25)",
+                      backgroundColor:
+                        theme === "dark" ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.3)",
+                    }}
+                  >
                     <div className="text-center">
-                      <div className="text-[12px] font-semibold text-slate-600">No project logs yet</div>
-                      <div className="text-[10px] mt-1 text-slate-500">
+                      <div
+                        className="text-[12px] font-semibold"
+                        style={{ color: theme === "dark" ? "#e2e8f0" : "#475569" }}
+                      >
+                        No project logs yet
+                      </div>
+                      <div
+                        className="text-[10px] mt-1"
+                        style={{ color: theme === "dark" ? "#94a3b8" : "#64748b" }}
+                      >
                         Interact with the preview to stream console output here
                       </div>
                     </div>
@@ -2933,12 +4544,20 @@ const App: React.FC = () => {
                                 : "rgba(100, 116, 139, 0.22)",
                         color:
                           entry.level === "error"
-                            ? "#dc2626"
+                            ? theme === "dark"
+                              ? "#fca5a5"
+                              : "#dc2626"
                             : entry.level === "warn"
-                              ? "#d97706"
+                              ? theme === "dark"
+                                ? "#fcd34d"
+                                : "#d97706"
                               : entry.level === "info"
-                                ? "#0369a1"
-                              : "var(--text-main)",
+                                ? theme === "dark"
+                                  ? "#7dd3fc"
+                                  : "#0369a1"
+                                : theme === "dark"
+                                  ? "#e2e8f0"
+                                  : "var(--text-main)",
                       }}
                     >
                       <div className="flex items-center gap-2 mb-1">
@@ -2977,6 +4596,7 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>
@@ -3023,3 +4643,4 @@ const EditorContent: React.FC<{
 );
 
 export default App;
+

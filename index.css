@@ -41,18 +41,94 @@
   body {
     background-color: var(--bg-app);
     color: var(--text-main);
-    cursor:
-      url("https://cdn.custom-cursor.com/db/8342/32/mac-os-cursor-pointer.png"),
-      auto; /* Mac Cursor */
+    cursor: url("/cursors/figma-arrow-dark.svg") 4 3, auto;
     @apply antialiased font-sans selection:bg-indigo-500/30 selection:text-indigo-600;
+  }
+
+  .light-mode {
+    cursor: url("/cursors/figma-arrow-light.svg") 4 3, auto;
   }
 
   a,
   button,
-  [role="button"] {
-    cursor:
-      url("https://cdn.custom-cursor.com/db/8342/32/mac-os-hand-cursor.png"),
-      pointer;
+  [role="button"],
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"],
+  summary,
+  label[for],
+  .cursor-pointer {
+    cursor: url("/cursors/figma-hand.svg") 10 4, pointer !important;
+  }
+
+  .cursor-figma-default {
+    cursor: url("/cursors/figma-arrow-dark.svg") 4 3, auto !important;
+  }
+  .light-mode .cursor-figma-default {
+    cursor: url("/cursors/figma-arrow-light.svg") 4 3, auto !important;
+  }
+  .cursor-figma-pointer {
+    cursor: url("/cursors/figma-hand.svg") 10 4, pointer !important;
+  }
+  .cursor-figma-text {
+    cursor: url("/cursors/figma-text.svg") 16 16, text !important;
+  }
+  .cursor-figma-move {
+    cursor: url("/cursors/figma-move.svg") 16 16, move !important;
+  }
+  .cursor-figma-crosshair {
+    cursor: url("/cursors/figma-crosshair.svg") 16 16, crosshair !important;
+  }
+  .cursor-figma-grab {
+    cursor: url("/cursors/figma-grab.svg") 12 8, grab !important;
+  }
+  .cursor-figma-grabbing {
+    cursor: url("/cursors/figma-grab.svg") 12 8, grabbing !important;
+  }
+  .cursor-figma-ew {
+    cursor: url("/cursors/figma-ew-resize.svg") 16 16, ew-resize !important;
+  }
+  .cursor-figma-ns {
+    cursor: url("/cursors/figma-ns-resize.svg") 16 16, ns-resize !important;
+  }
+  .cursor-figma-nesw {
+    cursor: url("/cursors/figma-nesw-resize.svg") 16 16, nesw-resize !important;
+  }
+  .cursor-figma-nwse {
+    cursor: url("/cursors/figma-nwse-resize.svg") 16 16, nwse-resize !important;
+  }
+  .cursor-figma-not-allowed {
+    cursor: url("/cursors/figma-not-allowed.svg") 16 16, not-allowed !important;
+  }
+
+  input:not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select,
+  [contenteditable="true"],
+  .cursor-text {
+    cursor: url("/cursors/figma-text.svg") 16 16, text !important;
+  }
+
+  .cursor-col-resize,
+  .cursor-ew-resize {
+    cursor: url("/cursors/figma-ew-resize.svg") 16 16, ew-resize !important;
+  }
+
+  .cursor-row-resize,
+  .cursor-ns-resize {
+    cursor: url("/cursors/figma-ns-resize.svg") 16 16, ns-resize !important;
+  }
+
+  .cursor-ne-resize,
+  .cursor-sw-resize,
+  .cursor-nesw-resize {
+    cursor: url("/cursors/figma-nesw-resize.svg") 16 16, nesw-resize !important;
+  }
+
+  .cursor-nw-resize,
+  .cursor-se-resize,
+  .cursor-nwse-resize {
+    cursor: url("/cursors/figma-nwse-resize.svg") 16 16, nwse-resize !important;
   }
 }
 
@@ -146,6 +222,14 @@
 }
 .animate-spin {
   animation: spin 1s linear infinite;
+}
+
+.animate-panelInLeft {
+  animation: panelInLeft 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.animate-panelInRight {
+  animation: panelInRight 560ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Futuristic Panel Utilities */
@@ -260,6 +344,36 @@
 }
 .animate-neonPulse {
   animation: neonPulse 2s ease-in-out infinite;
+}
+
+@keyframes panelInLeft {
+  0% {
+    transform: translateX(calc(-100% - 2.5rem));
+  }
+  70% {
+    transform: translateX(0.55rem);
+  }
+  85% {
+    transform: translateX(-0.2rem);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes panelInRight {
+  0% {
+    transform: translateX(calc(100% + 2.5rem));
+  }
+  70% {
+    transform: translateX(-0.55rem);
+  }
+  85% {
+    transform: translateX(0.2rem);
+  }
+  100% {
+    transform: translateX(0);
+  }
 }
 
 /* Hide Scrollbar Utility */

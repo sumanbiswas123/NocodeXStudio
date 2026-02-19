@@ -7,6 +7,7 @@ interface FileExplorerProps {
   activeFile: string | null;
   onSelectFile: (path: string) => void;
   projectPath: string | null;
+  theme: 'light' | 'dark';
 }
 
 interface TreeNode {
@@ -17,7 +18,7 @@ interface TreeNode {
   children: Record<string, TreeNode>;
 }
 
-const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelectFile, projectPath }) => {
+const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelectFile, projectPath, theme }) => {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -136,11 +137,23 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelect
               isSelected ? 'shadow-sm' : ''
             }`}
             style={{
-              backgroundColor: isSelected ? 'var(--accent-glow)' : 'transparent',
-              color: isSelected ? 'var(--accent-primary)' : 'var(--text-main)',
-              fontWeight: isSelected ? 600 : 400
+              backgroundColor: isSelected
+                ? (theme === 'dark' ? 'rgba(79, 70, 229, 0.45)' : 'var(--accent-glow)')
+                : 'transparent',
+              color: isSelected
+                ? (theme === 'dark' ? '#eef2ff' : 'var(--accent-primary)')
+                : 'var(--text-main)',
+              fontWeight: isSelected ? 600 : 400,
+              border: isSelected
+                ? (theme === 'dark' ? '1px solid rgba(129, 140, 248, 0.55)' : '1px solid transparent')
+                : '1px solid transparent'
             }}
-            onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--input-bg)'; }}
+            onMouseEnter={(e) => {
+              if (!isSelected) {
+                e.currentTarget.style.backgroundColor =
+                  theme === 'dark' ? 'rgba(148,163,184,0.10)' : 'var(--input-bg)';
+              }
+            }}
             onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
             onClick={(e) => {
               if (node.type === 'folder') {
@@ -158,8 +171,8 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ files, activeFile, onSelect
             )}
             {node.type === 'folder' ? (
               isExpanded 
-                ? <FolderOpen size={16} className="shrink-0" style={{ color: 'var(--accent-primary)' }} /> 
-                : <Folder size={16} className="shrink-0" style={{ color: 'var(--accent-primary)' }} />
+                ? <FolderOpen size={16} className="shrink-0" style={{ color: theme === 'dark' ? '#ffffff' : 'var(--accent-primary)' }} /> 
+                : <Folder size={16} className="shrink-0" style={{ color: theme === 'dark' ? '#ffffff' : 'var(--accent-primary)' }} />
             ) : (
               <span className="shrink-0" style={{ marginLeft: '22px' }}>
                 {getFileIcon(node.fileType as any)}
