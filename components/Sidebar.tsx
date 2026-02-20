@@ -3,7 +3,7 @@ import FileExplorer from './FileExplorer';
 import Toolbox from './Toolbox';
 import LayersPanel from './LayersPanel';
 import { FileMap, VirtualElement } from '../types';
-import { FolderOpen, Box, Layers, MousePointer2, PenTool, Sparkles, Plus } from 'lucide-react';
+import { FolderOpen, Box, Layers, MousePointer2, PenTool, Sparkles, Plus, Move } from 'lucide-react';
 
 interface SidebarProps {
   files: FileMap;
@@ -15,8 +15,8 @@ interface SidebarProps {
   root: VirtualElement;
   selectedId: string | null;
   onSelectElement: (id: string) => void;
-  interactionMode: 'edit' | 'preview' | 'inspect' | 'draw';
-  setInteractionMode: (mode: 'edit' | 'preview' | 'inspect' | 'draw') => void;
+  interactionMode: 'edit' | 'preview' | 'inspect' | 'draw' | 'move';
+  setInteractionMode: (mode: 'edit' | 'preview' | 'inspect' | 'draw' | 'move') => void;
   drawElementTag: string;
   setDrawElementTag: (tag: string) => void;
   theme: 'light' | 'dark';
@@ -86,6 +86,18 @@ const Sidebar: React.FC<SidebarProps> = ({
             }}
           >
             <MousePointer2 size={16} />
+          </button>
+          <button
+            onClick={() => setInteractionMode('move')}
+            title="Move Element"
+            className={`p-2 rounded-lg transition-all duration-200 group relative ${
+              interactionMode === 'move'
+                ? 'bg-amber-500/20 text-amber-400 shadow-lg shadow-amber-500/10'
+                : 'hover:bg-black/5'
+            }`}
+            style={{ color: interactionMode === 'move' ? undefined : 'var(--icon-color)' }}
+          >
+            <Move size={16} />
           </button>
           <button
             onClick={() => setInteractionMode('draw')}
