@@ -30,7 +30,7 @@ const TAB_ITEMS = [
 
 type TabKey = typeof TAB_ITEMS[number]['key'];
 
-const Sidebar: React.FC<SidebarProps> = ({
+const SidebarBase: React.FC<SidebarProps> = ({
   files,
   projectPath,
   activeFile,
@@ -218,5 +218,42 @@ const Sidebar: React.FC<SidebarProps> = ({
     </div>
   );
 };
+
+const hasSameFileList = (prevFiles: FileMap, nextFiles: FileMap): boolean => {
+  if (prevFiles === nextFiles) return true;
+  const prevKeys = Object.keys(prevFiles);
+  const nextKeys = Object.keys(nextFiles);
+  if (prevKeys.length !== nextKeys.length) return false;
+  const nextSet = new Set(nextKeys);
+  for (const key of prevKeys) {
+    if (!nextSet.has(key)) return false;
+  }
+  return true;
+};
+
+const areSidebarPropsEqual = (
+  prev: Readonly<SidebarProps>,
+  next: Readonly<SidebarProps>,
+): boolean => {
+  return (
+    hasSameFileList(prev.files, next.files) &&
+    prev.projectPath === next.projectPath &&
+    prev.activeFile === next.activeFile &&
+    prev.onSelectFile === next.onSelectFile &&
+    prev.onAddFontToPresentationCss === next.onAddFontToPresentationCss &&
+    prev.onAddElement === next.onAddElement &&
+    prev.root === next.root &&
+    prev.selectedId === next.selectedId &&
+    prev.onSelectElement === next.onSelectElement &&
+    prev.interactionMode === next.interactionMode &&
+    prev.setInteractionMode === next.setInteractionMode &&
+    prev.drawElementTag === next.drawElementTag &&
+    prev.setDrawElementTag === next.setDrawElementTag &&
+    prev.theme === next.theme
+  );
+};
+
+const Sidebar = React.memo(SidebarBase, areSidebarPropsEqual);
+Sidebar.displayName = 'Sidebar';
 
 export default Sidebar;

@@ -1,23 +1,34 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Neutralino from '@neutralinojs/lib';
 
-const Terminal: React.FC = () => {
+const MAX_TERMINAL_LINES = 500;
+
+const TerminalBase: React.FC = () => {
   const [output, setOutput] = useState<string[]>(['> Ready.']);
   const [input, setInput] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
+  const appendOutput = useCallback((lines: string[]) => {
+    if (lines.length === 0) return;
+    setOutput(prev => {
+      const next = [...prev, ...lines];
+      return next.length > MAX_TERMINAL_LINES
+        ? next.slice(next.length - MAX_TERMINAL_LINES)
+        : next;
+    });
+  }, []);
 
   const executeCommand = async (cmd: string) => {
     if (!cmd.trim()) return;
     
-    setOutput(prev => [...prev, `$ ${cmd}`]);
+    appendOutput([`$ ${cmd}`]);
     try {
         // @ts-ignore
       const result = await Neutralino.os.execCommand(cmd);
       const lines = result.stdOut.split('\n').filter(Boolean);
       const errors = result.stdErr.split('\n').filter(Boolean);
-      setOutput(prev => [...prev, ...lines, ...errors]);
+      appendOutput([...lines, ...errors]);
     } catch (e) {
-      setOutput(prev => [...prev, `Error: ${JSON.stringify(e)}`]);
+      appendOutput([`Error: ${JSON.stringify(e)}`]);
     }
   };
 
@@ -29,7 +40,7 @@ const Terminal: React.FC = () => {
   };
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    endRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [output]);
 
   return (
@@ -83,5 +94,8 @@ const Terminal: React.FC = () => {
     </div>
   );
 };
+
+const Terminal = React.memo(TerminalBase);
+Terminal.displayName = 'Terminal';
 
 export default Terminal;

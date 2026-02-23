@@ -19,7 +19,7 @@ interface TreeNode {
   children: Record<string, TreeNode>;
 }
 
-const FileExplorer: React.FC<FileExplorerProps> = ({
+const FileExplorerBase: React.FC<FileExplorerProps> = ({
   files,
   activeFile,
   onSelectFile,
@@ -288,5 +288,44 @@ const FileExplorer: React.FC<FileExplorerProps> = ({
     </div>
   );
 };
+
+const hasSameFileStructure = (prevFiles: FileMap, nextFiles: FileMap): boolean => {
+  if (prevFiles === nextFiles) return true;
+  const prevKeys = Object.keys(prevFiles);
+  const nextKeys = Object.keys(nextFiles);
+  if (prevKeys.length !== nextKeys.length) return false;
+
+  for (const key of prevKeys) {
+    const prev = prevFiles[key];
+    const next = nextFiles[key];
+    if (!prev || !next) return false;
+    if (
+      prev.path !== next.path ||
+      prev.name !== next.name ||
+      prev.type !== next.type ||
+      Boolean(prev.isDirectory) !== Boolean(next.isDirectory)
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const areFileExplorerPropsEqual = (
+  prev: Readonly<FileExplorerProps>,
+  next: Readonly<FileExplorerProps>,
+): boolean => {
+  return (
+    hasSameFileStructure(prev.files, next.files) &&
+    prev.activeFile === next.activeFile &&
+    prev.projectPath === next.projectPath &&
+    prev.theme === next.theme &&
+    prev.onSelectFile === next.onSelectFile &&
+    prev.onAddFontToPresentationCss === next.onAddFontToPresentationCss
+  );
+};
+
+const FileExplorer = React.memo(FileExplorerBase, areFileExplorerPropsEqual);
+FileExplorer.displayName = 'FileExplorer';
 
 export default FileExplorer;

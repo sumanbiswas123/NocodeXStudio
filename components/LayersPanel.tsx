@@ -10,19 +10,20 @@ interface LayersPanelProps {
     theme: 'light' | 'dark';
 }
 
-const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, theme }) => {
+const LayersPanelBase: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, theme }) => {
     const [expanded, setExpanded] = useState<Set<string>>(new Set(['root']));
     const [searchQuery, setSearchQuery] = useState('');
     const [searchFocused, setSearchFocused] = useState(false);
     const selectedRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (selectedId) {
-            const newExpanded = new Set(expanded);
+        if (!selectedId) return;
+        setExpanded((prev) => {
+            const nextExpanded = new Set(prev);
             const findAndExpandPath = (element: VirtualElement, path: string[] = []): boolean => {
                 if (element.id === selectedId) {
-                    path.forEach(id => newExpanded.add(id));
-                    newExpanded.add(selectedId);
+                    path.forEach(id => nextExpanded.add(id));
+                    nextExpanded.add(selectedId);
                     return true;
                 }
                 for (const child of element.children) {
@@ -31,10 +32,13 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, t
                 return false;
             };
             findAndExpandPath(root);
-            setExpanded(newExpanded);
-            setTimeout(() => selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
-        }
-    }, [selectedId]);
+            return nextExpanded;
+        });
+        const timer = window.setTimeout(() => {
+            selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+        return () => window.clearTimeout(timer);
+    }, [root, selectedId]);
 
     const toggleExpand = (id: string) => {
         const newExpanded = new Set(expanded);
@@ -166,7 +170,7 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, t
                     className={`relative rounded-lg transition-all duration-200 ${searchFocused ? 'ring-1' : ''}`}
                     style={{ 
                         backgroundColor: 'var(--input-bg)', 
-                        ringColor: searchFocused ? 'var(--accent-primary)' : undefined 
+                        boxShadow: searchFocused ? '0 0 0 1px var(--accent-primary)' : 'none'
                     }}
                 >
                     <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
@@ -199,5 +203,20 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, t
         </div>
     );
 };
+
+const areLayersPanelPropsEqual = (
+    prev: Readonly<LayersPanelProps>,
+    next: Readonly<LayersPanelProps>,
+): boolean => {
+    return (
+        prev.root === next.root &&
+        prev.selectedId === next.selectedId &&
+        prev.onSelect === next.onSelect &&
+        prev.theme === next.theme
+    );
+};
+
+const LayersPanel = React.memo(LayersPanelBase, areLayersPanelPropsEqual);
+LayersPanel.displayName = 'LayersPanel';
 
 export default LayersPanel;

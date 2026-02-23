@@ -26,6 +26,73 @@ interface PropertiesPanelProps {
   availableFonts: string[];
 }
 
+type InteractionKind =
+  | 'none'
+  | 'goto-slide'
+  | 'goto-flow'
+  | 'open-dialog'
+  | 'custom-toggle';
+
+type InteractionDraft = {
+  slide: string;
+  presentation: string;
+  flow: string;
+  dialog: string;
+  show: string;
+  hide: string;
+};
+
+const EMPTY_INTERACTION_DRAFT: InteractionDraft = {
+  slide: '',
+  presentation: '',
+  flow: '',
+  dialog: '',
+  show: '',
+  hide: '',
+};
+
+const toClassSet = (className?: string): Set<string> =>
+  new Set(
+    String(className || '')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
+
+const detectInteractionKind = (element: VirtualElement): InteractionKind => {
+  const attrs = element.attributes || {};
+  const classes = toClassSet(element.className);
+  if (classes.has('openDialog') || Boolean(attrs['data-dialog'])) {
+    return 'open-dialog';
+  }
+  if (classes.has('gotoFlow') || Boolean(attrs['data-flow'])) {
+    return 'goto-flow';
+  }
+  if (
+    classes.has('gotoSlide') ||
+    Boolean(attrs['data-slide']) ||
+    Boolean(attrs['data-presentation'])
+  ) {
+    return 'goto-slide';
+  }
+  if (Boolean(attrs['data-show']) || Boolean(attrs['data-hide'])) {
+    return 'custom-toggle';
+  }
+  return 'none';
+};
+
+const buildInteractionDraft = (element: VirtualElement): InteractionDraft => {
+  const attrs = element.attributes || {};
+  return {
+    slide: attrs['data-slide'] || '',
+    presentation: attrs['data-presentation'] || '',
+    flow: attrs['data-flow'] || '',
+    dialog: attrs['data-dialog'] || '',
+    show: attrs['data-show'] || '',
+    hide: attrs['data-hide'] || '',
+  };
+};
+
 // Standalone AccordionSection — prevents remounting on parent re-render
 const AccordionSection: React.FC<{
   title: string;
@@ -76,7 +143,7 @@ const TYPE_GRADIENTS: Record<string, string> = {
   a: 'from-cyan-600/20 to-cyan-800/10',
 };
 
-const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
+const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
   element,
   onUpdateStyle,
   onUpdateContent,
@@ -91,6 +158,9 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   const [insertMode, setInsertMode] = useState<'inside' | 'before' | 'after'>('inside');
   const [localContent, setLocalContent] = useState('');
   const [activeTab, setActiveTab] = useState<'content' | 'style' | 'advanced'>('style');
+  const [interactionKind, setInteractionKind] = useState<InteractionKind>('none');
+  const [interactionDraft, setInteractionDraft] = useState<InteractionDraft>(EMPTY_INTERACTION_DRAFT);
+  const [interactionDirty, setInteractionDirty] = useState(false);
   const debounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Extract text content from element
@@ -108,6 +178,18 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
       setLocalContent(extractTextContent(element));
     }
   }, [element?.id]);
+
+  useEffect(() => {
+    if (!element) {
+      setInteractionKind('none');
+      setInteractionDraft(EMPTY_INTERACTION_DRAFT);
+      setInteractionDirty(false);
+      return;
+    }
+    setInteractionKind(detectInteractionKind(element));
+    setInteractionDraft(buildInteractionDraft(element));
+    setInteractionDirty(false);
+  }, [element]);
 
   const handleStyleChange = (key: keyof React.CSSProperties, value: any) => {
     onUpdateStyle({ [key]: value });
@@ -130,6 +212,41 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
         reader.readAsDataURL(file);
       }
     };
+
+  const updateInteractionDraft = (key: keyof InteractionDraft, value: string) => {
+    setInteractionDraft((prev) => ({ ...prev, [key]: value }));
+    setInteractionDirty(true);
+  };
+
+  const handleSaveInteraction = () => {
+    if (!element) return;
+    const nextAttrs: Record<string, string> = { ...(element.attributes || {}) };
+    const assignOrDelete = (attrName: string, rawValue: string) => {
+      const value = String(rawValue || '').trim();
+      if (value) {
+        nextAttrs[attrName] = value;
+      } else {
+        delete nextAttrs[attrName];
+      }
+    };
+
+    if (interactionKind === 'goto-slide') {
+      assignOrDelete('data-slide', interactionDraft.slide);
+      assignOrDelete('data-presentation', interactionDraft.presentation);
+    } else if (interactionKind === 'goto-flow') {
+      assignOrDelete('data-flow', interactionDraft.flow);
+      assignOrDelete('data-slide', interactionDraft.slide);
+      assignOrDelete('data-presentation', interactionDraft.presentation);
+    } else if (interactionKind === 'open-dialog') {
+      assignOrDelete('data-dialog', interactionDraft.dialog);
+    } else if (interactionKind === 'custom-toggle') {
+      assignOrDelete('data-show', interactionDraft.show);
+      assignOrDelete('data-hide', interactionDraft.hide);
+    }
+
+    onUpdateAttributes(nextAttrs);
+    setInteractionDirty(false);
+  };
 
   // ─── No Selection State ───
   if (!element) return (
@@ -354,20 +471,150 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             {/* Interaction (Link/Nav) */}
             <AccordionSection title="Interaction" icon={<CornerUpRight size={13}/>} accentColor="#10b981">
                 <div className="space-y-2">
-                   <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Navigate to ID</label>
-                   <input
-                     type="text"
-                     value={element.attributes?.['data-id'] || ''}
-                     onChange={(e) => {
-                        const val = e.target.value;
-                        const newAttrs = { ...element.attributes };
-                        if (val) newAttrs['data-id'] = val; else delete newAttrs['data-id'];
-                        onUpdateAttributes(newAttrs);
-                     }}
-                     className="w-full glass-input p-2 text-xs rounded-lg"
-                     style={{ color: 'var(--text-main)' }}
-                     placeholder="e.g. section-contact"
-                   />
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                      Detected Interaction
+                    </label>
+                    <div
+                      className="w-full glass-input p-2 text-xs rounded-lg"
+                      style={{ color: 'var(--text-main)' }}
+                    >
+                      {interactionKind === 'goto-slide'
+                        ? 'Page Navigation (gotoSlide)'
+                        : interactionKind === 'goto-flow'
+                          ? 'Flow Navigation (gotoFlow)'
+                          : interactionKind === 'open-dialog'
+                            ? 'Popup / Dialog (openDialog)'
+                            : interactionKind === 'custom-toggle'
+                              ? 'Custom Show/Hide'
+                              : 'None'}
+                    </div>
+                  </div>
+
+                  {interactionKind === 'goto-slide' && (
+                    <>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Target Slide
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.slide}
+                          onChange={(e) => updateInteractionDraft('slide', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. AREXVY_Slide_eDA_Deck_2026_VN1.0_004"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Presentation (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.presentation}
+                          onChange={(e) => updateInteractionDraft('presentation', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. AREXVY_Slide_eDA_Deck_2026_VN1.0_MAIN"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {interactionKind === 'goto-flow' && (
+                    <>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Target Flow
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.flow}
+                          onChange={(e) => updateInteractionDraft('flow', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. Main"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Fallback Slide (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.slide}
+                          onChange={(e) => updateInteractionDraft('slide', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. AREXVY_Slide_eDA_Deck_2026_VN1.0_000"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {interactionKind === 'open-dialog' && (
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                        Dialog Selector
+                      </label>
+                      <input
+                        type="text"
+                        value={interactionDraft.dialog}
+                        onChange={(e) => updateInteractionDraft('dialog', e.target.value)}
+                        className="w-full glass-input p-2 text-xs rounded-lg"
+                        style={{ color: 'var(--text-main)' }}
+                        placeholder="e.g. #tab2PopUp"
+                      />
+                    </div>
+                  )}
+
+                  {interactionKind === 'custom-toggle' && (
+                    <>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Show Selector
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.show}
+                          onChange={(e) => updateInteractionDraft('show', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. #customMenuWrapper"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+                          Hide Selector
+                        </label>
+                        <input
+                          type="text"
+                          value={interactionDraft.hide}
+                          onChange={(e) => updateInteractionDraft('hide', e.target.value)}
+                          className="w-full glass-input p-2 text-xs rounded-lg"
+                          style={{ color: 'var(--text-main)' }}
+                          placeholder="e.g. #customMenu"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {interactionKind !== 'none' ? (
+                    <button
+                      onClick={handleSaveInteraction}
+                      disabled={!interactionDirty}
+                      className={`glass-button w-full py-2 text-xs font-semibold rounded-lg transition-all ${
+                        interactionDirty ? 'opacity-100' : 'opacity-60 cursor-not-allowed'
+                      }`}
+                    >
+                      Save Interaction
+                    </button>
+                  ) : (
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      No supported page/popup interaction found on this element.
+                    </p>
+                  )}
                 </div>
             </AccordionSection>
 
@@ -409,5 +656,26 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
     </div>
   );
 };
+
+const arePropertiesPanelPropsEqual = (
+  prev: Readonly<PropertiesPanelProps>,
+  next: Readonly<PropertiesPanelProps>,
+): boolean => {
+  return (
+    prev.element === next.element &&
+    prev.onUpdateStyle === next.onUpdateStyle &&
+    prev.onUpdateContent === next.onUpdateContent &&
+    prev.onUpdateAttributes === next.onUpdateAttributes &&
+    prev.onUpdateAnimation === next.onUpdateAnimation &&
+    prev.onDelete === next.onDelete &&
+    prev.onAddElement === next.onAddElement &&
+    prev.onMoveOrder === next.onMoveOrder &&
+    prev.resolveImage === next.resolveImage &&
+    prev.availableFonts === next.availableFonts
+  );
+};
+
+const PropertiesPanel = React.memo(PropertiesPanelBase, arePropertiesPanelPropsEqual);
+PropertiesPanel.displayName = 'PropertiesPanel';
 
 export default PropertiesPanel;

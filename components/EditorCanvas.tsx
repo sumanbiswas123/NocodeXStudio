@@ -4,6 +4,7 @@ import { VirtualElement } from '../types';
 interface EditorCanvasProps {
   element: VirtualElement;
   selectedId: string | null;
+  selectedPathIds?: Set<string> | null;
   onSelect: (id: string) => void;
   resolveImage?: (path: string) => string;
   onMoveElement: (draggedId: string, targetId: string) => void;
@@ -12,9 +13,10 @@ interface EditorCanvasProps {
   interactionMode?: 'edit' | 'preview' | 'inspect' | 'draw' | 'move';
 }
 
-const EditorCanvas: React.FC<EditorCanvasProps> = ({
+const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
   element,
   selectedId,
+  selectedPathIds,
   onSelect,
   resolveImage,
   onMoveElement,
@@ -173,6 +175,37 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     window.addEventListener('mouseup', onMouseUp);
   };
 
+  const mergedStyle: React.CSSProperties = {
+    ...element.styles,
+    animation: element.animation,
+    // Selection Highlighting
+    outline: !isPreview && isSelected
+      ? '2px solid #3b82f6'
+      : (element.id === 'root' ? 'none' : (!isPreview ? '1px dashed transparent' : 'none')),
+    outlineOffset: !isPreview && isSelected ? '-2px' : '0px',
+    boxShadow: !isPreview && isSelected ? '0 0 0 4px rgba(59, 130, 246, 0.2)' : 'none',
+
+    // Resizing logic
+    resize: (!isPreview && !isMoveMode && isSelected ? 'both' : 'none') as React.CSSProperties['resize'],
+    overflow: (
+      !isPreview && isSelected && element.type !== 'img'
+        ? 'hidden'
+        : (element.styles.overflow || 'visible')
+    ) as React.CSSProperties['overflow'],
+
+    position: (element.styles.position as React.CSSProperties['position']) || 'relative',
+    cursor: (
+      isPreview
+        ? (element.type === 'a' || element.type === 'button' ? 'pointer' : 'default')
+        : isMoveMode && element.id !== 'root'
+          ? 'grab'
+          : (isSelected ? 'default' : 'pointer')
+    ) as React.CSSProperties['cursor'],
+    minHeight: !isPreview && element.children.length === 0 && !element.styles.height && element.type === 'div'
+      ? '50px'
+      : undefined,
+  };
+
   const commonProps = {
     id: element.id,
     ref: elementRef as any,
@@ -184,36 +217,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     onMouseDown: handleMoveMouseDown,
     // Spread custom attributes (data-id, aria-*, etc.)
     ...(element.attributes || {}),
-    style: {
-      ...element.styles,
-      animation: element.animation,
-      // Selection Highlighting
-      outline: !isPreview && isSelected ? '2px solid #3b82f6' : (element.id === 'root' ? 'none' : (!isPreview ? '1px dashed transparent' : 'none')),
-      outlineOffset: !isPreview && isSelected ? '-2px' : '0px',
-      boxShadow: !isPreview && isSelected ? '0 0 0 4px rgba(59, 130, 246, 0.2)' : 'none',
-
-      // Resizing logic 
-      resize: !isPreview && !isMoveMode && isSelected ? 'both' : 'none',
-      overflow: !isPreview && isSelected && element.type !== 'img' ? 'hidden' : element.styles.overflow || 'visible',
-
-      position: element.styles.position as any || 'relative',
-      cursor: isPreview
-        ? (element.type === 'a' || element.type === 'button' ? 'pointer' : 'default')
-        : isMoveMode && element.id !== 'root'
-          ? 'grab'
-          : (isSelected ? 'default' : 'pointer'),
-      minHeight: !isPreview && element.children.length === 0 && !element.styles.height && element.type === 'div' ? '50px' : undefined,
-    },
+    style: mergedStyle,
     onClick: handleClick,
     className: `transition-colors ${element.id === 'root' ? 'min-h-full' : (!isPreview ? 'hover:outline-blue-300 hover:outline-dashed hover:outline-1' : '')} ${element.className || ''}`
   };
 
   // Render children recursively
   const children = element.children.map(child => (
-    <EditorCanvas
-      key={child.id}
-      element={child}
-      selectedId={selectedId}
+      <EditorCanvas
+        key={child.id}
+        element={child}
+        selectedId={selectedId}
+        selectedPathIds={selectedPathIds}
       onSelect={onSelect}
       resolveImage={resolveImage}
       onMoveElement={onMoveElement}
@@ -316,5 +331,33 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     default: return <div {...commonProps}>{element.content}{children}</div>;
   }
 };
+
+const areEditorCanvasPropsEqual = (
+  prev: Readonly<EditorCanvasProps>,
+  next: Readonly<EditorCanvasProps>,
+): boolean => {
+  if (prev.element !== next.element) return false;
+  if (prev.interactionMode !== next.interactionMode) return false;
+  if (prev.onSelect !== next.onSelect) return false;
+  if (prev.resolveImage !== next.resolveImage) return false;
+  if (prev.onMoveElement !== next.onMoveElement) return false;
+  if (prev.onMoveByPosition !== next.onMoveByPosition) return false;
+  if (prev.onResize !== next.onResize) return false;
+  if (prev.selectedPathIds === next.selectedPathIds && prev.selectedId === next.selectedId) {
+    return true;
+  }
+
+  const prevOnPath = prev.selectedPathIds?.has(prev.element.id) ?? false;
+  const nextOnPath = next.selectedPathIds?.has(next.element.id) ?? false;
+  if (!prevOnPath && !nextOnPath) {
+    return true;
+  }
+  if (prev.selectedId === next.selectedId) return true;
+
+  return false;
+};
+
+const EditorCanvas = React.memo(EditorCanvasBase, areEditorCanvasPropsEqual);
+EditorCanvas.displayName = 'EditorCanvas';
 
 export default EditorCanvas;
