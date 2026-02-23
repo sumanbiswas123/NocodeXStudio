@@ -6,12 +6,13 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
+import { flushSync } from "react-dom";
 import Sidebar from "./components/Sidebar";
 import EditorCanvas from "./components/EditorCanvas";
 import PropertiesPanel from "./components/PropertiesPanel";
 import StyleInspectorPanel from "./components/StyleInspectorPanel";
 import Terminal from "./components/Terminal";
-import CodeViewer from "./components/CodeViewer";
+import CodeWorkspace from "./components/CodeWorkspace";
 import CommandPalette from "./components/CommandPalette";
 import TitleBar from "./components/TitleBar";
 import { INITIAL_ROOT, INJECTED_STYLES } from "./constants";
@@ -43,6 +44,7 @@ import {
   Undo2,
   Redo2,
   Settings2,
+  Code2,
 } from "lucide-react";
 
 // --- Helper Functions (Same as before) ---
@@ -124,6 +126,7 @@ const deleteElementFromTree = (
 };
 
 const normalizePath = (path: string): string => path.replace(/\\/g, "/");
+const PREVIEW_LAYER_ID_PREFIX = "preview-path:";
 const PREVIEW_MOUNT_PATH = "/__vh__";
 const SHARED_MOUNT_PATH = "/shared";
 const SHARED_MOUNT_PATH_IN_PREVIEW = "/__vh__/shared";
@@ -196,6 +199,12 @@ type FontCachePayload = {
   source: "presentation.css";
   generatedAt: string;
   fonts: string[];
+};
+
+type MaybeViewTransitionDocument = Document & {
+  startViewTransition?: (updateCallback: () => void) => {
+    finished: Promise<void>;
+  };
 };
 
 const sanitizeFontFamilyName = (raw: string): string =>
@@ -310,6 +319,17 @@ const inferFileType = (name: string): ProjectFile["type"] => {
   if (lower.match(/\.(woff|woff2|ttf|otf|eot)$/)) return "font";
   return "unknown";
 };
+
+const isTextFileType = (type: ProjectFile["type"]): boolean =>
+  type !== "image" && type !== "font";
+
+const isSvgPath = (path: string): boolean =>
+  normalizePath(path).toLowerCase().endsWith(".svg");
+
+const isCodeEditableFile = (
+  path: string,
+  type: ProjectFile["type"],
+): boolean => isTextFileType(type) || isSvgPath(path);
 
 const toFileUrl = (absolutePath: string): string => {
   const normalized = normalizePath(absolutePath);
@@ -1215,7 +1235,7 @@ const buildPreviewRuntimeScript = (
       if (!el) return false;
       if (el.isContentEditable) return false;
       var tag = String(el.tagName || '').toLowerCase();
-      if (!__previewEditableTags[tag]) return false;
+      if (!__previewEditableTags[tag] && !(tag === 'div' && hasOwnTextNode(el))) return false;
       if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
       return true;
     }
@@ -1281,11 +1301,27 @@ const buildPreviewRuntimeScript = (
           sel.addRange(range);
         } catch (e) {}
       };
+      var draftRaf = 0;
+      var scheduleDraftSync = function() {
+        if (draftRaf) return;
+        draftRaf = requestAnimationFrame(function() {
+          draftRaf = 0;
+          postPreviewMessage('PREVIEW_INLINE_EDIT_DRAFT', {
+            path: path,
+            html: normalizeEditableHtml(el.innerHTML)
+          });
+        });
+      };
       var finish = function(commit) {
         if (done) return;
         done = true;
+        if (draftRaf) {
+          cancelAnimationFrame(draftRaf);
+          draftRaf = 0;
+        }
         el.removeEventListener('blur', onBlur, true);
         el.removeEventListener('keydown', onKeyDown, true);
+        el.removeEventListener('input', onInput, true);
         el.removeAttribute('contenteditable');
         el.removeAttribute('data-nx-inline-editing');
         el.classList.remove('__nx-preview-editing');
@@ -1306,6 +1342,7 @@ const buildPreviewRuntimeScript = (
         if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
           event.preventDefault();
           insertLineBreakAtCursor();
+          scheduleDraftSync();
         } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
           event.preventDefault();
           finish(true);
@@ -1314,9 +1351,13 @@ const buildPreviewRuntimeScript = (
           finish(false);
         }
       };
+      var onInput = function() {
+        scheduleDraftSync();
+      };
 
       el.addEventListener('blur', onBlur, true);
       el.addEventListener('keydown', onKeyDown, true);
+      el.addEventListener('input', onInput, true);
     }
 
     try {
@@ -1416,6 +1457,7 @@ const buildPreviewRuntimeScript = (
           className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
           attributes: getCustomAttributes(__previewSelectedEl),
           text: __previewSelectedEl.textContent || '',
+          html: __previewSelectedEl.innerHTML || '',
           src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
           href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
           inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
@@ -1435,13 +1477,95 @@ const buildPreviewRuntimeScript = (
 
     document.addEventListener('dblclick', function(event) {
       if (!isPreviewEditMode()) return;
-      if (__previewEditingEl) return;
       var target = event && event.target;
+      if (__previewEditingEl) {
+        if (
+          target &&
+          (__previewEditingEl === target ||
+            (__previewEditingEl.contains &&
+              __previewEditingEl.contains(target)))
+        ) {
+          return;
+        }
+        try { __previewEditingEl.blur(); } catch (e) {}
+      }
       var selected = getPreviewSelectableTarget(target, event);
       if (!selected || !canInlineEdit(selected)) return;
       event.preventDefault();
       event.stopPropagation();
       beginInlineEdit(selected);
+    }, true);
+
+    document.addEventListener('keydown', function(event) {
+      if (!event) return;
+      var key = String(event.key || '').toLowerCase();
+      var code = String(event.code || '');
+      if (!key) return;
+      var hasModifier = !!(event.ctrlKey || event.metaKey);
+      var target = event.target;
+      var targetTag =
+        target && target.tagName ? String(target.tagName).toLowerCase() : '';
+      var isInlineEditing =
+        !!(
+          __previewEditingEl &&
+          target &&
+          (target === __previewEditingEl ||
+            (__previewEditingEl.contains && __previewEditingEl.contains(target)))
+        );
+      var isTargetEditable =
+        isInlineEditing ||
+        !!(target && target.isContentEditable) ||
+        targetTag === 'input' ||
+        targetTag === 'textarea' ||
+        targetTag === 'select';
+
+      var shouldForward = false;
+      if (isTargetEditable) {
+        shouldForward =
+          hasModifier &&
+          (key === 's' ||
+            key === 'p' ||
+            key === 't' ||
+            key === 'f' ||
+            key === 'e' ||
+            key === 'k' ||
+            code === 'Backquote');
+      } else if (key === 'escape') {
+        shouldForward = true;
+      } else if (!hasModifier && !event.altKey && (key === 'w' || key === 'e')) {
+        shouldForward = true;
+      } else if (
+        hasModifier &&
+        (key === 'k' ||
+          key === 'f' ||
+          key === 'p' ||
+          key === 'e' ||
+          code === 'Backquote' ||
+          key === 'j' ||
+          key === 's' ||
+          key === 't' ||
+          key === 'z' ||
+          key === 'u' ||
+          key === 'y')
+      ) {
+        shouldForward = true;
+      }
+      if (!shouldForward) return;
+
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation();
+      }
+      event.stopPropagation();
+      if (event.cancelable) event.preventDefault();
+      postPreviewMessage('PREVIEW_HOTKEY', {
+        key: key,
+        code: code,
+        ctrlKey: !!event.ctrlKey,
+        metaKey: !!event.metaKey,
+        shiftKey: !!event.shiftKey,
+        altKey: !!event.altKey,
+        editable: isTargetEditable
+      });
     }, true);
 
     var __LOCATION_ASSIGN = window.location.assign ? window.location.assign.bind(window.location) : null;
@@ -1708,6 +1832,7 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       className: typeof el.className === 'string' ? el.className : '',
       attributes: getCustomAttributes(el),
       text: el.textContent || '',
+      html: el.innerHTML || '',
       src: extractImageSource(el),
       href: el.getAttribute ? (el.getAttribute('href') || '') : '',
       inlineStyle: el.getAttribute ? (el.getAttribute('style') || '') : '',
@@ -2037,7 +2162,7 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (!el) return false;
     if (el.isContentEditable) return false;
     var tag = String(el.tagName || '').toLowerCase();
-    if (!__previewEditableTags[tag]) return false;
+    if (!__previewEditableTags[tag] && !(tag === 'div' && hasOwnTextNode(el))) return false;
     if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
     return true;
   }
@@ -2209,11 +2334,27 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         sel.addRange(range);
       } catch (e) {}
     };
+    var draftRaf = 0;
+    var scheduleDraftSync = function() {
+      if (draftRaf) return;
+      draftRaf = requestAnimationFrame(function() {
+        draftRaf = 0;
+        postPreviewMessage('PREVIEW_INLINE_EDIT_DRAFT', {
+          path: path,
+          html: normalizeEditableHtml(el.innerHTML)
+        });
+      });
+    };
     var finish = function(commit) {
       if (done) return;
       done = true;
+      if (draftRaf) {
+        cancelAnimationFrame(draftRaf);
+        draftRaf = 0;
+      }
       el.removeEventListener('blur', onBlur, true);
       el.removeEventListener('keydown', onKeyDown, true);
+      el.removeEventListener('input', onInput, true);
       el.removeAttribute('contenteditable');
       el.removeAttribute('data-nx-inline-editing');
       el.classList.remove('__nx-preview-editing');
@@ -2234,6 +2375,7 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         insertLineBreakAtCursor();
+        scheduleDraftSync();
       } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         finish(true);
@@ -2242,9 +2384,13 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         finish(false);
       }
     };
+    var onInput = function() {
+      scheduleDraftSync();
+    };
 
     el.addEventListener('blur', onBlur, true);
     el.addEventListener('keydown', onKeyDown, true);
+    el.addEventListener('input', onInput, true);
   }
 
   function emitPathChanged() {
@@ -2400,6 +2546,7 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         className: newEl.className || '',
         attributes: getCustomAttributes(newEl),
         text: newEl.textContent || '',
+        html: newEl.innerHTML || '',
         inlineStyle: newEl.getAttribute('style') || '',
         computedStyles: computedStyles
       }), '*');
@@ -2489,6 +2636,73 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (event.cancelable) {
       event.preventDefault();
     }
+  }, true);
+
+  document.addEventListener('keydown', function(event) {
+    if (!event) return;
+    var key = String(event.key || '').toLowerCase();
+    var code = String(event.code || '');
+    if (!key) return;
+    var hasModifier = !!(event.ctrlKey || event.metaKey);
+    var editableTarget = isInsideInlineEditor(event.target);
+    var target = event.target;
+    var targetTag =
+      target && target.tagName ? String(target.tagName).toLowerCase() : '';
+    if (!editableTarget) {
+      editableTarget =
+        !!(target && target.isContentEditable) ||
+        targetTag === 'input' ||
+        targetTag === 'textarea' ||
+        targetTag === 'select';
+    }
+
+    var shouldForward = false;
+    if (editableTarget) {
+      shouldForward =
+        hasModifier &&
+        (key === 's' ||
+          key === 'p' ||
+          key === 't' ||
+          key === 'f' ||
+          key === 'e' ||
+          key === 'k' ||
+          code === 'Backquote');
+    } else if (key === 'escape') {
+      shouldForward = true;
+    } else if (!hasModifier && !event.altKey && (key === 'w' || key === 'e')) {
+      shouldForward = true;
+    } else if (
+      hasModifier &&
+      (key === 'k' ||
+        key === 'f' ||
+        key === 'p' ||
+        key === 'e' ||
+        code === 'Backquote' ||
+        key === 'j' ||
+        key === 's' ||
+        key === 't' ||
+        key === 'z' ||
+        key === 'u' ||
+        key === 'y')
+    ) {
+      shouldForward = true;
+    }
+    if (!shouldForward) return;
+
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    if (event.cancelable) event.preventDefault();
+    postPreviewMessage('PREVIEW_HOTKEY', {
+      key: key,
+      code: code,
+      ctrlKey: !!event.ctrlKey,
+      metaKey: !!event.metaKey,
+      shiftKey: !!event.shiftKey,
+      altKey: !!event.altKey,
+      editable: editableTarget
+    });
   }, true);
 
   function ensureDrawDraftElement() {
@@ -2750,8 +2964,17 @@ const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       event.stopImmediatePropagation();
     }
     event.stopPropagation();
-    if (__previewEditingEl) return;
     var target = event && event.target;
+    if (__previewEditingEl) {
+      if (
+        target &&
+        (__previewEditingEl === target ||
+          (__previewEditingEl.contains && __previewEditingEl.contains(target)))
+      ) {
+        return;
+      }
+      try { __previewEditingEl.blur(); } catch (e) {}
+    }
     var selected = getPreviewSelectableTarget(target, event);
     if (!selected || !canInlineEdit(selected)) return;
     event.preventDefault();
@@ -2820,6 +3043,18 @@ const normalizePreviewPath = (rawPath: unknown): number[] | null => {
     .map((segment) => Math.max(0, Math.trunc(segment)));
   if (normalized.length !== rawPath.length) return null;
   return normalized;
+};
+
+const toPreviewLayerId = (path: number[]): string =>
+  `${PREVIEW_LAYER_ID_PREFIX}${path.join(".")}`;
+
+const fromPreviewLayerId = (id: string): number[] | null => {
+  if (!id.startsWith(PREVIEW_LAYER_ID_PREFIX)) return null;
+  const raw = id.slice(PREVIEW_LAYER_ID_PREFIX.length).trim();
+  if (!raw) return null;
+  const parts = raw.split(".").map((part) => Number(part));
+  if (parts.some((part) => !Number.isInteger(part) || part < 0)) return null;
+  return parts;
 };
 
 const parseInlineStyleText = (styleText: string): React.CSSProperties => {
@@ -2940,8 +3175,130 @@ const extractTextWithBreaks = (element: Element | null): string => {
   return normalizeEditorMultilineText(out);
 };
 
+const extractTextFromHtmlFragment = (html: string): string => {
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(`<div>${html || ""}</div>`, "text/html");
+  const root = parsed.body.firstElementChild;
+  if (!root) return "";
+  return extractTextWithBreaks(root);
+};
+
+const hasRichInlineTextStructure = (element: Element): boolean => {
+  const walker = element.ownerDocument.createTreeWalker(
+    element,
+    NodeFilter.SHOW_ELEMENT,
+  );
+  let current = walker.currentNode as Element | null;
+  while (current) {
+    if (current !== element && current.tagName.toLowerCase() !== "br") {
+      return true;
+    }
+    current = walker.nextNode() as Element | null;
+  }
+  return false;
+};
+
+const collectTextNodeGroupsByBreak = (element: Element): Text[][] => {
+  const groups: Text[][] = [[]];
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      groups[groups.length - 1].push(node as Text);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as Element;
+    if (el.tagName.toLowerCase() === "br") {
+      groups.push([]);
+      return;
+    }
+    Array.from(el.childNodes).forEach(walk);
+  };
+  Array.from(element.childNodes).forEach(walk);
+  return groups;
+};
+
+const chooseTextSplitPoint = (
+  value: string,
+  start: number,
+  ideal: number,
+  maxEnd: number,
+): number => {
+  let end = Math.max(start, Math.min(ideal, maxEnd));
+  if (end <= start || end >= value.length) return end;
+  const window = 24;
+  const lower = Math.max(start + 1, end - window);
+  const upper = Math.min(maxEnd, end + window);
+  for (let offset = 0; offset <= window; offset += 1) {
+    const right = end + offset;
+    if (
+      right <= upper &&
+      right > start &&
+      /\s/.test(value.charAt(right - 1) || "")
+    ) {
+      return right;
+    }
+    const left = end - offset;
+    if (
+      left >= lower &&
+      left > start &&
+      /\s/.test(value.charAt(left - 1) || "")
+    ) {
+      return left;
+    }
+  }
+  return end;
+};
+
+const distributeTextAcrossNodes = (nodes: Text[], value: string): void => {
+  if (!nodes.length) return;
+  if (nodes.length === 1) {
+    nodes[0].textContent = value;
+    return;
+  }
+  const oldLengths = nodes.map((node) => (node.textContent || "").length);
+  const totalOldLength = oldLengths.reduce((sum, len) => sum + len, 0) || 1;
+  let cursor = 0;
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (index === nodes.length - 1) {
+      node.textContent = value.slice(cursor);
+      break;
+    }
+    const remainingNodes = nodes.length - index - 1;
+    const maxEnd = Math.max(cursor, value.length - remainingNodes);
+    const proportional = Math.round(
+      (oldLengths[index] / totalOldLength) * value.length,
+    );
+    const ideal = cursor + proportional;
+    const split = chooseTextSplitPoint(value, cursor, ideal, maxEnd);
+    node.textContent = value.slice(cursor, split);
+    cursor = split;
+  }
+};
+
 const applyMultilineTextToElement = (element: Element, text: string): void => {
-  const normalized = normalizeEditorMultilineText(text);
+  const normalizedInput = text.replace(/\r\n?/g, "\n");
+  if (hasRichInlineTextStructure(element)) {
+    const groups = collectTextNodeGroupsByBreak(element);
+    const allNodes = groups.flat();
+    if (allNodes.length > 0) {
+      const rawLines = normalizedInput.split("\n");
+      const normalizedLines =
+        groups.length > 0 && rawLines.length > groups.length
+          ? [
+              ...rawLines.slice(0, groups.length - 1),
+              rawLines.slice(groups.length - 1).join(" "),
+            ]
+          : rawLines;
+      for (let index = 0; index < groups.length; index += 1) {
+        const line = normalizedLines[index] ?? "";
+        distributeTextAcrossNodes(groups[index], line);
+      }
+      return;
+    }
+  }
+
+  const normalized = normalizeEditorMultilineText(normalizedInput);
   while (element.firstChild) {
     element.removeChild(element.firstChild);
   }
@@ -2991,6 +3348,319 @@ const addElementToTree = (
   });
   if (!didChange) return root;
   return { ...root, children: nextChildren };
+};
+
+const TOOLBOX_DRAG_MIME = "application/x-nocodex-element";
+
+const createPresetIdFactory = (prefix: string): ((segment: string) => string) => {
+  const base = `${prefix.replace(/[^a-z0-9_-]/gi, "-")}-${Date.now()}`;
+  let counter = 0;
+  return (segment: string) => {
+    counter += 1;
+    return `${base}-${segment}-${counter}`;
+  };
+};
+
+const createVirtualNode = (
+  id: string,
+  type: string,
+  name: string,
+  styles: React.CSSProperties,
+  options?: {
+    content?: string;
+    className?: string;
+    attributes?: Record<string, string>;
+    children?: VirtualElement[];
+  },
+): VirtualElement => ({
+  id,
+  type,
+  name,
+  styles,
+  children: options?.children || [],
+  ...(options?.content !== undefined ? { content: options.content } : {}),
+  ...(options?.className ? { className: options.className } : {}),
+  ...(options?.attributes ? { attributes: options.attributes } : {}),
+});
+
+const buildPresetElement = (
+  presetType: string,
+  idFor: (segment: string) => string,
+): VirtualElement | null => {
+  if (presetType === "preset:carousel") {
+    return createVirtualNode(
+      idFor("carousel"),
+      "section",
+      "Carousel",
+      {
+        display: "flex",
+        gap: "16px",
+        overflowX: "auto",
+        padding: "16px",
+        borderRadius: "12px",
+        backgroundColor: "#f8fafc",
+        scrollSnapType: "x mandatory",
+      },
+      {
+        children: [
+          createVirtualNode(
+            idFor("card-a"),
+            "div",
+            "Slide Card",
+            {
+              minWidth: "260px",
+              height: "160px",
+              borderRadius: "10px",
+              background:
+                "linear-gradient(135deg, rgba(14,165,233,0.18), rgba(99,102,241,0.18))",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              scrollSnapAlign: "start",
+              fontWeight: 700,
+            },
+            { content: "Slide 1" },
+          ),
+          createVirtualNode(
+            idFor("card-b"),
+            "div",
+            "Slide Card",
+            {
+              minWidth: "260px",
+              height: "160px",
+              borderRadius: "10px",
+              background:
+                "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(14,165,233,0.2))",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              scrollSnapAlign: "start",
+              fontWeight: 700,
+            },
+            { content: "Slide 2" },
+          ),
+        ],
+      },
+    );
+  }
+  if (presetType === "preset:flip-card") {
+    return createVirtualNode(
+      idFor("flip"),
+      "div",
+      "Flip Card",
+      {
+        width: "280px",
+        height: "180px",
+        perspective: "1000px",
+        position: "relative",
+      },
+      {
+        children: [
+          createVirtualNode(
+            idFor("inner"),
+            "div",
+            "Flip Inner",
+            {
+              position: "relative",
+              width: "100%",
+              height: "100%",
+              transformStyle: "preserve-3d",
+              transition: "transform 0.6s ease",
+              borderRadius: "14px",
+              overflow: "hidden",
+              boxShadow: "0 12px 30px rgba(2,6,23,0.16)",
+            },
+            {
+              children: [
+                createVirtualNode(
+                  idFor("front"),
+                  "div",
+                  "Front Face",
+                  {
+                    position: "absolute",
+                    inset: "0px",
+                    background:
+                      "linear-gradient(135deg, rgba(14,165,233,0.2), rgba(99,102,241,0.24))",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    backfaceVisibility: "hidden",
+                  },
+                  { content: "Front" },
+                ),
+                createVirtualNode(
+                  idFor("back"),
+                  "div",
+                  "Back Face",
+                  {
+                    position: "absolute",
+                    inset: "0px",
+                    background:
+                      "linear-gradient(135deg, rgba(16,185,129,0.22), rgba(34,197,94,0.24))",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    transform: "rotateY(180deg)",
+                    backfaceVisibility: "hidden",
+                  },
+                  { content: "Back" },
+                ),
+              ],
+            },
+          ),
+        ],
+      },
+    );
+  }
+  if (presetType === "preset:scroll-reveal") {
+    return createVirtualNode(
+      idFor("reveal"),
+      "section",
+      "Scroll Reveal Block",
+      {
+        padding: "24px",
+        borderRadius: "12px",
+        backgroundColor: "#f8fafc",
+        border: "1px solid rgba(148,163,184,0.3)",
+      },
+      {
+        attributes: { "data-scroll-reveal": "true" },
+        children: [
+          createVirtualNode(
+            idFor("title"),
+            "h2",
+            "Reveal Heading",
+            {
+              marginBottom: "8px",
+              fontSize: "24px",
+              fontWeight: 700,
+            },
+            { content: "Reveal On Scroll" },
+          ),
+          createVirtualNode(
+            idFor("body"),
+            "p",
+            "Reveal Text",
+            {
+              fontSize: "14px",
+              lineHeight: "1.6",
+            },
+            { content: "This block is tagged for preview scroll-reveal animations." },
+          ),
+        ],
+      },
+    );
+  }
+  return null;
+};
+
+const buildStandardElement = (type: string, id: string): VirtualElement => {
+  const normalized = type === "container" || type === "flex" ? "div" : type;
+  const baseStyles: React.CSSProperties = {
+    padding: "10px",
+    minHeight: "20px",
+  };
+  if (type === "flex") {
+    baseStyles.display = "flex";
+    baseStyles.gap = "8px";
+    baseStyles.alignItems = "center";
+  }
+  if (type === "container") {
+    baseStyles.width = "100%";
+    baseStyles.maxWidth = "960px";
+    baseStyles.margin = "0 auto";
+  }
+  return {
+    id,
+    type: normalized as ElementType,
+    name: normalized.charAt(0).toUpperCase() + normalized.slice(1),
+    styles: baseStyles,
+    children: [],
+    content: ["p", "h1", "h2", "h3", "button", "span"].includes(normalized)
+      ? "New Text"
+      : undefined,
+    ...(normalized === "img"
+      ? { src: "https://picsum.photos/200/300", name: "Image" }
+      : {}),
+  };
+};
+
+const materializeVirtualElement = (
+  doc: Document,
+  element: VirtualElement,
+): Node => {
+  if (element.type === "text") {
+    return doc.createTextNode(element.content || "");
+  }
+  const node = doc.createElement(element.type);
+  if (element.id) {
+    node.setAttribute("id", element.id);
+  }
+  if (element.className) {
+    node.setAttribute("class", element.className);
+  }
+  if (element.src) {
+    node.setAttribute("src", element.src);
+  }
+  if (element.href) {
+    node.setAttribute("href", element.href);
+  }
+  if (element.attributes) {
+    for (const [key, value] of Object.entries(element.attributes)) {
+      if (!key) continue;
+      node.setAttribute(key, value);
+    }
+  }
+  for (const [key, rawValue] of Object.entries(element.styles || {})) {
+    if (rawValue === undefined || rawValue === null || rawValue === "") continue;
+    const cssKey = key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+    (node as HTMLElement).style.setProperty(cssKey, String(rawValue));
+  }
+  if (element.animation) {
+    (node as HTMLElement).style.setProperty("animation", element.animation);
+  }
+  if (element.content) {
+    node.appendChild(doc.createTextNode(element.content));
+  }
+  for (const child of element.children) {
+    node.appendChild(materializeVirtualElement(doc, child));
+  }
+  return node;
+};
+
+const buildPreviewLayerTreeFromElement = (
+  element: Element,
+  path: number[] = [],
+): VirtualElement => {
+  const tag = String(element.tagName || "div").toLowerCase();
+  const id = toPreviewLayerId(path);
+  const elementId = (element.getAttribute("id") || "").trim();
+  const classList = (element.getAttribute("class") || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+  const displayName = [
+    elementId ? `#${elementId}` : "",
+    classList.length > 0 ? `.${classList.join(".")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim() || tag.toUpperCase();
+  const children = Array.from(element.children).map((child, index) =>
+    buildPreviewLayerTreeFromElement(child, [...path, index]),
+  );
+  return {
+    id,
+    type: tag,
+    name: displayName,
+    content: normalizeEditorMultilineText(extractTextWithBreaks(element)),
+    html: element instanceof HTMLElement ? element.innerHTML || "" : "",
+    styles: {},
+    children,
+  };
 };
 
 // --- Device Context Menu ---
@@ -3139,6 +3809,14 @@ type PreviewConsoleEntry = {
   time: number;
 };
 type PreviewSelectionMode = "default" | "text" | "image" | "css";
+type PreviewSyncSource = "load" | "navigate" | "path_changed" | "explorer";
+type PendingPageSwitch = {
+  mode: "switch" | "refresh" | "preview" | "preview_mode";
+  fromPath: string;
+  nextPath: string;
+  source: PreviewSyncSource;
+  nextPreviewMode?: "edit" | "preview";
+};
 const PREVIEW_SELECTION_MODE_OPTIONS: Array<{
   value: PreviewSelectionMode;
   label: string;
@@ -3195,9 +3873,12 @@ const App: React.FC = () => {
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
+  const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
+  const [codeDraftByPath, setCodeDraftByPath] = useState<Record<string, string>>({});
+  const [codeDirtyPathSet, setCodeDirtyPathSet] = useState<Record<string, true>>({});
   const [previewConsoleEntries, setPreviewConsoleEntries] = useState<
     PreviewConsoleEntry[]
   >([]);
@@ -3244,6 +3925,10 @@ const App: React.FC = () => {
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [pendingPageSwitch, setPendingPageSwitch] =
+    useState<PendingPageSwitch | null>(null);
+  const [isPageSwitchPromptOpen, setIsPageSwitchPromptOpen] = useState(false);
+  const [isPageSwitchPromptBusy, setIsPageSwitchPromptBusy] = useState(false);
   // Keep both implementations available: switch to "docked" anytime.
   const panelLayoutMode: "docked" | "floating" = "floating";
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState("");
@@ -3274,10 +3959,12 @@ const App: React.FC = () => {
   const interactionModeRef = useRef<
     "edit" | "preview" | "inspect" | "draw" | "move"
   >("edit");
+  const previewModeRef = useRef<"edit" | "preview">("preview");
   const zenRestoreRef = useRef<{
     isLeftPanelOpen: boolean;
     isRightPanelOpen: boolean;
     showTerminal: boolean;
+    isCodePanelOpen: boolean;
     interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
   } | null>(null);
   const lastPreviewSyncRef = useRef<{
@@ -3295,11 +3982,26 @@ const App: React.FC = () => {
   const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
   const previewConsoleFlushTimerRef = useRef<number | null>(null);
   const saveMenuRef = useRef<HTMLDivElement | null>(null);
+  const isRefreshingFilesRef = useRef(false);
+  const saveCodeDraftsRef = useRef<(() => Promise<void>) | null>(null);
   const pendingPreviewWritesRef = useRef<Record<string, string>>({});
+  const codeDraftByPathRef = useRef<Record<string, string>>({});
+  const codeDirtyPathSetRef = useRef<Record<string, true>>({});
+  const dirtyFilesRef = useRef<string[]>([]);
   const previewHistoryRef = useRef<Record<string, PreviewHistoryEntry>>({});
   const previewDocCacheRef = useRef<Record<string, string>>({});
   const previewDocCacheOrderRef = useRef<string[]>([]);
   const autoSaveTimerRef = useRef<number | null>(null);
+  const inlineEditDraftTimerRef = useRef<number | null>(null);
+  const inlineEditDraftPendingRef = useRef<{
+    filePath: string;
+    elementPath: number[];
+    html: string;
+  } | null>(null);
+  const applyPreviewDropCreateRef = useRef<
+    ((type: string, clientX: number, clientY: number) => Promise<void>) | null
+  >(null);
+  const themeTransitionInFlightRef = useRef(false);
   const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(
     null,
   );
@@ -3307,6 +4009,7 @@ const App: React.FC = () => {
   const LEFT_PANEL_MIN_WIDTH = 220;
   const LEFT_PANEL_MAX_WIDTH = 520;
   const RIGHT_PANEL_WIDTH = 264;
+  const CODE_PANEL_WIDTH = 620;
   const previewConsoleErrorCount = useMemo(
     () =>
       previewConsoleEntries.reduce(
@@ -3469,6 +4172,9 @@ const App: React.FC = () => {
       if (autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
       }
+      if (inlineEditDraftTimerRef.current !== null) {
+        window.clearTimeout(inlineEditDraftTimerRef.current);
+      }
     };
   }, [revokeBinaryAssetUrls]);
   useEffect(() => {
@@ -3477,6 +4183,18 @@ const App: React.FC = () => {
   useEffect(() => {
     interactionModeRef.current = interactionMode;
   }, [interactionMode]);
+  useEffect(() => {
+    previewModeRef.current = previewMode;
+  }, [previewMode]);
+  useEffect(() => {
+    codeDraftByPathRef.current = codeDraftByPath;
+  }, [codeDraftByPath]);
+  useEffect(() => {
+    codeDirtyPathSetRef.current = codeDirtyPathSet;
+  }, [codeDirtyPathSet]);
+  useEffect(() => {
+    dirtyFilesRef.current = dirtyFiles;
+  }, [dirtyFiles]);
 
   const setActiveFileStable = useCallback((nextPath: string | null) => {
     activeFileRef.current = nextPath;
@@ -3639,11 +4357,18 @@ const App: React.FC = () => {
     lastPreviewPageSignalRef.current = { path, at: now };
     return true;
   }, []);
-  const syncPreviewActiveFile = useCallback(
-    (
-      nextPath: string,
-      source: "load" | "navigate" | "path_changed" | "explorer",
-    ) => {
+  const hasUnsavedChangesForFile = useCallback(
+    (path: string | null): boolean => {
+      if (!path) return false;
+      if (typeof pendingPreviewWritesRef.current[path] === "string") return true;
+      if (typeof codeDraftByPathRef.current[path] === "string") return true;
+      if (codeDirtyPathSetRef.current[path]) return true;
+      return dirtyFilesRef.current.includes(path);
+    },
+    [],
+  );
+  const commitPreviewActiveFileSync = useCallback(
+    (nextPath: string, source: PreviewSyncSource) => {
       if (!nextPath) return;
       setPreviewSyncedFile((prev) => (prev === nextPath ? prev : nextPath));
       if (source === "navigate" || source === "explorer") {
@@ -3679,6 +4404,38 @@ const App: React.FC = () => {
       }
     },
     [setActiveFileStable],
+  );
+  const syncPreviewActiveFile = useCallback(
+    (
+      nextPath: string,
+      source: PreviewSyncSource,
+      options?: { skipUnsavedPrompt?: boolean },
+    ) => {
+      if (!nextPath) return;
+      const currentPath = selectedPreviewHtmlRef.current;
+      const nextFile = filesRef.current[nextPath];
+      const shouldPrompt =
+        !options?.skipUnsavedPrompt &&
+        source !== "load" &&
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        Boolean(currentPath) &&
+        currentPath !== nextPath &&
+        nextFile?.type === "html" &&
+        hasUnsavedChangesForFile(currentPath);
+      if (shouldPrompt && currentPath) {
+        setPendingPageSwitch({
+          mode: "switch",
+          fromPath: currentPath,
+          nextPath,
+          source,
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
+      commitPreviewActiveFileSync(nextPath, source);
+    },
+    [commitPreviewActiveFileSync, hasUnsavedChangesForFile],
   );
   useEffect(() => {
     console.log("Both panels open?", bothPanelsOpen, {
@@ -3951,6 +4708,9 @@ const App: React.FC = () => {
     }
     if (savedPaths.length === 0) return;
 
+    dirtyFilesRef.current = dirtyFilesRef.current.filter(
+      (path) => !savedPaths.includes(path),
+    );
     setDirtyFiles((prev) => prev.filter((path) => !savedPaths.includes(path)));
     setDirtyPathKeysByFile((prev) => {
       const next = { ...prev };
@@ -3987,6 +4747,258 @@ const App: React.FC = () => {
       void flushPendingPreviewSaves();
     }, 1200);
   }, [autoSaveEnabled, flushPendingPreviewSaves]);
+  const discardUnsavedChangesForFile = useCallback(
+    async (path: string) => {
+      if (!path) return;
+      const hadCodeDraft =
+        typeof codeDraftByPath[path] === "string" || Boolean(codeDirtyPathSet[path]);
+      if (hadCodeDraft) {
+        delete codeDraftByPathRef.current[path];
+        delete codeDirtyPathSetRef.current[path];
+        setCodeDraftByPath((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setCodeDirtyPathSet((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+      }
+      const hadPreviewDraft =
+        typeof pendingPreviewWritesRef.current[path] === "string";
+      if (!hadPreviewDraft) {
+        if (hadCodeDraft) {
+          dirtyFilesRef.current = dirtyFilesRef.current.filter(
+            (entry) => entry !== path,
+          );
+          setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+        }
+        return;
+      }
+
+      const absolutePath = filePathIndexRef.current[path];
+      if (!absolutePath) return;
+      let diskContent = "";
+      try {
+        diskContent = await (Neutralino as any).filesystem.readFile(absolutePath);
+      } catch (error) {
+        console.warn(`Failed discarding unsaved changes for ${path}:`, error);
+        window.alert("Could not discard changes. Please try again.");
+        return;
+      }
+
+      delete pendingPreviewWritesRef.current[path];
+      textFileCacheRef.current[path] = diskContent;
+      setFiles((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content: diskContent,
+          },
+        };
+      });
+      dirtyFilesRef.current = dirtyFilesRef.current.filter(
+        (entry) => entry !== path,
+      );
+      setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+      setDirtyPathKeysByFile((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      previewHistoryRef.current[path] = {
+        past: [],
+        present: diskContent,
+        future: [],
+      };
+      invalidatePreviewDocCache(path);
+
+      const currentEntry = filesRef.current[path];
+      if (currentEntry) {
+        const previewSnapshot: FileMap = {
+          ...filesRef.current,
+          [path]: {
+            ...currentEntry,
+            content: diskContent,
+          },
+        };
+        const previewDoc = createPreviewDocument(
+          previewSnapshot,
+          path,
+          previewDependencyIndexRef.current[path],
+        );
+        cachePreviewDoc(path, previewDoc);
+        if (selectedPreviewHtmlRef.current === path) {
+          setSelectedPreviewDoc(previewDoc);
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+      }
+    },
+    [
+      cachePreviewDoc,
+      codeDirtyPathSet,
+      codeDraftByPath,
+      invalidatePreviewDocCache,
+    ],
+  );
+  const requestPreviewRefreshWithUnsavedGuard = useCallback(() => {
+    const candidate =
+      previewSyncedFile && filesRef.current[previewSyncedFile]?.type === "html"
+        ? previewSyncedFile
+        : selectedPreviewHtmlRef.current &&
+            filesRef.current[selectedPreviewHtmlRef.current]?.type === "html"
+          ? selectedPreviewHtmlRef.current
+          : null;
+    if (!candidate) {
+      setPreviewRefreshNonce((prev) => prev + 1);
+      return;
+    }
+    if (hasUnsavedChangesForFile(candidate)) {
+      setPendingPageSwitch({
+        mode: "refresh",
+        fromPath: candidate,
+        nextPath: candidate,
+        source: "navigate",
+      });
+      setIsPageSwitchPromptOpen(true);
+      return;
+    }
+    setPreviewNavigationFile((prev) => (prev === candidate ? prev : candidate));
+    setPreviewRefreshNonce((prev) => prev + 1);
+  }, [hasUnsavedChangesForFile, previewSyncedFile]);
+  const requestSwitchToPreviewMode = useCallback(() => {
+    if (interactionModeRef.current === "preview") {
+      const currentPath = selectedPreviewHtmlRef.current;
+      if (
+        previewModeRef.current === "edit" &&
+        currentPath &&
+        hasUnsavedChangesForFile(currentPath)
+      ) {
+        setPendingPageSwitch({
+          mode: "preview_mode",
+          fromPath: currentPath,
+          nextPath: currentPath,
+          source: "navigate",
+          nextPreviewMode: "preview",
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
+      setPreviewMode("preview");
+      return;
+    }
+    if (interactionModeRef.current !== "edit") {
+      setInteractionMode("preview");
+      setPreviewMode("preview");
+      return;
+    }
+    const currentPath = selectedPreviewHtmlRef.current;
+    if (currentPath && hasUnsavedChangesForFile(currentPath)) {
+      setPendingPageSwitch({
+        mode: "preview",
+        fromPath: currentPath,
+        nextPath: currentPath,
+        source: "navigate",
+      });
+      setIsPageSwitchPromptOpen(true);
+      return;
+    }
+    setInteractionMode("preview");
+    setPreviewMode("preview");
+  }, [hasUnsavedChangesForFile]);
+  const resolvePendingPageSwitchWithSave = useCallback(async () => {
+    if (!pendingPageSwitch) return;
+    setIsPageSwitchPromptBusy(true);
+    const pending = pendingPageSwitch;
+    const waitForStateFlush = () =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
+    try {
+      await saveCodeDraftsRef.current?.();
+      await flushPendingPreviewSaves();
+      // React state cleanup for dirty flags may settle one tick later.
+      await waitForStateFlush();
+      let stillUnsaved = hasUnsavedChangesForFile(pending.fromPath);
+      if (stillUnsaved) {
+        await waitForStateFlush();
+        stillUnsaved = hasUnsavedChangesForFile(pending.fromPath);
+      }
+      if (stillUnsaved) {
+        window.alert("Some changes could not be saved. Please retry.");
+        return;
+      }
+      setIsPageSwitchPromptOpen(false);
+      setPendingPageSwitch(null);
+      if (pending.mode === "refresh") {
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewRefreshNonce((prev) => prev + 1);
+      } else if (pending.mode === "preview_mode") {
+        setActiveFileStable(pending.fromPath);
+        setPreviewSyncedFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewMode(pending.nextPreviewMode ?? "preview");
+      } else if (pending.mode === "preview") {
+        setInteractionMode("preview");
+      } else {
+        commitPreviewActiveFileSync(pending.nextPath, pending.source);
+      }
+    } finally {
+      setIsPageSwitchPromptBusy(false);
+    }
+  }, [
+    commitPreviewActiveFileSync,
+    flushPendingPreviewSaves,
+    hasUnsavedChangesForFile,
+    pendingPageSwitch,
+  ]);
+  const resolvePendingPageSwitchWithDiscard = useCallback(async () => {
+    if (!pendingPageSwitch) return;
+    setIsPageSwitchPromptBusy(true);
+    const pending = pendingPageSwitch;
+    try {
+      await discardUnsavedChangesForFile(pending.fromPath);
+      setIsPageSwitchPromptOpen(false);
+      setPendingPageSwitch(null);
+      if (pending.mode === "refresh") {
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewRefreshNonce((prev) => prev + 1);
+      } else if (pending.mode === "preview_mode") {
+        setActiveFileStable(pending.fromPath);
+        setPreviewSyncedFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewMode(pending.nextPreviewMode ?? "preview");
+      } else if (pending.mode === "preview") {
+        setInteractionMode("preview");
+      } else {
+        commitPreviewActiveFileSync(pending.nextPath, pending.source);
+      }
+    } finally {
+      setIsPageSwitchPromptBusy(false);
+    }
+  }, [commitPreviewActiveFileSync, discardUnsavedChangesForFile, pendingPageSwitch]);
+  const closePendingPageSwitchPrompt = useCallback(() => {
+    if (isPageSwitchPromptBusy) return;
+    setIsPageSwitchPromptOpen(false);
+    setPendingPageSwitch(null);
+  }, [isPageSwitchPromptBusy]);
 
   const handlePreviewUndo = useCallback(async () => {
     const filePath = selectedPreviewHtmlRef.current;
@@ -4124,11 +5136,13 @@ const App: React.FC = () => {
           isLeftPanelOpen,
           isRightPanelOpen,
           showTerminal,
+          isCodePanelOpen,
           interactionMode,
         };
         setIsLeftPanelOpen(false);
         setIsRightPanelOpen(false);
         setShowTerminal(false);
+        setIsCodePanelOpen(false);
         setInteractionMode("preview");
         return true;
       }
@@ -4138,12 +5152,19 @@ const App: React.FC = () => {
         setIsLeftPanelOpen(restore.isLeftPanelOpen);
         setIsRightPanelOpen(restore.isRightPanelOpen);
         setShowTerminal(restore.showTerminal);
+        setIsCodePanelOpen(restore.isCodePanelOpen);
         setInteractionMode(restore.interactionMode);
       }
       zenRestoreRef.current = null;
       return false;
     });
-  }, [interactionMode, isLeftPanelOpen, isRightPanelOpen, showTerminal]); // --- Keyboard Shortcuts ---
+  }, [
+    interactionMode,
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    isCodePanelOpen,
+    showTerminal,
+  ]); // --- Keyboard Shortcuts ---
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -4160,6 +5181,55 @@ const App: React.FC = () => {
       const key = e.key.toLowerCase();
       const hasModifier = e.ctrlKey || e.metaKey;
       const editableTarget = isEditableTarget(e.target);
+
+      if (hasModifier && editableTarget) {
+        if (key === "s") {
+          e.preventDefault();
+          void saveCodeDraftsRef.current?.();
+          void flushPendingPreviewSaves();
+          return;
+        }
+        if (key === "t") {
+          e.preventDefault();
+          requestPreviewRefreshWithUnsavedGuard();
+          return;
+        }
+        if (key === "p") {
+          e.preventDefault();
+          requestSwitchToPreviewMode();
+          return;
+        }
+        if (key === "f") {
+          e.preventDefault();
+          setIsLeftPanelOpen(true);
+          setIsRightPanelOpen(true);
+          setIsCodePanelOpen(false);
+          return;
+        }
+        if (key === "e") {
+          e.preventDefault();
+          setSidebarToolMode("edit");
+          setInteractionMode("preview");
+          setPreviewMode("edit");
+          return;
+        }
+        if (key === "k") {
+          e.preventDefault();
+          setIsCommandPaletteOpen((prev) => !prev);
+          return;
+        }
+        if (e.code === "Backquote") {
+          e.preventDefault();
+          setShowTerminal((prev) => !prev);
+        }
+        // Let native editor undo/redo work inside inputs/contentEditable.
+        return;
+      }
+      if (key === "escape" && isPageSwitchPromptOpen && !isPageSwitchPromptBusy) {
+        e.preventDefault();
+        closePendingPageSwitchPrompt();
+        return;
+      }
 
       if (key === "escape" && isZenMode) {
         e.preventDefault();
@@ -4178,7 +5248,11 @@ const App: React.FC = () => {
         if (key === "e") {
           e.preventDefault();
           if (!e.repeat) {
-            setIsRightPanelOpen((prev) => !prev);
+            setIsRightPanelOpen((prev) => {
+              const next = !prev;
+              if (next) setIsCodePanelOpen(false);
+              return next;
+            });
           }
           return;
         }
@@ -4195,17 +5269,19 @@ const App: React.FC = () => {
         e.preventDefault();
         setIsLeftPanelOpen(true);
         setIsRightPanelOpen(true);
+        setIsCodePanelOpen(false);
         return;
       }
       if (key === "p") {
         e.preventDefault();
-        setInteractionMode("preview");
+        requestSwitchToPreviewMode();
         return;
       }
       if (key === "e") {
         e.preventDefault();
         setSidebarToolMode("edit");
-        setInteractionMode("edit");
+        setInteractionMode("preview");
+        setPreviewMode("edit");
         return;
       }
       if (key === "`") {
@@ -4220,24 +5296,13 @@ const App: React.FC = () => {
       }
       if (key === "s") {
         e.preventDefault();
+        void saveCodeDraftsRef.current?.();
         void flushPendingPreviewSaves();
         return;
       }
       if (key === "t") {
         e.preventDefault();
-        const candidate =
-          previewSyncedFile && filesRef.current[previewSyncedFile]?.type === "html"
-            ? previewSyncedFile
-            : selectedPreviewHtmlRef.current &&
-                filesRef.current[selectedPreviewHtmlRef.current]?.type === "html"
-              ? selectedPreviewHtmlRef.current
-              : null;
-        if (candidate) {
-          setPreviewNavigationFile((prev) =>
-            prev === candidate ? prev : candidate,
-          );
-        }
-        setPreviewRefreshNonce((prev) => prev + 1);
+        requestPreviewRefreshWithUnsavedGuard();
         return;
       }
       if (key === "z" && !e.shiftKey) {
@@ -4253,9 +5318,14 @@ const App: React.FC = () => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    closePendingPageSwitchPrompt,
     flushPendingPreviewSaves,
+    isPageSwitchPromptBusy,
+    isPageSwitchPromptOpen,
     isZenMode,
     previewSyncedFile,
+    requestPreviewRefreshWithUnsavedGuard,
+    requestSwitchToPreviewMode,
     runRedo,
     runUndo,
     toggleZenMode,
@@ -4269,6 +5339,7 @@ const App: React.FC = () => {
       setPreviewSelectedElement(null);
       setPreviewSelectedComputedStyles(null);
       if (deviceMode === "tablet") {
+        setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
       }
     },
@@ -4288,11 +5359,18 @@ const App: React.FC = () => {
   );
 
   const handleUpdateContent = useCallback(
-    (data: { content?: string; src?: string; href?: string }) => {
+    (data: { content?: string; html?: string; src?: string; href?: string }) => {
       if (!selectedId) return;
+      const normalizedData =
+        typeof data.html === "string" && typeof data.content !== "string"
+          ? {
+              ...data,
+              content: extractTextFromHtmlFragment(data.html),
+            }
+          : data;
       const newRoot = updateElementInTree(root, selectedId, (el) => ({
         ...el,
-        ...data,
+        ...normalizedData,
       }));
       pushHistory(newRoot);
     },
@@ -4376,25 +5454,14 @@ const App: React.FC = () => {
 
   const handleAddElement = useCallback(
     (type: string, position: "inside" | "before" | "after" = "inside") => {
-      const newId = `${type}-${Date.now()}`;
-      const newElement: VirtualElement = {
-        id: newId,
-        type: type as ElementType,
-        name: type.charAt(0).toUpperCase() + type.slice(1),
-        styles: { padding: "10px", minHeight: "20px" },
-        children: [],
-        content: ["p", "h1", "h2", "h3", "button", "span"].includes(type)
-          ? "New Text"
-          : undefined,
-      };
-      if (type === "img") {
-        newElement.src = "https://picsum.photos/200/300";
-        newElement.name = "Image";
-      }
+      const idFor = createPresetIdFactory(type);
+      const newElement =
+        buildPresetElement(type, idFor) ??
+        buildStandardElement(type, idFor("element"));
       const targetId = selectedId || root.id;
       const newRoot = addElementToTree(root, targetId, newElement, position);
       pushHistory(newRoot);
-      setSelectedId(newId);
+      setSelectedId(newElement.id);
     },
     [root, selectedId, pushHistory],
   );
@@ -4407,6 +5474,23 @@ const App: React.FC = () => {
   }, [root, selectedId, pushHistory]);
   const handleSidebarAddElement = useCallback(
     (type: string) => {
+      if (
+        interactionModeRef.current === "preview" &&
+        selectedPreviewHtmlRef.current
+      ) {
+        const frameRect = previewFrameRef.current?.getBoundingClientRect();
+        const clientX = frameRect
+          ? Math.round(frameRect.left + frameRect.width / 2)
+          : Math.round(window.innerWidth / 2);
+        const clientY = frameRect
+          ? Math.round(frameRect.top + frameRect.height / 2)
+          : Math.round(window.innerHeight / 2);
+        setSidebarToolMode("edit");
+        setInteractionMode("preview");
+        setPreviewMode("edit");
+        void applyPreviewDropCreateRef.current?.(type, clientX, clientY);
+        return;
+      }
       handleAddElement(type, "inside");
     },
     [handleAddElement],
@@ -4418,18 +5502,59 @@ const App: React.FC = () => {
     [handleAddFontToPresentationCss],
   );
   const handlePreviewRefresh = useCallback(() => {
-    const candidate =
-      previewSyncedFile && filesRef.current[previewSyncedFile]?.type === "html"
-        ? previewSyncedFile
-        : selectedPreviewHtmlRef.current &&
-            filesRef.current[selectedPreviewHtmlRef.current]?.type === "html"
-          ? selectedPreviewHtmlRef.current
-          : null;
-    if (candidate) {
-      setPreviewNavigationFile((prev) => (prev === candidate ? prev : candidate));
+    requestPreviewRefreshWithUnsavedGuard();
+  }, [requestPreviewRefreshWithUnsavedGuard]);
+  const openCodePanel = useCallback(() => {
+    setIsCodePanelOpen(true);
+    setIsLeftPanelOpen(false);
+    setIsRightPanelOpen(false);
+    setShowTerminal(false);
+  }, []);
+  const toggleThemeWithTransition = useCallback(() => {
+    if (themeTransitionInFlightRef.current) return;
+    themeTransitionInFlightRef.current = true;
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    const rootEl = document.documentElement;
+    rootEl.classList.add("theme-transitioning");
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cleanupTransitionVars = () => {
+      const rootStyle = document.documentElement.style;
+      rootStyle.removeProperty("--theme-transition-x");
+      rootStyle.removeProperty("--theme-transition-y");
+      rootStyle.removeProperty("--theme-transition-radius");
+      rootEl.classList.remove("theme-transitioning");
+      themeTransitionInFlightRef.current = false;
+    };
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty("--theme-transition-x", `${window.innerWidth}px`);
+    rootStyle.setProperty("--theme-transition-y", "0px");
+    rootStyle.setProperty(
+      "--theme-transition-radius",
+      `${Math.hypot(window.innerWidth, window.innerHeight)}px`,
+    );
+
+    if (prefersReducedMotion) {
+      setTheme(nextTheme);
+      cleanupTransitionVars();
+      return;
     }
-    setPreviewRefreshNonce((prev) => prev + 1);
-  }, [previewSyncedFile]);
+
+    const doc = document as MaybeViewTransitionDocument;
+    if (typeof doc.startViewTransition !== "function") {
+      setTheme(nextTheme);
+      cleanupTransitionVars();
+      return;
+    }
+
+    const transition = doc.startViewTransition(() => {
+      flushSync(() => {
+        setTheme(nextTheme);
+      });
+    });
+    void transition.finished.finally(cleanupTransitionVars);
+  }, [theme]);
 
   const handleCommandAction = (actionId: string, payload?: any) => {
     switch (actionId) {
@@ -4446,13 +5571,13 @@ const App: React.FC = () => {
         setDeviceMode("mobile");
         break;
       case "toggle-preview":
-        setInteractionMode((prev) => {
-          if (prev === "preview") {
-            return sidebarToolMode;
-          }
+        if (interactionModeRef.current === "preview") {
           setSidebarToolMode("edit");
-          return "preview";
-        });
+          setPreviewMode("edit");
+        } else {
+          setSidebarToolMode("edit");
+          requestSwitchToPreviewMode();
+        }
         break;
       case "clear-selection":
         setSelectedId(null);
@@ -5039,17 +6164,347 @@ const App: React.FC = () => {
       setActiveFileStable(initialFile);
       setPreviewSyncedFile(initialFile);
       setPreviewNavigationFile(initialFile);
-      if (initialFile && fsFiles[initialFile]?.type === "html") {
-        setInteractionMode("preview");
-      }
+      selectedPreviewHtmlRef.current =
+        initialFile && fsFiles[initialFile]?.type === "html" ? initialFile : null;
+      setSidebarToolMode("edit");
+      setPreviewMode("preview");
+      setInteractionMode("preview");
     } catch (error) {
       console.error("Failed to open folder:", error);
       alert("Could not open folder. Please try again.");
     }
   };
+  const ensureDirectoryTree = useCallback(async (absolutePath: string) => {
+    const normalized = normalizePath(absolutePath).replace(/[\\/]$/, "");
+    if (!normalized) return;
+    const parts = normalized.split("/");
+    if (parts.length === 0) return;
+    let current = "";
+    let startIndex = 0;
+    if (/^[A-Za-z]:$/.test(parts[0])) {
+      current = `${parts[0]}/`;
+      startIndex = 1;
+    } else if (parts[0] === "") {
+      current = "/";
+      startIndex = 1;
+    } else {
+      current = parts[0];
+      startIndex = 1;
+    }
+    for (let index = startIndex; index < parts.length; index += 1) {
+      const segment = parts[index];
+      if (!segment) continue;
+      current = current.replace(/[\\/]$/, "");
+      current = `${current}/${segment}`;
+      try {
+        await (Neutralino as any).filesystem.createDirectory(current);
+      } catch {
+        // Ignore "already exists" and permission rejections for existing roots.
+      }
+    }
+  }, []);
+  const refreshProjectFiles = useCallback(async () => {
+    if (!projectPath) return;
+    if (isRefreshingFilesRef.current) return;
+    isRefreshingFilesRef.current = true;
+    try {
+      const rootPath = normalizePath(projectPath);
+      const nextFiles: FileMap = {};
+      const absolutePathIndex: Record<string, string> = {};
+      const upsertFile = (virtualPath: string, absolutePath: string) => {
+        const normalizedVirtual = normalizeProjectRelative(virtualPath);
+        if (!normalizedVirtual) return;
+        const existing = nextFiles[normalizedVirtual];
+        if (existing) return;
+        const name = normalizedVirtual.includes("/")
+          ? normalizedVirtual.slice(normalizedVirtual.lastIndexOf("/") + 1)
+          : normalizedVirtual;
+        const oldEntry = filesRef.current[normalizedVirtual];
+        const cachedText = textFileCacheRef.current[normalizedVirtual];
+        const cachedBinary = binaryAssetUrlCacheRef.current[normalizedVirtual];
+        let content: string | Blob = "";
+        if (oldEntry && typeof oldEntry.content === "string" && oldEntry.content.length > 0) {
+          content = oldEntry.content;
+        } else if (typeof cachedText === "string" && cachedText.length > 0) {
+          content = cachedText;
+        } else if (typeof cachedBinary === "string" && cachedBinary.length > 0) {
+          content = cachedBinary;
+        }
+        nextFiles[normalizedVirtual] = {
+          path: normalizedVirtual,
+          name,
+          type: inferFileType(name),
+          content,
+        };
+        absolutePathIndex[normalizedVirtual] = normalizePath(absolutePath);
+      };
+
+      const walkDirectory = async (directoryPath: string): Promise<void> => {
+        const entries = await (Neutralino as any).filesystem.readDirectory(directoryPath);
+        for (const entry of entries as Array<{ entry: string; type: string }>) {
+          if (!entry?.entry || entry.entry === "." || entry.entry === "..") continue;
+          const absolutePath = joinPath(directoryPath, entry.entry);
+          if (entry.type === "DIRECTORY") {
+            if (IGNORED_FOLDERS.has(entry.entry.toLowerCase())) continue;
+            await walkDirectory(absolutePath);
+            continue;
+          }
+          if (entry.type !== "FILE") continue;
+          const normalizedAbsolute = normalizePath(absolutePath);
+          const relativePath = normalizedAbsolute
+            .replace(`${rootPath}/`, "")
+            .replace(rootPath, "")
+            .replace(/^\/+/, "");
+          if (!relativePath) continue;
+          upsertFile(relativePath, normalizedAbsolute);
+        }
+      };
+
+      await walkDirectory(rootPath);
+
+      for (const [virtualPath, absolutePath] of Object.entries(filePathIndexRef.current)) {
+        if (!virtualPath.toLowerCase().startsWith("shared/")) continue;
+        if (absolutePathIndex[virtualPath]) continue;
+        try {
+          await (Neutralino as any).filesystem.getStats(absolutePath);
+          upsertFile(virtualPath, absolutePath);
+        } catch {
+          // Removed shared file; ignore.
+        }
+      }
+
+      filePathIndexRef.current = absolutePathIndex;
+      setFiles(nextFiles);
+      setCodeDraftByPath((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(
+            ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
+          ),
+        ),
+      );
+      setCodeDirtyPathSet((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(
+            ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
+          ),
+        ) as Record<string, true>,
+      );
+      setDirtyFiles((prev) => prev.filter((path) => Boolean(nextFiles[path])));
+
+      const existingActive = activeFileRef.current;
+      if (!existingActive || !nextFiles[existingActive]) {
+        const fallback =
+          pickDefaultHtmlFile(nextFiles) ??
+          Object.keys(nextFiles).find((path) => isTextFileType(nextFiles[path].type)) ??
+          null;
+        setActiveFileStable(fallback);
+        setPreviewSyncedFile(fallback);
+        setPreviewNavigationFile(fallback);
+      }
+    } catch (error) {
+      console.warn("Failed to refresh file index:", error);
+    } finally {
+      isRefreshingFilesRef.current = false;
+    }
+  }, [projectPath, setActiveFileStable]);
+  const handleCreateFileAtPath = useCallback(
+    async (parentPath: string) => {
+      if (!projectPath) return;
+      const defaultName = "new-file.html";
+      const nextName = window.prompt("New file name", defaultName);
+      if (!nextName) return;
+      const cleanedName = normalizeProjectRelative(nextName);
+      if (!cleanedName) return;
+
+      const baseVirtual = normalizeProjectRelative(parentPath || "");
+      const nextVirtual = normalizeProjectRelative(
+        baseVirtual ? `${baseVirtual}/${cleanedName}` : cleanedName,
+      );
+      if (!nextVirtual) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("A file with the same path already exists.");
+        return;
+      }
+
+      const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
+      const absoluteParent = getParentPath(absolutePath);
+      if (absoluteParent) {
+        await ensureDirectoryTree(absoluteParent);
+      }
+      try {
+        await (Neutralino as any).filesystem.writeFile(absolutePath, "");
+      } catch (error) {
+        console.warn("Failed to create file:", error);
+        window.alert("Could not create file.");
+        return;
+      }
+      await refreshProjectFiles();
+      setActiveFileStable(nextVirtual);
+      setPreviewSyncedFile((prev) => (prev === nextVirtual ? prev : nextVirtual));
+      setPreviewNavigationFile((prev) => (prev === nextVirtual ? prev : nextVirtual));
+      setIsLeftPanelOpen(true);
+    },
+    [ensureDirectoryTree, projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  const handleCreateFolderAtPath = useCallback(
+    async (parentPath: string) => {
+      if (!projectPath) return;
+      const nextName = window.prompt("New folder name", "new-folder");
+      if (!nextName) return;
+      const cleanedName = normalizeProjectRelative(nextName);
+      if (!cleanedName) return;
+      const baseVirtual = normalizeProjectRelative(parentPath || "");
+      const nextVirtual = normalizeProjectRelative(
+        baseVirtual ? `${baseVirtual}/${cleanedName}` : cleanedName,
+      );
+      if (!nextVirtual) return;
+      const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
+      try {
+        await ensureDirectoryTree(absolutePath);
+      } catch (error) {
+        console.warn("Failed to create directory:", error);
+        window.alert("Could not create folder.");
+        return;
+      }
+      await refreshProjectFiles();
+      setIsLeftPanelOpen(true);
+    },
+    [ensureDirectoryTree, projectPath, refreshProjectFiles],
+  );
+  const handleRenamePath = useCallback(
+    async (path: string) => {
+      if (!projectPath) return;
+      if (!path) return;
+      const currentName = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+      const nextName = window.prompt("Rename to", currentName);
+      if (!nextName) return;
+      const normalizedName = normalizeProjectRelative(nextName);
+      if (!normalizedName) return;
+      const parentVirtual = getParentPath(path) || "";
+      const nextVirtual = normalizeProjectRelative(
+        parentVirtual ? `${parentVirtual}/${normalizedName}` : normalizedName,
+      );
+      if (!nextVirtual || nextVirtual === path) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("Another item with the same name already exists.");
+        return;
+      }
+      const absoluteSource =
+        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
+      const absoluteParent = getParentPath(absoluteSource);
+      if (!absoluteParent) return;
+      const absoluteDestination = normalizePath(joinPath(absoluteParent, normalizedName));
+      try {
+        await (Neutralino as any).filesystem.move(absoluteSource, absoluteDestination);
+      } catch (error) {
+        console.warn("Rename failed:", error);
+        window.alert("Could not rename item.");
+        return;
+      }
+      await refreshProjectFiles();
+      if (activeFileRef.current === path) {
+        setActiveFileStable(nextVirtual);
+      }
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  const handleDeletePath = useCallback(
+    async (path: string, kind: "file" | "folder") => {
+      if (!projectPath || !path) return;
+      const label = kind === "folder" ? "folder" : "file";
+      const ok = window.confirm(`Delete ${label} "${path}"?`);
+      if (!ok) return;
+      const absoluteTarget =
+        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
+      try {
+        await (Neutralino as any).filesystem.remove(absoluteTarget);
+      } catch (error) {
+        console.warn("Delete failed:", error);
+        window.alert("Could not delete item.");
+        return;
+      }
+      if (activeFileRef.current && (activeFileRef.current === path || activeFileRef.current.startsWith(`${path}/`))) {
+        setActiveFileStable(null);
+      }
+      await refreshProjectFiles();
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  const handleDuplicateFile = useCallback(
+    async (path: string) => {
+      if (!projectPath || !path) return;
+      const absoluteSource =
+        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
+      const currentName = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+      const dotIndex = currentName.lastIndexOf(".");
+      const stem = dotIndex > 0 ? currentName.slice(0, dotIndex) : currentName;
+      const ext = dotIndex > 0 ? currentName.slice(dotIndex) : "";
+      const defaultName = `${stem}-copy${ext}`;
+      const nextName = window.prompt("Duplicate as", defaultName);
+      if (!nextName) return;
+      const normalizedName = normalizeProjectRelative(nextName);
+      if (!normalizedName) return;
+      const parentVirtual = getParentPath(path) || "";
+      const nextVirtual = normalizeProjectRelative(
+        parentVirtual ? `${parentVirtual}/${normalizedName}` : normalizedName,
+      );
+      if (!nextVirtual) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("A file with this name already exists.");
+        return;
+      }
+      const absoluteParent = getParentPath(absoluteSource);
+      if (!absoluteParent) return;
+      const absoluteDestination = normalizePath(joinPath(absoluteParent, normalizedName));
+      try {
+        await (Neutralino as any).filesystem.copy(absoluteSource, absoluteDestination, {
+          recursive: false,
+          overwrite: false,
+          skip: false,
+        });
+      } catch (error) {
+        console.warn("Duplicate failed:", error);
+        window.alert("Could not duplicate file.");
+        return;
+      }
+      await refreshProjectFiles();
+      setActiveFileStable(nextVirtual);
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  useEffect(() => {
+    if (!projectPath) return;
+    const timer = window.setInterval(() => {
+      void refreshProjectFiles();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [projectPath, refreshProjectFiles]);
   const handleSelectFile = useCallback(
     (path: string) => {
       console.log("[Preview] Current page:", path);
+      const currentPath = selectedPreviewHtmlRef.current;
+      const targetIsHtml = files[path]?.type === "html";
+      if (
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        targetIsHtml &&
+        currentPath &&
+        currentPath !== path &&
+        hasUnsavedChangesForFile(currentPath)
+      ) {
+        setPendingPageSwitch({
+          mode: "switch",
+          fromPath: currentPath,
+          nextPath: path,
+          source: "explorer",
+        });
+        setIsPageSwitchPromptOpen(true);
+        setIsLeftPanelOpen(true);
+        return;
+      }
       if (activeFileRef.current === path) {
         setIsLeftPanelOpen(true);
         if (
@@ -5063,12 +6518,166 @@ const App: React.FC = () => {
       syncPreviewActiveFile(path, "explorer");
       setIsLeftPanelOpen(true);
     },
-    [files, syncPreviewActiveFile],
+    [files, hasUnsavedChangesForFile, syncPreviewActiveFile],
   );
   const selectedElement = selectedId ? findElementById(root, selectedId) : null;
   const selectedPathIds = useMemo(
     () => collectPathIdsToElement(root, selectedId),
     [root, selectedId],
+  );
+  const previewLayerSelectedId = useMemo(() => {
+    if (
+      interactionMode !== "preview" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return null;
+    }
+    return toPreviewLayerId(previewSelectedPath);
+  }, [interactionMode, previewSelectedPath]);
+  const previewLayersRoot = useMemo<VirtualElement>(() => {
+    if (interactionMode !== "preview") return root;
+    const emptyPreviewRoot: VirtualElement = {
+      id: "preview-live-root",
+      type: "body",
+      name: "Body",
+      content: "",
+      html: "",
+      styles: {},
+      children: [],
+    };
+    const liveDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    const liveBody = liveDocument?.body ?? null;
+    if (liveBody) {
+      return {
+        id: "preview-live-root",
+        type: "body",
+        name: "Body",
+        content: "",
+        html: liveBody.innerHTML || "",
+        styles: {},
+        children: Array.from(liveBody.children).map((child, index) =>
+          buildPreviewLayerTreeFromElement(child, [index]),
+        ),
+      };
+    }
+    const activeHtmlPath = selectedPreviewHtmlRef.current;
+    const activeHtmlFile =
+      activeHtmlPath && files[activeHtmlPath]
+        ? files[activeHtmlPath]
+        : null;
+    const activeHtmlContent =
+      activeHtmlFile && typeof activeHtmlFile.content === "string"
+        ? activeHtmlFile.content
+        : "";
+    const fallbackHtml =
+      activeHtmlPath && typeof textFileCacheRef.current[activeHtmlPath] === "string"
+        ? textFileCacheRef.current[activeHtmlPath]
+        : "";
+    const sourceHtml =
+      activeHtmlContent && activeHtmlContent.trim().length > 0
+        ? activeHtmlContent
+        : fallbackHtml && fallbackHtml.trim().length > 0
+          ? fallbackHtml
+          : selectedPreviewDoc;
+    if (!sourceHtml || sourceHtml.trim().length === 0) return emptyPreviewRoot;
+    try {
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const body = parsed.body;
+      return {
+        id: "preview-live-root",
+        type: "body",
+        name: "Body",
+        content: "",
+        html: body?.innerHTML || "",
+        styles: {},
+        children: body
+          ? Array.from(body.children).map((child, index) =>
+              buildPreviewLayerTreeFromElement(child, [index]),
+            )
+          : [],
+      };
+    } catch {
+      return emptyPreviewRoot;
+    }
+  }, [
+    files,
+    interactionMode,
+    previewRefreshNonce,
+    root,
+    selectedPreviewDoc,
+  ]);
+  const selectPreviewElementAtPath = useCallback((path: number[]) => {
+    if (
+      interactionModeRef.current !== "preview" ||
+      !Array.isArray(path) ||
+      path.length === 0
+    ) {
+      return;
+    }
+    const frameDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!frameDocument?.body) return;
+    const target = readElementByPath(frameDocument.body, path);
+    if (!target) return;
+    Array.from(
+      frameDocument.querySelectorAll<HTMLElement>(".__nx-preview-selected"),
+    ).forEach((el) => el.classList.remove("__nx-preview-selected"));
+    target.classList.add("__nx-preview-selected");
+    const inlineStyles = parseInlineStyleText(
+      target.getAttribute("style") || "",
+    );
+    const computedStyles = extractComputedStylesFromElement(target);
+    const mergedStyles: React.CSSProperties = {
+      ...(computedStyles || {}),
+      ...inlineStyles,
+    };
+    const nextElement: VirtualElement = {
+      id:
+        target.getAttribute("id") ||
+        `preview-${toPreviewLayerId(path)}-${Date.now()}`,
+      type: String(target.tagName || "div").toLowerCase(),
+      name: String(target.tagName || "div").toUpperCase(),
+      content: normalizeEditorMultilineText(extractTextWithBreaks(target)),
+      html: target instanceof HTMLElement ? target.innerHTML || "" : "",
+      ...(target.getAttribute("src")
+        ? { src: target.getAttribute("src") || "" }
+        : {}),
+      ...(target.getAttribute("href")
+        ? { href: target.getAttribute("href") || "" }
+        : {}),
+      ...(target.getAttribute("class")
+        ? { className: target.getAttribute("class") || "" }
+        : {}),
+      ...(extractCustomAttributesFromElement(target)
+        ? { attributes: extractCustomAttributesFromElement(target) || {} }
+        : {}),
+      styles: mergedStyles,
+      children: [],
+    };
+    setPreviewSelectedPath(path);
+    setPreviewSelectedElement(nextElement);
+    setPreviewSelectedComputedStyles(computedStyles);
+    setSelectedId(null);
+    setIsCodePanelOpen(false);
+    setIsRightPanelOpen(true);
+  }, []);
+  const handleSidebarSelectElement = useCallback(
+    (id: string) => {
+      const previewPath = fromPreviewLayerId(id);
+      if (previewPath) {
+        selectPreviewElementAtPath(previewPath);
+        return;
+      }
+      handleSelect(id);
+    },
+    [handleSelect, selectPreviewElementAtPath],
   );
   const inspectorElement = previewSelectedElement ?? selectedElement;
   const selectedPreviewHtml = useMemo(() => {
@@ -5139,6 +6748,17 @@ const App: React.FC = () => {
     setPreviewSelectedElement(null);
     setPreviewSelectedComputedStyles(null);
   }, [selectedPreviewHtml]);
+  const handlePreviewStageDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const payload =
+        event.dataTransfer.getData(TOOLBOX_DRAG_MIME) ||
+        event.dataTransfer.getData("text/plain");
+      if (!payload || !selectedPreviewHtml) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [selectedPreviewHtml],
+  );
 
   const resolveVirtualPathFromMountRelative = useCallback(
     (mountRelativePath: string): string | null => {
@@ -5265,7 +6885,29 @@ const App: React.FC = () => {
     ],
   );
   const setPreviewModeWithSync = useCallback(
-    (nextMode: "edit" | "preview") => {
+    (
+      nextMode: "edit" | "preview",
+      options?: { skipUnsavedPrompt?: boolean },
+    ) => {
+      const currentPath = selectedPreviewHtmlRef.current;
+      const shouldPromptUnsaved =
+        !options?.skipUnsavedPrompt &&
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        nextMode === "preview" &&
+        Boolean(currentPath) &&
+        hasUnsavedChangesForFile(currentPath);
+      if (shouldPromptUnsaved && currentPath) {
+        setPendingPageSwitch({
+          mode: "preview_mode",
+          fromPath: currentPath,
+          nextPath: currentPath,
+          source: "navigate",
+          nextPreviewMode: "preview",
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
       setPreviewMode(nextMode);
       if (interactionModeRef.current !== "preview") return;
       postPreviewModeToFrame({ mode: nextMode, force: true });
@@ -5276,7 +6918,7 @@ const App: React.FC = () => {
         postPreviewModeToFrame({ mode: nextMode, force: true });
       }, 180);
     },
-    [postPreviewModeToFrame],
+    [hasUnsavedChangesForFile, postPreviewModeToFrame],
   );
   const handleSidebarInteractionModeChange = useCallback(
     (nextMode: "edit" | "preview" | "inspect" | "draw" | "move") => {
@@ -5297,9 +6939,14 @@ const App: React.FC = () => {
         });
         return;
       }
+      if (projectPath) {
+        setPreviewMode("edit");
+        setInteractionMode("preview");
+        return;
+      }
       setInteractionMode(nextMode);
     },
-    [drawElementTag, postPreviewModeToFrame, setPreviewModeWithSync],
+    [drawElementTag, postPreviewModeToFrame, projectPath, setPreviewModeWithSync],
   );
   const sidebarInteractionMode = useMemo<
     "edit" | "preview" | "inspect" | "draw" | "move"
@@ -5505,6 +7152,32 @@ const App: React.FC = () => {
       schedulePreviewAutoSave,
     ],
   );
+  const applyPreviewInlineEditDraft = useCallback(
+    async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
+      if (!filePath || !Array.isArray(elementPath) || elementPath.length === 0) {
+        return;
+      }
+      const sourceHtml =
+        typeof filesRef.current[filePath]?.content === "string"
+          ? (filesRef.current[filePath]?.content as string)
+          : typeof textFileCacheRef.current[filePath] === "string"
+            ? textFileCacheRef.current[filePath]
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      if (!target) return;
+      target.innerHTML = nextInnerHtml;
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(filePath, serialized, {
+        refreshPreviewDoc: false,
+        pushToHistory: false,
+      });
+    },
+    [persistPreviewHtmlContent],
+  );
   const applyPreviewInlineEdit = useCallback(
     async (elementPath: number[], nextInnerHtml: string) => {
       if (
@@ -5545,8 +7218,92 @@ const App: React.FC = () => {
         refreshPreviewDoc: false,
         elementPath: normalizedPath,
       });
+      const liveElement = getLivePreviewSelectedElement(normalizedPath);
+      const snapshotElement =
+        liveElement instanceof HTMLElement
+          ? liveElement
+          : target instanceof HTMLElement
+            ? target
+            : null;
+      const snapshotNode: Element = snapshotElement || target;
+      const snapshotInlineStyle =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("style") || ""
+          : snapshotNode.getAttribute("style") || "";
+      const snapshotInlineStyles = parseInlineStyleText(snapshotInlineStyle);
+      const snapshotComputedStyles =
+        extractComputedStylesFromElement(snapshotElement || snapshotNode) || null;
+      const snapshotText = normalizeEditorMultilineText(
+        extractTextWithBreaks(snapshotNode),
+      );
+      const snapshotHtml =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.innerHTML || ""
+          : target.innerHTML || nextInnerHtml;
+      const snapshotAttributes =
+        extractCustomAttributesFromElement(snapshotElement || snapshotNode) ||
+        undefined;
+      const snapshotSrc =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("src") || undefined
+          : snapshotNode.getAttribute("src") || undefined;
+      const snapshotHref =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("href") || undefined
+          : snapshotNode.getAttribute("href") || undefined;
+      const snapshotClassName =
+        snapshotElement && typeof snapshotElement.className === "string"
+          ? snapshotElement.className
+          : typeof snapshotNode.className === "string"
+            ? snapshotNode.className
+            : undefined;
+      const snapshotTag = String(snapshotNode.tagName || "div").toLowerCase();
+      const inlineAnimation =
+        typeof snapshotInlineStyles.animation === "string"
+          ? snapshotInlineStyles.animation.trim()
+          : "";
+      const computedAnimationCandidate =
+        snapshotComputedStyles &&
+        typeof snapshotComputedStyles.animation === "string"
+          ? snapshotComputedStyles.animation.trim()
+          : "";
+      const resolvedAnimation =
+        inlineAnimation ||
+        (computedAnimationCandidate &&
+        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+          ? computedAnimationCandidate
+          : "");
+      const mergedStyles: React.CSSProperties = {
+        ...(snapshotComputedStyles || {}),
+        ...snapshotInlineStyles,
+      };
+
+      setPreviewSelectedPath(normalizedPath);
+      setPreviewSelectedComputedStyles(snapshotComputedStyles);
+      setPreviewSelectedElement({
+        id:
+          snapshotElement?.id ||
+          snapshotNode.getAttribute("id") ||
+          `preview-${Date.now()}`,
+        type: snapshotTag,
+        name: snapshotTag.toUpperCase(),
+        content: snapshotText,
+        html: snapshotHtml,
+        ...(snapshotSrc ? { src: snapshotSrc } : {}),
+        ...(snapshotHref ? { href: snapshotHref } : {}),
+        ...(snapshotClassName ? { className: snapshotClassName } : {}),
+        ...(snapshotAttributes ? { attributes: snapshotAttributes } : {}),
+        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+        styles: mergedStyles,
+        children: [],
+      });
     },
-    [loadFileContent, persistPreviewHtmlContent, selectedPreviewHtml],
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      selectedPreviewHtml,
+    ],
   );
   const applyPreviewStyleUpdateAtPath = useCallback(
     async (
@@ -5692,7 +7449,7 @@ const App: React.FC = () => {
     [applyPreviewStyleUpdateAtPath, previewSelectedPath],
   );
   const applyPreviewContentUpdate = useCallback(
-    async (data: { content?: string; src?: string; href?: string }) => {
+    async (data: { content?: string; html?: string; src?: string; href?: string }) => {
       if (
         !selectedPreviewHtml ||
         !previewSelectedPath ||
@@ -5716,14 +7473,66 @@ const App: React.FC = () => {
       const target = readElementByPath(parsed.body, previewSelectedPath);
       const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
       if (!target && !liveTarget) return;
+      let didChangeContent = false;
+      let didChangeSrc = false;
+      let didChangeHref = false;
+      let nextResolvedContent: string | null = null;
+      let nextResolvedHtml: string | null = null;
 
-      if (typeof data.content === "string") {
-        const normalizedText = data.content.replace(/\r\n?/g, "\n");
-        if (target) {
-          applyMultilineTextToElement(target, normalizedText);
+      if (typeof data.html === "string") {
+        const nextHtml = data.html;
+        const currentHtml =
+          target instanceof HTMLElement
+            ? target.innerHTML
+            : liveTarget instanceof HTMLElement
+              ? liveTarget.innerHTML
+              : "";
+        if (currentHtml !== nextHtml) {
+          if (target instanceof HTMLElement) {
+            target.innerHTML = nextHtml;
+          }
+          if (liveTarget instanceof HTMLElement) {
+            liveTarget.innerHTML = nextHtml;
+          }
+          didChangeContent = true;
         }
-        if (liveTarget) {
-          applyMultilineTextToElement(liveTarget, normalizedText);
+        if (didChangeContent) {
+          const baselineElement =
+            (target instanceof HTMLElement && target) ||
+            (liveTarget instanceof HTMLElement && liveTarget) ||
+            null;
+          nextResolvedHtml =
+            baselineElement instanceof HTMLElement
+              ? baselineElement.innerHTML
+              : nextHtml;
+          nextResolvedContent = baselineElement
+            ? normalizeEditorMultilineText(extractTextWithBreaks(baselineElement))
+            : normalizeEditorMultilineText(extractTextFromHtmlFragment(nextHtml));
+        }
+      } else if (typeof data.content === "string") {
+        const normalizedText = data.content.replace(/\r\n?/g, "\n");
+        const baselineElement = target || liveTarget;
+        const currentText = extractTextWithBreaks(baselineElement);
+        const nextComparable = normalizeEditorMultilineText(normalizedText);
+        const currentComparable = normalizeEditorMultilineText(currentText);
+        if (nextComparable !== currentComparable) {
+          if (target) {
+            applyMultilineTextToElement(target, normalizedText);
+          }
+          if (liveTarget) {
+            applyMultilineTextToElement(liveTarget, normalizedText);
+          }
+          didChangeContent = true;
+        }
+        if (didChangeContent) {
+          const updatedElement = target || liveTarget;
+          nextResolvedContent = normalizeEditorMultilineText(
+            extractTextWithBreaks(updatedElement),
+          );
+          nextResolvedHtml =
+            updatedElement instanceof HTMLElement
+              ? updatedElement.innerHTML
+              : null;
         }
       }
       if (
@@ -5741,10 +7550,18 @@ const App: React.FC = () => {
           lowerTag === "img" || lowerTag === "source" || lowerTag === "video";
         if (isDirectImageTag) {
           if (target instanceof HTMLElement) {
-            target.setAttribute("src", sourceValue);
+            const previousSrc = target.getAttribute("src") || "";
+            if (previousSrc !== sourceValue) {
+              target.setAttribute("src", sourceValue);
+              didChangeSrc = true;
+            }
           }
           if (liveTarget instanceof HTMLElement) {
-            liveTarget.setAttribute("src", sourceValue);
+            const previousSrc = liveTarget.getAttribute("src") || "";
+            if (previousSrc !== sourceValue) {
+              liveTarget.setAttribute("src", sourceValue);
+              didChangeSrc = true;
+            }
           }
         } else {
           const nextBackground =
@@ -5755,31 +7572,57 @@ const App: React.FC = () => {
                 : `url("${sourceValue}")`;
           if (nextBackground) {
             if (target instanceof HTMLElement) {
-              target.style.setProperty("background-image", nextBackground);
+              const previous = target.style.getPropertyValue("background-image");
+              if (previous !== nextBackground) {
+                target.style.setProperty("background-image", nextBackground);
+                didChangeSrc = true;
+              }
             }
             if (liveTarget instanceof HTMLElement) {
-              liveTarget.style.setProperty("background-image", nextBackground);
+              const previous =
+                liveTarget.style.getPropertyValue("background-image");
+              if (previous !== nextBackground) {
+                liveTarget.style.setProperty("background-image", nextBackground);
+                didChangeSrc = true;
+              }
             }
           } else {
             if (target instanceof HTMLElement) {
-              target.style.removeProperty("background-image");
+              const previous = target.style.getPropertyValue("background-image");
+              if (previous) {
+                target.style.removeProperty("background-image");
+                didChangeSrc = true;
+              }
             }
             if (liveTarget instanceof HTMLElement) {
-              liveTarget.style.removeProperty("background-image");
+              const previous =
+                liveTarget.style.getPropertyValue("background-image");
+              if (previous) {
+                liveTarget.style.removeProperty("background-image");
+                didChangeSrc = true;
+              }
             }
           }
         }
       }
       if (typeof data.href === "string") {
         if (target instanceof HTMLElement) {
-          target.setAttribute("href", data.href);
+          const previousHref = target.getAttribute("href") || "";
+          if (previousHref !== data.href) {
+            target.setAttribute("href", data.href);
+            didChangeHref = true;
+          }
         }
         if (liveTarget instanceof HTMLElement) {
-          liveTarget.setAttribute("href", data.href);
+          const previousHref = liveTarget.getAttribute("href") || "";
+          if (previousHref !== data.href) {
+            liveTarget.setAttribute("href", data.href);
+            didChangeHref = true;
+          }
         }
       }
 
-      if (target) {
+      if (target && (didChangeContent || didChangeSrc || didChangeHref)) {
         const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
           refreshPreviewDoc: false,
@@ -5787,18 +7630,33 @@ const App: React.FC = () => {
         });
       }
 
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              ...(typeof data.content === "string"
-                ? { content: data.content.replace(/\r\n?/g, "\n") }
-                : {}),
-              ...(typeof data.src === "string" ? { src: data.src } : {}),
-              ...(typeof data.href === "string" ? { href: data.href } : {}),
-            }
-          : prev,
-      );
+      if (didChangeContent || didChangeSrc || didChangeHref) {
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                ...(didChangeContent
+                  ? {
+                      content:
+                        nextResolvedContent ??
+                        (typeof data.content === "string"
+                          ? data.content.replace(/\r\n?/g, "\n")
+                          : prev.content),
+                      ...(nextResolvedHtml !== null
+                        ? { html: nextResolvedHtml }
+                        : {}),
+                    }
+                  : {}),
+                ...(didChangeSrc && typeof data.src === "string"
+                  ? { src: data.src }
+                  : {}),
+                ...(didChangeHref && typeof data.href === "string"
+                  ? { href: data.href }
+                  : {}),
+              }
+            : prev,
+        );
+      }
     },
     [
       getLivePreviewSelectedElement,
@@ -6112,6 +7970,7 @@ const App: React.FC = () => {
       setPreviewSelectedElement(nextElement);
       setPreviewSelectedComputedStyles(null);
       setSelectedId(null);
+      setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
     },
     [
@@ -6121,6 +7980,120 @@ const App: React.FC = () => {
       selectedPreviewHtml,
     ],
   );
+  const applyPreviewDropCreate = useCallback(
+    async (rawType: string, clientX: number, clientY: number) => {
+      const dropType = String(rawType || "").trim();
+      if (!dropType || !selectedPreviewHtml) return;
+
+      const idFor = createPresetIdFactory(dropType);
+      const nextElement =
+        buildPresetElement(dropType, idFor) ??
+        buildStandardElement(dropType, idFor("element"));
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const parsedNode = materializeVirtualElement(parsed, nextElement);
+      if (!(parsedNode instanceof HTMLElement)) return;
+
+      const liveDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const frameRect = previewFrameRef.current?.getBoundingClientRect();
+      const liveWindow = liveDocument?.defaultView ?? null;
+      if (frameRect) {
+        const nextLeft = Math.max(
+          0,
+          Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
+        );
+        const nextTop = Math.max(
+          0,
+          Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
+        );
+        parsedNode.style.setProperty("position", "absolute");
+        parsedNode.style.setProperty("left", `${nextLeft}px`);
+        parsedNode.style.setProperty("top", `${nextTop}px`);
+      }
+      parsed.body.appendChild(parsedNode);
+      const newPath = [Math.max(0, parsed.body.children.length - 1)];
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+
+      if (liveDocument?.body) {
+        const liveNode = materializeVirtualElement(liveDocument, nextElement);
+        if (liveNode instanceof HTMLElement && frameRect) {
+          const nextLeft = Math.max(
+            0,
+            Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
+          );
+          const nextTop = Math.max(
+            0,
+            Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
+          );
+          liveNode.style.setProperty("position", "absolute");
+          liveNode.style.setProperty("left", `${nextLeft}px`);
+          liveNode.style.setProperty("top", `${nextTop}px`);
+        }
+        liveDocument.body.appendChild(liveNode);
+      }
+
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: newPath,
+      });
+
+      setPreviewSelectedPath(newPath);
+      setPreviewSelectedElement({
+        ...nextElement,
+        styles: {
+          ...nextElement.styles,
+          ...(frameRect
+            ? {
+                position: "absolute",
+                left: `${Math.max(
+                  0,
+                  Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
+                )}px`,
+                top: `${Math.max(
+                  0,
+                  Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
+                )}px`,
+              }
+            : {}),
+        },
+      });
+      setPreviewSelectedComputedStyles(null);
+      setSelectedId(null);
+      setIsCodePanelOpen(false);
+      setIsRightPanelOpen(true);
+      if (interactionModeRef.current !== "preview") {
+        setInteractionMode("preview");
+      }
+    },
+    [loadFileContent, persistPreviewHtmlContent, selectedPreviewHtml],
+  );
+  useEffect(() => {
+    applyPreviewDropCreateRef.current = applyPreviewDropCreate;
+  }, [applyPreviewDropCreate]);
+  const handlePreviewStageDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const payload =
+        event.dataTransfer.getData(TOOLBOX_DRAG_MIME) ||
+        event.dataTransfer.getData("text/plain");
+      if (!payload || !selectedPreviewHtml) return;
+      event.preventDefault();
+      void applyPreviewDropCreate(payload, event.clientX, event.clientY);
+    },
+    [applyPreviewDropCreate, selectedPreviewHtml],
+  );
   const handlePreviewStyleUpdateStable = useCallback(
     (styles: Partial<React.CSSProperties>) => {
       void applyPreviewStyleUpdate(styles);
@@ -6128,7 +8101,7 @@ const App: React.FC = () => {
     [applyPreviewStyleUpdate],
   );
   const handlePreviewContentUpdateStable = useCallback(
-    (data: { content?: string; src?: string; href?: string }) => {
+    (data: { content?: string; html?: string; src?: string; href?: string }) => {
       void applyPreviewContentUpdate(data);
     },
     [applyPreviewContentUpdate],
@@ -6170,6 +8143,13 @@ const App: React.FC = () => {
             inlineStyle?: string;
             src?: string;
             href?: string;
+            key?: string;
+            code?: string;
+            ctrlKey?: boolean;
+            metaKey?: boolean;
+            shiftKey?: boolean;
+            altKey?: boolean;
+            editable?: boolean;
             computedStyles?: Record<string, string>;
             parentPath?: number[];
             styles?: Record<string, string | number>;
@@ -6192,6 +8172,125 @@ const App: React.FC = () => {
         appendPreviewConsole(level, message, payload.source || "preview");
         return;
       }
+      if (payload.type === "PREVIEW_HOTKEY") {
+        const key = String(payload.key || "").toLowerCase();
+        const code = String(payload.code || "");
+        if (!key && !code) return;
+        const hasModifier = Boolean(payload.ctrlKey || payload.metaKey);
+        const editableTarget = Boolean(payload.editable);
+        const altKey = Boolean(payload.altKey);
+        const shiftKey = Boolean(payload.shiftKey);
+
+        if (hasModifier && editableTarget) {
+          if (key === "s") {
+            void saveCodeDraftsRef.current?.();
+            void flushPendingPreviewSaves();
+            return;
+          }
+          if (key === "t") {
+            requestPreviewRefreshWithUnsavedGuard();
+            return;
+          }
+          if (key === "p") {
+            requestSwitchToPreviewMode();
+            return;
+          }
+          if (key === "f") {
+            setIsLeftPanelOpen(true);
+            setIsRightPanelOpen(true);
+            setIsCodePanelOpen(false);
+            return;
+          }
+          if (key === "e") {
+            setSidebarToolMode("edit");
+            setInteractionMode("preview");
+            setPreviewMode("edit");
+            return;
+          }
+          if (key === "k") {
+            setIsCommandPaletteOpen((prev) => !prev);
+            return;
+          }
+          if (code === "Backquote") {
+            setShowTerminal((prev) => !prev);
+          }
+          return;
+        }
+        if (
+          key === "escape" &&
+          isPageSwitchPromptOpen &&
+          !isPageSwitchPromptBusy
+        ) {
+          closePendingPageSwitchPrompt();
+          return;
+        }
+        if (key === "escape" && isZenMode) {
+          toggleZenMode();
+          return;
+        }
+
+        if (!hasModifier && !altKey && !editableTarget) {
+          if (key === "w") {
+            setIsLeftPanelOpen((prev) => !prev);
+            return;
+          }
+          if (key === "e") {
+            setIsRightPanelOpen((prev) => {
+              const next = !prev;
+              if (next) setIsCodePanelOpen(false);
+              return next;
+            });
+            return;
+          }
+        }
+        if (!hasModifier) return;
+
+        if (key === "k") {
+          setIsCommandPaletteOpen((prev) => !prev);
+          return;
+        }
+        if (key === "f") {
+          setIsLeftPanelOpen(true);
+          setIsRightPanelOpen(true);
+          setIsCodePanelOpen(false);
+          return;
+        }
+        if (key === "p") {
+          requestSwitchToPreviewMode();
+          return;
+        }
+        if (key === "e") {
+          setSidebarToolMode("edit");
+          setInteractionMode("preview");
+          setPreviewMode("edit");
+          return;
+        }
+        if (key === "`" || code === "Backquote") {
+          setShowTerminal((prev) => !prev);
+          return;
+        }
+        if (key === "j") {
+          toggleZenMode();
+          return;
+        }
+        if (key === "s") {
+          void saveCodeDraftsRef.current?.();
+          void flushPendingPreviewSaves();
+          return;
+        }
+        if (key === "t") {
+          requestPreviewRefreshWithUnsavedGuard();
+          return;
+        }
+        if (key === "z" && !shiftKey) {
+          runUndo();
+          return;
+        }
+        if (key === "u" || key === "y" || (key === "z" && shiftKey)) {
+          runRedo();
+        }
+        return;
+      }
 
       if (payload.type === "PREVIEW_NAVIGATE") {
         if (
@@ -6208,16 +8307,8 @@ const App: React.FC = () => {
         if (!target) return;
         if (!shouldProcessPreviewPageSignal(target)) return;
         console.log("[Preview] Current page:", target);
-        if (isMountedPreview) {
-          setPreviewSyncedFile((prev) => (prev === target ? prev : target));
-          setPreviewNavigationFile((prev) => (prev === target ? prev : target));
-          if (interactionModeRef.current !== "preview") {
-            setInteractionMode("preview");
-          }
-        } else {
-          if (target === activeFileRef.current) return;
-          syncPreviewActiveFile(target, "navigate");
-        }
+        if (target === activeFileRef.current) return;
+        syncPreviewActiveFile(target, "navigate");
         return;
       }
 
@@ -6244,6 +8335,100 @@ const App: React.FC = () => {
           nextPath,
           typeof payload.html === "string" ? payload.html : "",
         );
+        return;
+      }
+      if (payload.type === "PREVIEW_INLINE_EDIT_DRAFT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath) return;
+        const draftHtml =
+          typeof payload.html === "string" ? payload.html : "";
+        const draftFile = selectedPreviewHtmlRef.current;
+        if (draftFile) {
+          setDirtyFiles((prev) =>
+            prev.includes(draftFile) ? prev : [...prev, draftFile],
+          );
+          inlineEditDraftPendingRef.current = {
+            filePath: draftFile,
+            elementPath: nextPath,
+            html: draftHtml,
+          };
+          if (inlineEditDraftTimerRef.current !== null) {
+            window.clearTimeout(inlineEditDraftTimerRef.current);
+          }
+          inlineEditDraftTimerRef.current = window.setTimeout(() => {
+            inlineEditDraftTimerRef.current = null;
+            const pending = inlineEditDraftPendingRef.current;
+            inlineEditDraftPendingRef.current = null;
+            if (!pending) return;
+            void applyPreviewInlineEditDraft(
+              pending.filePath,
+              pending.elementPath,
+              pending.html,
+            );
+          }, 180);
+        }
+        const liveElement = getLivePreviewSelectedElement(nextPath);
+        const draftText = normalizeEditorMultilineText(
+          liveElement
+            ? extractTextWithBreaks(liveElement)
+            : extractTextFromHtmlFragment(draftHtml),
+        );
+        setPreviewSelectedPath(nextPath);
+        if (!(liveElement instanceof HTMLElement)) {
+          setPreviewSelectedElement((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  content: draftText,
+                  html: draftHtml,
+                }
+              : prev,
+          );
+          return;
+        }
+        const computedStyles =
+          extractComputedStylesFromElement(liveElement) || null;
+        const inlineStyles = parseInlineStyleText(
+          liveElement.getAttribute("style") || "",
+        );
+        const mergedStyles: React.CSSProperties = {
+          ...(computedStyles || {}),
+          ...inlineStyles,
+        };
+        const liveAttributes =
+          extractCustomAttributesFromElement(liveElement) || undefined;
+        const liveSrc = liveElement.getAttribute("src") || "";
+        const liveHref = liveElement.getAttribute("href") || "";
+        const liveTag = String(liveElement.tagName || "div").toLowerCase();
+        const inlineAnimation =
+          typeof inlineStyles.animation === "string"
+            ? inlineStyles.animation.trim()
+            : "";
+        const computedAnimationCandidate =
+          computedStyles && typeof computedStyles.animation === "string"
+            ? computedStyles.animation.trim()
+            : "";
+        const resolvedAnimation =
+          inlineAnimation ||
+          (computedAnimationCandidate &&
+          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+            ? computedAnimationCandidate
+            : "");
+        setPreviewSelectedComputedStyles(computedStyles);
+        setPreviewSelectedElement((prev) => ({
+          id: liveElement.id || prev?.id || `preview-${Date.now()}`,
+          type: liveTag,
+          name: liveTag.toUpperCase(),
+          content: draftText,
+          html: draftHtml || liveElement.innerHTML || prev?.html || "",
+          ...(liveSrc ? { src: liveSrc } : {}),
+          ...(liveHref ? { href: liveHref } : {}),
+          ...(liveElement.className ? { className: liveElement.className } : {}),
+          ...(liveAttributes ? { attributes: liveAttributes } : {}),
+          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+          styles: mergedStyles,
+          children: [],
+        }));
         return;
       }
 
@@ -6300,7 +8485,11 @@ const App: React.FC = () => {
         // since it's the most reliable source. Fall back to DOM extraction if needed.
         const payloadText =
           typeof payload.text === "string" ? payload.text.trim() : "";
+        const payloadHtml =
+          typeof payload.html === "string" ? payload.html : "";
         const liveText = liveElement ? extractTextWithBreaks(liveElement) : "";
+        const liveHtml =
+          liveElement instanceof HTMLElement ? liveElement.innerHTML || "" : "";
         const payloadAttributes =
           payload.attributes && typeof payload.attributes === "object"
             ? (Object.fromEntries(
@@ -6317,10 +8506,10 @@ const App: React.FC = () => {
         // DOM was reloaded/refreshed and payload.text is empty (e.g. immediately
         // after a tool switch with no prior click).
         let savedHtmlText = "";
+        let savedHtmlMarkup = "";
         let savedHtmlAttributes: Record<string, string> = {};
         if (
-          !payloadText &&
-          !liveText &&
+          ((!payloadText && !liveText) || (!payloadHtml && !liveHtml)) &&
           selectedPreviewHtml &&
           nextPath.length > 0
         ) {
@@ -6339,6 +8528,7 @@ const App: React.FC = () => {
               const savedEl = readElementByPath(tempDoc.body, nextPath);
               if (savedEl) {
                 savedHtmlText = extractTextWithBreaks(savedEl);
+                savedHtmlMarkup = savedEl.innerHTML || "";
                 savedHtmlAttributes =
                   extractCustomAttributesFromElement(savedEl) || {};
               }
@@ -6351,6 +8541,7 @@ const App: React.FC = () => {
         const editableText = normalizeEditorMultilineText(
           payloadText || liveText || savedHtmlText,
         );
+        const editableHtml = payloadHtml || liveHtml || savedHtmlMarkup;
         const payloadSrc =
           typeof payload.src === "string" && payload.src.trim().length > 0
             ? payload.src.trim()
@@ -6402,6 +8593,7 @@ const App: React.FC = () => {
           type: tag,
           name: tag.toUpperCase(),
           content: editableText,
+          ...(editableHtml ? { html: editableHtml } : {}),
           ...(resolvedSrc ? { src: resolvedSrc } : {}),
           ...(resolvedHref ? { href: resolvedHref } : {}),
           className:
@@ -6419,6 +8611,7 @@ const App: React.FC = () => {
         setPreviewSelectedElement(nextElement);
         setPreviewSelectedComputedStyles(computedStyles);
         setSelectedId(null);
+        setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
       }
     };
@@ -6429,14 +8622,26 @@ const App: React.FC = () => {
     applyPreviewDrawCreate,
     applyPreviewStyleUpdateAtPath,
     appendPreviewConsole,
+    closePendingPageSwitchPrompt,
     getLivePreviewSelectedElement,
+    flushPendingPreviewSaves,
     isActivePreviewMessageSource,
     isMountedPreview,
+    isPageSwitchPromptBusy,
+    isPageSwitchPromptOpen,
+    isZenMode,
     extractMountRelativePath,
+    requestPreviewRefreshWithUnsavedGuard,
+    requestSwitchToPreviewMode,
+    previewSyncedFile,
     resolveVirtualPathFromMountRelative,
+    runRedo,
+    runUndo,
     selectedPreviewHtml,
     shouldProcessPreviewPageSignal,
     syncPreviewActiveFile,
+    toggleZenMode,
+    applyPreviewInlineEditDraft,
     applyPreviewInlineEdit,
   ]);
   useEffect(() => {
@@ -6621,6 +8826,228 @@ const App: React.FC = () => {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [dirtyPathKeysByFile, selectedPreviewDoc, selectedPreviewHtml]);
+  const activeCodeFilePath = useMemo(() => {
+    const candidate =
+      activeFile &&
+      files[activeFile] &&
+      isCodeEditableFile(activeFile, files[activeFile].type)
+        ? activeFile
+        : selectedPreviewHtml &&
+            files[selectedPreviewHtml] &&
+            isCodeEditableFile(
+              selectedPreviewHtml,
+              files[selectedPreviewHtml].type,
+            )
+          ? selectedPreviewHtml
+          : null;
+    if (candidate) return candidate;
+    const firstText = Object.keys(files).find((path) =>
+      isCodeEditableFile(path, files[path].type),
+    );
+    return firstText ?? null;
+  }, [activeFile, files, selectedPreviewHtml]);
+  const activeCodeFileType: ProjectFile["type"] | null = activeCodeFilePath
+    ? files[activeCodeFilePath]?.type ?? null
+    : null;
+  const activeCodeContent = useMemo(() => {
+    if (!activeCodeFilePath) return "";
+    if (typeof codeDraftByPath[activeCodeFilePath] === "string") {
+      return codeDraftByPath[activeCodeFilePath];
+    }
+    const raw = files[activeCodeFilePath]?.content;
+    return typeof raw === "string" ? raw : "";
+  }, [activeCodeFilePath, codeDraftByPath, files]);
+  const activeCodeIsDirty = activeCodeFilePath
+    ? Boolean(codeDirtyPathSet[activeCodeFilePath])
+    : false;
+  const codeEditorFiles = useMemo(
+    () =>
+      Object.keys(files)
+        .filter((path) => isCodeEditableFile(path, files[path].type))
+        .sort((a, b) => a.localeCompare(b)),
+    [files],
+  );
+  const handleCodeSelectFile = useCallback(
+    (path: string) => {
+      if (!path || !files[path] || !isCodeEditableFile(path, files[path].type)) {
+        return;
+      }
+      setActiveFileStable(path);
+      if (!isSvgPath(path)) {
+        void loadFileContent(path, { persistToState: true });
+        return;
+      }
+      const absolutePath = filePathIndexRef.current[path];
+      if (!absolutePath) return;
+      void (async () => {
+        try {
+          const raw = await (Neutralino as any).filesystem.readFile(absolutePath);
+          textFileCacheRef.current[path] = raw;
+          setFiles((prev) => {
+            const existing = prev[path];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [path]: {
+                ...existing,
+                content: raw,
+              },
+            };
+          });
+        } catch (error) {
+          console.warn(`Failed reading SVG source ${path}:`, error);
+        }
+      })();
+    },
+    [files, loadFileContent, setActiveFileStable],
+  );
+  const saveCodeDraftAtPath = useCallback(
+    async (path: string) => {
+      const draft = codeDraftByPathRef.current[path];
+      if (typeof draft !== "string") return;
+      const file = filesRef.current[path];
+      if (!file || !isCodeEditableFile(path, file.type)) return;
+      try {
+        if (file.type === "html") {
+          await persistPreviewHtmlContent(path, draft, {
+            refreshPreviewDoc: path === selectedPreviewHtmlRef.current,
+            saveNow: true,
+            pushToHistory: true,
+          });
+          if (path === selectedPreviewHtmlRef.current) {
+            setPreviewRefreshNonce((prev) => prev + 1);
+          }
+        } else {
+          const absolutePath = filePathIndexRef.current[path];
+          if (!absolutePath) return;
+          await (Neutralino as any).filesystem.writeFile(absolutePath, draft);
+          textFileCacheRef.current[path] = draft;
+          setFiles((prev) => {
+            const existing = prev[path];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [path]: {
+                ...existing,
+                content: draft,
+              },
+            };
+          });
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+        delete codeDraftByPathRef.current[path];
+        delete codeDirtyPathSetRef.current[path];
+        dirtyFilesRef.current = dirtyFilesRef.current.filter(
+          (entry) => entry !== path,
+        );
+        setCodeDraftByPath((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setCodeDirtyPathSet((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+      } catch (error) {
+        console.warn(`Failed saving code file ${path}:`, error);
+      }
+    },
+    [persistPreviewHtmlContent],
+  );
+  const saveAllCodeDrafts = useCallback(async () => {
+    const dirtyPaths = Object.keys(codeDirtyPathSetRef.current);
+    for (const path of dirtyPaths) {
+      await saveCodeDraftAtPath(path);
+    }
+  }, [saveCodeDraftAtPath]);
+  useEffect(() => {
+    saveCodeDraftsRef.current = saveAllCodeDrafts;
+    return () => {
+      if (saveCodeDraftsRef.current === saveAllCodeDrafts) {
+        saveCodeDraftsRef.current = null;
+      }
+    };
+  }, [saveAllCodeDrafts]);
+  const handleCodeDraftChange = useCallback(
+    (nextValue: string) => {
+      if (!activeCodeFilePath) return;
+      codeDraftByPathRef.current = {
+        ...codeDraftByPathRef.current,
+        [activeCodeFilePath]: nextValue,
+      };
+      codeDirtyPathSetRef.current = {
+        ...codeDirtyPathSetRef.current,
+        [activeCodeFilePath]: true,
+      };
+      if (!dirtyFilesRef.current.includes(activeCodeFilePath)) {
+        dirtyFilesRef.current = [...dirtyFilesRef.current, activeCodeFilePath];
+      }
+      setCodeDraftByPath((prev) => ({
+        ...prev,
+        [activeCodeFilePath]: nextValue,
+      }));
+      setCodeDirtyPathSet((prev) => ({
+        ...prev,
+        [activeCodeFilePath]: true,
+      }));
+      setDirtyFiles((prev) =>
+        prev.includes(activeCodeFilePath) ? prev : [...prev, activeCodeFilePath],
+      );
+    },
+    [activeCodeFilePath],
+  );
+  const handleCodeReload = useCallback(() => {
+    if (!activeCodeFilePath) return;
+    if (isSvgPath(activeCodeFilePath)) {
+      const absolutePath = filePathIndexRef.current[activeCodeFilePath];
+      if (absolutePath) {
+        void (async () => {
+          try {
+            const raw =
+              await (Neutralino as any).filesystem.readFile(absolutePath);
+            textFileCacheRef.current[activeCodeFilePath] = raw;
+            setFiles((prev) => {
+              const existing = prev[activeCodeFilePath];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [activeCodeFilePath]: {
+                  ...existing,
+                  content: raw,
+                },
+              };
+            });
+          } catch (error) {
+            console.warn(
+              `Failed reloading SVG source ${activeCodeFilePath}:`,
+              error,
+            );
+          }
+        })();
+      }
+    } else {
+      void loadFileContent(activeCodeFilePath, { persistToState: true });
+    }
+    setCodeDraftByPath((prev) => {
+      const next = { ...prev };
+      delete next[activeCodeFilePath];
+      return next;
+    });
+    setCodeDirtyPathSet((prev) => {
+      const next = { ...prev };
+      delete next[activeCodeFilePath];
+      return next;
+    });
+    setDirtyFiles((prev) => prev.filter((entry) => entry !== activeCodeFilePath));
+  }, [activeCodeFilePath, loadFileContent]);
+  useEffect(() => {
+    if (!isCodePanelOpen) return;
+    if (!activeCodeFilePath) return;
+    void loadFileContent(activeCodeFilePath, { persistToState: true });
+  }, [activeCodeFilePath, isCodePanelOpen, loadFileContent]);
 
   const tabletMetrics = useMemo(() => {
     const base =
@@ -6701,9 +9128,63 @@ const App: React.FC = () => {
           0.28 +
             (isLeftPanelOpen ? 0.12 : 0) +
             (isRightPanelOpen ? 0.12 : 0) +
+            (isCodePanelOpen ? 0.12 : 0) +
             (showTerminal ? 0.14 : 0),
         )
       : 0;
+  const codePanelStageOffset =
+    isCodePanelOpen && deviceMode !== "mobile"
+      ? (() => {
+          const viewportWidth =
+            typeof window !== "undefined" ? window.innerWidth : 1440;
+          if (!isFloatingPanels) return CODE_PANEL_WIDTH;
+          const floatingPanelWidth = Math.min(42 * 16, Math.max(320, viewportWidth - 96));
+          const floatingRightInset = 40; // `right-10`
+          return floatingPanelWidth + floatingRightInset;
+        })()
+      : 0;
+  const stageViewportWidth = Math.max(
+    320,
+    (typeof window !== "undefined" ? window.innerWidth : 1440) -
+      codePanelStageOffset,
+  );
+  const estimatedFrameWidthPx =
+    deviceMode === "mobile"
+      ? 375 * frameScale
+      : deviceMode === "tablet"
+        ? tabletMetrics.frameWidth * frameScale
+        : desktopResolution === "resizable"
+          ? stageViewportWidth * 0.8 * frameScale
+          : 921.6 * frameScale;
+  const halfSpareSpace = (stageViewportWidth - estimatedFrameWidthPx) / 2;
+  const maxShiftMagnitude = Math.max(0, Math.floor(halfSpareSpace - 16));
+  const intendedCodeShiftX = 0;
+  const clampedCodeShiftX = Math.max(
+    -maxShiftMagnitude,
+    Math.min(maxShiftMagnitude, intendedCodeShiftX),
+  );
+  const clampedTabletShiftX = Math.max(
+    -maxShiftMagnitude,
+    Math.min(maxShiftMagnitude, tabletPanelPushX + clampedCodeShiftX),
+  );
+  const pendingSwitchFromLabel =
+    pendingPageSwitch?.fromPath &&
+    normalizePath(pendingPageSwitch.fromPath).split("/").filter(Boolean).length > 0
+      ? normalizePath(pendingPageSwitch.fromPath)
+          .split("/")
+          .filter(Boolean)
+          .slice(-1)[0]
+      : pendingPageSwitch?.fromPath || "current page";
+  const pendingSwitchNextLabel =
+    pendingPageSwitch?.nextPath &&
+    normalizePath(pendingPageSwitch.nextPath).split("/").filter(Boolean).length > 0
+      ? normalizePath(pendingPageSwitch.nextPath)
+          .split("/")
+          .filter(Boolean)
+          .slice(-1)[0]
+      : pendingPageSwitch?.nextPath || "next page";
+  const isPendingRefresh = pendingPageSwitch?.mode === "refresh";
+  const isPendingPreviewMode = pendingPageSwitch?.mode === "preview_mode";
 
   return (
     <div
@@ -6727,6 +9208,109 @@ const App: React.FC = () => {
         onClose={() => setIsCommandPaletteOpen(false)}
         onAction={handleCommandAction}
       />
+      {isPageSwitchPromptOpen && pendingPageSwitch && (
+        <div
+          className="fixed inset-0 z-[1400] flex items-center justify-center px-4"
+          style={{
+            background:
+              theme === "dark"
+                ? "rgba(2,6,23,0.58)"
+                : "rgba(15,23,42,0.25)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border shadow-2xl p-5"
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(148,163,184,0.32)"
+                  : "rgba(15,23,42,0.12)",
+              color: "var(--text-main)",
+            }}
+          >
+            <div className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2" style={{ color: "var(--text-muted)" }}>
+              Unsaved Changes
+            </div>
+            <h3 className="text-base font-semibold leading-tight">
+              {isPendingRefresh
+                ? "Save changes before refresh?"
+                : isPendingPreviewMode
+                  ? "Save changes before switching mode?"
+                  : "Save changes before switching page?"}
+            </h3>
+            <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--text-muted)" }}>
+              You have unsaved edits in <span className="font-semibold" style={{ color: "var(--text-main)" }}>{pendingSwitchFromLabel}</span>.
+              {isPendingRefresh ? (
+                <> Refresh can overwrite your in-memory edits.</>
+              ) : isPendingPreviewMode ? (
+                <> Switching to Preview mode can overwrite your in-memory edits.</>
+              ) : (
+                <> Switching to <span className="font-semibold" style={{ color: "var(--text-main)" }}>{pendingSwitchNextLabel}</span> can overwrite your in-memory edits.</>
+              )}
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-black/5"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={closePendingPageSwitchPrompt}
+                disabled={isPageSwitchPromptBusy}
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-rose-500/10"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(251,113,133,0.45)"
+                      : "rgba(225,29,72,0.35)",
+                  color: theme === "dark" ? "#fecdd3" : "#be123c",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={() => {
+                  void resolvePendingPageSwitchWithDiscard();
+                }}
+                disabled={isPageSwitchPromptBusy}
+              >
+                {isPendingRefresh ? "Discard & Refresh" : "Discard & Switch"}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-cyan-500/15"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.45)"
+                      : "rgba(8,145,178,0.35)",
+                  color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={() => {
+                  void resolvePendingPageSwitchWithSave();
+                }}
+                disabled={isPageSwitchPromptBusy}
+              >
+                {isPageSwitchPromptBusy
+                  ? "Working..."
+                  : isPendingRefresh
+                    ? "Save & Refresh"
+                    : "Save & Switch"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- Floating Toolbar --- */}
       <div
@@ -6756,6 +9340,16 @@ const App: React.FC = () => {
             <FolderOpen
               size={16}
               className="group-hover:text-indigo-400 transition-colors"
+            />
+          </button>
+          <button
+            className={`glass-icon-btn group ${isCodePanelOpen ? "text-cyan-400" : ""}`}
+            onClick={openCodePanel}
+            title="Open Code Panel"
+          >
+            <Code2
+              size={16}
+              className="group-hover:text-cyan-400 transition-colors"
             />
           </button>
           <div className="h-4 w-px bg-gray-500/20"></div>
@@ -6812,9 +9406,7 @@ const App: React.FC = () => {
           <div className="h-4 w-px bg-gray-500/20"></div>
           <button
             className="glass-icon-btn"
-            onClick={() =>
-              setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-            }
+            onClick={toggleThemeWithTransition}
             title="Toggle Theme"
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
@@ -6866,6 +9458,7 @@ const App: React.FC = () => {
                 <button
                   className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
                   onClick={() => {
+                    void saveCodeDraftsRef.current?.();
                     void flushPendingPreviewSaves();
                     setIsSaveMenuOpen(false);
                   }}
@@ -6907,11 +9500,14 @@ const App: React.FC = () => {
                   ? "bg-cyan-500/10 text-cyan-600 border border-cyan-500/25 hover:bg-cyan-500/20"
                   : "bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 hover:bg-cyan-500/20"
             }`}
-            onClick={() =>
-              setInteractionMode((prev) =>
-                prev === "preview" ? sidebarToolMode : "preview",
-              )
-            }
+            onClick={() => {
+              if (interactionMode === "preview") {
+                setSidebarToolMode("edit");
+                setPreviewModeWithSync("edit");
+                return;
+              }
+              requestSwitchToPreviewMode();
+            }}
             title="Run Project on Device"
           >
             <Play
@@ -7065,10 +9661,20 @@ const App: React.FC = () => {
                 onAddFontToPresentationCss={
                   handleSidebarAddFontToPresentationCss
                 }
+                onCreateFile={handleCreateFileAtPath}
+                onCreateFolder={handleCreateFolderAtPath}
+                onRenamePath={handleRenamePath}
+                onDeletePath={handleDeletePath}
+                onDuplicateFile={handleDuplicateFile}
+                onRefreshFiles={refreshProjectFiles}
                 onAddElement={handleSidebarAddElement}
-                root={root}
-                selectedId={selectedId}
-                onSelectElement={handleSelect}
+                root={interactionMode === "preview" ? previewLayersRoot : root}
+                selectedId={
+                  interactionMode === "preview"
+                    ? previewLayerSelectedId
+                    : selectedId
+                }
+                onSelectElement={handleSidebarSelectElement}
                 interactionMode={sidebarInteractionMode}
                 setInteractionMode={handleSidebarInteractionModeChange}
                 drawElementTag={drawElementTag}
@@ -7107,11 +9713,12 @@ const App: React.FC = () => {
               !isRightPanelOpen
                 ? "var(--left-panel-width)"
                 : 0,
-            marginRight:
-              !isFloatingPanels &&
-              deviceMode !== "mobile" &&
-              !isLeftPanelOpen &&
-              isRightPanelOpen
+            marginRight: codePanelStageOffset
+              ? `${codePanelStageOffset}px`
+              : !isFloatingPanels &&
+                  deviceMode !== "mobile" &&
+                  !isLeftPanelOpen &&
+                  isRightPanelOpen
                 ? "16.5rem"
                 : 0,
             // When both panels open, no margins - content will scroll
@@ -7179,8 +9786,8 @@ const App: React.FC = () => {
                           : "518.4px",
                   transform:
                     deviceMode === "tablet"
-                      ? `translateX(${tabletPanelPushX}px) scale(${frameScale})`
-                      : `scale(${frameScale})`,
+                      ? `translateX(${clampedTabletShiftX}px) scale(${frameScale})`
+                      : `translateX(${clampedCodeShiftX}px) scale(${frameScale})`,
                   transformOrigin: "top center",
                 }}
               >
@@ -7393,7 +10000,11 @@ const App: React.FC = () => {
                         top: deviceMode === "tablet" ? 0 : undefined,
                       }}
                     >
-                      <div className="w-full h-full relative">
+                      <div
+                        className="w-full h-full relative"
+                        onDragOver={handlePreviewStageDragOver}
+                        onDrop={handlePreviewStageDrop}
+                      >
                         {hasPreviewContent && (
                           <iframe
                             key={
@@ -7410,6 +10021,8 @@ const App: React.FC = () => {
                             }
                             loading="eager"
                             onLoad={handlePreviewFrameLoad}
+                            onDragOver={handlePreviewStageDragOver}
+                            onDrop={handlePreviewStageDrop}
                             className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-150 ${
                               interactionMode === "preview"
                                 ? "opacity-100 pointer-events-auto"
@@ -7663,9 +10276,146 @@ const App: React.FC = () => {
         </div>
       </div>
 
+      {/* Code Panel */}
+      <div
+        className={`absolute z-50 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24 bottom-3" : "right-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isCodePanelOpen ? "animate-panelInRight" : ""}`}
+        style={{
+          transform: isCodePanelOpen
+            ? "translateX(0)"
+            : isFloatingPanels
+              ? "translateX(calc(100% + 2.5rem))"
+              : "translateX(100%)",
+          width: isFloatingPanels
+            ? "min(42rem, calc(100vw - 6rem))"
+            : `${CODE_PANEL_WIDTH}px`,
+          borderRadius: isFloatingPanels ? "1rem" : undefined,
+          border: isFloatingPanels
+            ? theme === "light"
+              ? "1px solid rgba(15, 23, 42, 0.18)"
+              : "1px solid rgba(255, 255, 255, 0.24)"
+            : undefined,
+          background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+            isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
+          }`}
+          style={{
+            background:
+              theme === "dark"
+                ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                : "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(248,250,252,0.82) 100%)",
+            backdropFilter: "blur(14px)",
+          }}
+        >
+          <div
+            className="h-11 shrink-0 px-3 flex items-center justify-between"
+            style={{
+              borderBottom:
+                theme === "dark"
+                  ? "1px solid rgba(148,163,184,0.28)"
+                  : "1px solid rgba(0,0,0,0.1)",
+              background:
+                theme === "dark"
+                  ? "linear-gradient(90deg, rgba(139,92,246,0.2), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
+                  : "linear-gradient(90deg,rgba(139,92,246,0.12),rgba(99,102,241,0.1),transparent)",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <div
+                className="w-2 h-2 rounded-full"
+                style={{
+                  backgroundColor: theme === "dark" ? "#c4b5fd" : "#7c3aed",
+                  boxShadow:
+                    theme === "dark"
+                      ? "0 0 10px rgba(196,181,253,0.85)"
+                      : "0 0 10px rgba(124,58,237,0.55)",
+                }}
+              />
+              <span
+                className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                style={{ color: theme === "dark" ? "#e9d5ff" : "#5b21b6" }}
+              >
+                Code Studio
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={() => {
+                  if (!activeCodeFilePath) return;
+                  void saveCodeDraftAtPath(activeCodeFilePath);
+                }}
+              >
+                Save File
+              </button>
+              <button
+                type="button"
+                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={() => {
+                  void saveCodeDraftsRef.current?.();
+                }}
+              >
+                Save All
+              </button>
+              <button
+                type="button"
+                className="h-7 w-7 rounded-md border flex items-center justify-center transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={() => setIsCodePanelOpen(false)}
+                title="Close code panel"
+              >
+                <PanelRightClose size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <CodeWorkspace
+              filePath={activeCodeFilePath}
+              fileType={activeCodeFileType}
+              content={activeCodeContent}
+              isDirty={activeCodeIsDirty}
+              theme={theme}
+              availableFiles={codeEditorFiles}
+              onSelectFile={handleCodeSelectFile}
+              onChange={handleCodeDraftChange}
+              onSave={() => {
+                if (!activeCodeFilePath) return;
+                void saveCodeDraftAtPath(activeCodeFilePath);
+              }}
+              onReload={handleCodeReload}
+            />
+          </div>
+          <div
+            className="pointer-events-none absolute inset-0 rounded-2xl"
+            style={{
+              boxShadow:
+                theme === "dark"
+                  ? "inset 0 0 0 1px rgba(196,181,253,0.2)"
+                  : "inset 0 0 0 1px rgba(139,92,246,0.2)",
+            }}
+          />
+        </div>
+      </div>
+
+
       {/* Terminal Panel — Glass effect with smooth transition */}
       <div
-        className={`fixed bottom-3 left-10 right-10 flex flex-col z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible rounded-2xl ${isZenMode ? "translate-y-full opacity-0 pointer-events-none" : ""}`}
+        className={`fixed bottom-3 left-10 right-10 flex flex-col z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible rounded-2xl ${isZenMode || isCodePanelOpen ? "translate-y-full opacity-0 pointer-events-none" : ""}`}
       >
         {!showTerminal && (
           <>

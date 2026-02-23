@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Layout, Type, Image, MousePointerClick, Square, Box, Link as LinkIcon, Layers, CreditCard, Eye, GripHorizontal, Columns, Sparkles } from 'lucide-react';
+import { Layout, Type, Image, MousePointerClick, Square, Box, Link as LinkIcon, Layers, CreditCard, Eye, Columns } from 'lucide-react';
 
 interface ToolboxProps {
   onAddElement: (type: string) => void;
@@ -73,6 +73,12 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
                 <button
                   key={item.type}
                   onClick={() => onAddElement(item.type)}
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'copy';
+                    event.dataTransfer.setData('application/x-nocodex-element', item.type);
+                    event.dataTransfer.setData('text/plain', item.type);
+                  }}
                   className="panel-card flex flex-col items-center justify-center p-2.5 group cursor-pointer active:scale-95 transition-all duration-200"
                   title={`Add ${item.label}`}
                 >

@@ -16,7 +16,7 @@ import AnimationControls from './AnimationControls';
 interface PropertiesPanelProps {
   element: VirtualElement | null;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
-  onUpdateContent: (data: { content?: string; src?: string; href?: string }) => void;
+  onUpdateContent: (data: { content?: string; html?: string; src?: string; href?: string }) => void;
   onUpdateAttributes: (attributes: Record<string, string>) => void;
   onUpdateAnimation: (animation: string) => void;
   onDelete: () => void;
@@ -157,11 +157,13 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
 }) => {
   const [insertMode, setInsertMode] = useState<'inside' | 'before' | 'after'>('inside');
   const [localContent, setLocalContent] = useState('');
+  const [localHtml, setLocalHtml] = useState('');
   const [activeTab, setActiveTab] = useState<'content' | 'style' | 'advanced'>('style');
   const [interactionKind, setInteractionKind] = useState<InteractionKind>('none');
   const [interactionDraft, setInteractionDraft] = useState<InteractionDraft>(EMPTY_INTERACTION_DRAFT);
   const [interactionDirty, setInteractionDirty] = useState(false);
-  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
+  const textDebounceTimer = useRef<NodeJS.Timeout | null>(null);
+  const htmlDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Extract text content from element
   const extractTextContent = (elem: VirtualElement | null): string => {
@@ -172,12 +174,34 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
       .map(child => child.type === 'text' ? child.content || '' : '')
       .join('');
   };
+  const escapeHtml = (raw: string): string =>
+    String(raw || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  const extractHtmlContent = (elem: VirtualElement | null): string => {
+    if (!elem) return '';
+    if (typeof elem.html === 'string') return elem.html;
+    const text = extractTextContent(elem);
+    if (!text) return '';
+    return escapeHtml(text).replace(/\r\n?/g, '\n').replace(/\n/g, '<br>');
+  };
 
   useEffect(() => {
     if (element) {
       setLocalContent(extractTextContent(element));
+      setLocalHtml(extractHtmlContent(element));
     }
-  }, [element?.id]);
+  }, [element?.id, element?.content, element?.html]);
+
+  useEffect(() => {
+    return () => {
+      if (textDebounceTimer.current) clearTimeout(textDebounceTimer.current);
+      if (htmlDebounceTimer.current) clearTimeout(htmlDebounceTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!element) {
@@ -402,13 +426,28 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
                          value={localContent}
                          onChange={(e) => {
                             setLocalContent(e.target.value);
-                            if (debounceTimer.current) clearTimeout(debounceTimer.current);
-                            debounceTimer.current = setTimeout(() => onUpdateContent({ content: e.target.value }), 500);
+                            if (textDebounceTimer.current) clearTimeout(textDebounceTimer.current);
+                            textDebounceTimer.current = setTimeout(() => onUpdateContent({ content: e.target.value }), 450);
                          }}
                          onBlur={() => onUpdateContent({ content: localContent })}
                          className="w-full glass-input p-2.5 text-xs min-h-[100px] rounded-lg"
                          style={{ color: 'var(--text-main)' }}
                          placeholder="Type text here..."
+                       />
+                     </div>
+                     <div>
+                       <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>HTML Content</label>
+                       <textarea
+                         value={localHtml}
+                         onChange={(e) => {
+                           setLocalHtml(e.target.value);
+                           if (htmlDebounceTimer.current) clearTimeout(htmlDebounceTimer.current);
+                           htmlDebounceTimer.current = setTimeout(() => onUpdateContent({ html: e.target.value }), 450);
+                         }}
+                         onBlur={() => onUpdateContent({ html: localHtml })}
+                         className="w-full glass-input p-2.5 text-xs min-h-[130px] rounded-lg font-mono"
+                         style={{ color: 'var(--text-main)' }}
+                         placeholder="<span>Rich text markup here...</span>"
                        />
                      </div>
                      {element.type === 'a' && (

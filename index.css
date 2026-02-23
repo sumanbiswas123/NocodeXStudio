@@ -18,6 +18,9 @@
     --glass-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
     --input-bg: rgba(0, 0, 0, 0.2);
     --toolbar-bg: rgba(15, 23, 42, 0.6);
+    --theme-transition-x: 100vw;
+    --theme-transition-y: 0px;
+    --theme-transition-radius: 150vmax;
   }
 
   .light-mode {
@@ -407,4 +410,56 @@
 
 .light-mode .glass-input {
   color: #000000 !important;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-group(root) {
+  animation-duration: 980ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+  will-change: clip-path;
+  contain: paint;
+  clip-path: circle(
+    0px at var(--theme-transition-x) var(--theme-transition-y)
+  );
+  animation: themeRadialReveal 980ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes themeRadialReveal {
+  to {
+    clip-path: circle(
+      var(--theme-transition-radius) at var(--theme-transition-x)
+        var(--theme-transition-y)
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-new(root) {
+    clip-path: none;
+    animation: none;
+  }
+}
+
+.theme-transitioning *,
+.theme-transitioning *::before,
+.theme-transitioning *::after {
+  backdrop-filter: none !important;
+}
+
+.theme-transitioning .glass-panel,
+.theme-transitioning .glass-panel-strong,
+.theme-transitioning .glass-toolbar {
+  box-shadow: none !important;
 }

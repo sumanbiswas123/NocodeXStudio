@@ -11,6 +11,12 @@ interface SidebarProps {
   activeFile: string | null;
   onSelectFile: (path: string) => void;
   onAddFontToPresentationCss: (path: string) => void;
+  onCreateFile: (parentPath: string) => void;
+  onCreateFolder: (parentPath: string) => void;
+  onRenamePath: (path: string) => void;
+  onDeletePath: (path: string, kind: 'file' | 'folder') => void;
+  onDuplicateFile: (path: string) => void;
+  onRefreshFiles: () => void;
   onAddElement: (type: string) => void;
   root: VirtualElement;
   selectedId: string | null;
@@ -36,6 +42,12 @@ const SidebarBase: React.FC<SidebarProps> = ({
   activeFile,
   onSelectFile,
   onAddFontToPresentationCss,
+  onCreateFile,
+  onCreateFolder,
+  onRenamePath,
+  onDeletePath,
+  onDuplicateFile,
+  onRefreshFiles,
   onAddElement,
   root,
   selectedId,
@@ -206,6 +218,12 @@ const SidebarBase: React.FC<SidebarProps> = ({
               activeFile={activeFile}
               onSelectFile={onSelectFile}
               onAddFontToPresentationCss={onAddFontToPresentationCss}
+              onCreateFile={onCreateFile}
+              onCreateFolder={onCreateFolder}
+              onRenamePath={onRenamePath}
+              onDeletePath={onDeletePath}
+              onDuplicateFile={onDuplicateFile}
+              onRefreshFiles={onRefreshFiles}
               theme={theme}
             />
           ) : activeTab === 'layers' ? (
@@ -241,6 +259,12 @@ const areSidebarPropsEqual = (
     prev.activeFile === next.activeFile &&
     prev.onSelectFile === next.onSelectFile &&
     prev.onAddFontToPresentationCss === next.onAddFontToPresentationCss &&
+    prev.onCreateFile === next.onCreateFile &&
+    prev.onCreateFolder === next.onCreateFolder &&
+    prev.onRenamePath === next.onRenamePath &&
+    prev.onDeletePath === next.onDeletePath &&
+    prev.onDuplicateFile === next.onDuplicateFile &&
+    prev.onRefreshFiles === next.onRefreshFiles &&
     prev.onAddElement === next.onAddElement &&
     prev.root === next.root &&
     prev.selectedId === next.selectedId &&
