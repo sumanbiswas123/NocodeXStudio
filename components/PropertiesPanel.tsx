@@ -15,6 +15,8 @@ import AnimationControls from './AnimationControls';
 
 interface PropertiesPanelProps {
   element: VirtualElement | null;
+  requestedTab?: 'content' | 'style' | 'advanced' | null;
+  requestedTabNonce?: number;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
   onUpdateContent: (data: { content?: string; html?: string; src?: string; href?: string }) => void;
   onUpdateAttributes: (attributes: Record<string, string>) => void;
@@ -145,6 +147,8 @@ const TYPE_GRADIENTS: Record<string, string> = {
 
 const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
   element,
+  requestedTab,
+  requestedTabNonce,
   onUpdateStyle,
   onUpdateContent,
   onUpdateAttributes,
@@ -158,6 +162,7 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
   const [insertMode, setInsertMode] = useState<'inside' | 'before' | 'after'>('inside');
   const [localContent, setLocalContent] = useState('');
   const [localHtml, setLocalHtml] = useState('');
+  const [allowRawHtml, setAllowRawHtml] = useState(true);
   const [activeTab, setActiveTab] = useState<'content' | 'style' | 'advanced'>('style');
   const [interactionKind, setInteractionKind] = useState<InteractionKind>('none');
   const [interactionDraft, setInteractionDraft] = useState<InteractionDraft>(EMPTY_INTERACTION_DRAFT);
@@ -181,20 +186,29 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
-  const extractHtmlContent = (elem: VirtualElement | null): string => {
+  const extractHtmlContent = (elem: VirtualElement | null, allowRaw: boolean): string => {
     if (!elem) return '';
+    if (allowRaw) {
+      if (typeof elem.html === 'string') return elem.html;
+      return extractTextContent(elem);
+    }
     if (typeof elem.html === 'string') return elem.html;
     const text = extractTextContent(elem);
     if (!text) return '';
-    return escapeHtml(text).replace(/\r\n?/g, '\n').replace(/\n/g, '<br>');
+    return text.replace(/\r\n?/g, '\n').replace(/\n/g, '<br>');
   };
 
   useEffect(() => {
     if (element) {
       setLocalContent(extractTextContent(element));
-      setLocalHtml(extractHtmlContent(element));
+      setLocalHtml(extractHtmlContent(element, allowRawHtml));
     }
-  }, [element?.id, element?.content, element?.html]);
+  }, [element?.id, element?.content, element?.html, allowRawHtml]);
+
+  useEffect(() => {
+    if (!requestedTab) return;
+    setActiveTab(requestedTab);
+  }, [requestedTab, requestedTabNonce]);
 
   useEffect(() => {
     return () => {
@@ -436,7 +450,17 @@ const PropertiesPanelBase: React.FC<PropertiesPanelProps> = ({
                        />
                      </div>
                      <div>
-                       <label className="text-[10px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>HTML Content</label>
+                       <div className="flex items-center justify-between mb-1">
+                         <label className="text-[10px] font-bold uppercase tracking-wider block" style={{ color: 'var(--text-muted)' }}>HTML Content</label>
+                         <label className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                           <input
+                             type="checkbox"
+                             checked={allowRawHtml}
+                             onChange={(e) => setAllowRawHtml(e.target.checked)}
+                           />
+                           Allow HTML
+                         </label>
+                       </div>
                        <textarea
                          value={localHtml}
                          onChange={(e) => {
@@ -702,6 +726,8 @@ const arePropertiesPanelPropsEqual = (
 ): boolean => {
   return (
     prev.element === next.element &&
+    prev.requestedTab === next.requestedTab &&
+    prev.requestedTabNonce === next.requestedTabNonce &&
     prev.onUpdateStyle === next.onUpdateStyle &&
     prev.onUpdateContent === next.onUpdateContent &&
     prev.onUpdateAttributes === next.onUpdateAttributes &&

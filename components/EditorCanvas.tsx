@@ -13,6 +13,20 @@ interface EditorCanvasProps {
   interactionMode?: 'edit' | 'preview' | 'inspect' | 'draw' | 'move';
 }
 
+// Resize handle directions and their cursor/position styles
+const RESIZE_HANDLES = [
+  { dir: 'n', cursor: 'ns-resize', style: { top: -6, left: 12, right: 12, height: 12 } },
+  { dir: 's', cursor: 'ns-resize', style: { bottom: -6, left: 12, right: 12, height: 12 } },
+  { dir: 'e', cursor: 'ew-resize', style: { right: -6, top: 12, bottom: 12, width: 12 } },
+  { dir: 'w', cursor: 'ew-resize', style: { left: -6, top: 12, bottom: 12, width: 12 } },
+  { dir: 'nw', cursor: 'nwse-resize', style: { top: -7, left: -7, width: 14, height: 14 } },
+  { dir: 'ne', cursor: 'nesw-resize', style: { top: -7, right: -7, width: 14, height: 14 } },
+  { dir: 'sw', cursor: 'nesw-resize', style: { bottom: -7, left: -7, width: 14, height: 14 } },
+  { dir: 'se', cursor: 'nwse-resize', style: { bottom: -7, right: -7, width: 14, height: 14 } },
+] as const;
+
+type ResizeDir = typeof RESIZE_HANDLES[number]['dir'];
+
 const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
   element,
   selectedId,
@@ -30,20 +44,18 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
   const elementRef = useRef<HTMLElement>(null);
 
   const handleClick = (e: React.MouseEvent) => {
-    if (isPreview) return; // Let default behavior happens (e.g. links navigate)
+    if (isPreview) return;
     e.stopPropagation();
     onSelect(element.id);
   };
 
-  // Handle Resizing (Only for selected element)
+  // Handle Resizing via CSS resize (edit mode only)
   const handleMouseUp = (e: React.MouseEvent) => {
     if (isPreview || isMoveMode) return;
     e.stopPropagation();
     if (isSelected && elementRef.current) {
-      // Check if dimensions changed via CSS resize
       const currentWidth = elementRef.current.style.width;
       const currentHeight = elementRef.current.style.height;
-
       if (currentWidth !== element.styles.width || currentHeight !== element.styles.height) {
         onResize(element.id, currentWidth, currentHeight);
       }
@@ -60,7 +72,7 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
 
   const handleDragOver = (e: React.DragEvent) => {
     if (isPreview || isMoveMode) return;
-    e.preventDefault(); // Necessary to allow dropping
+    e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
   };
@@ -70,12 +82,12 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
     e.preventDefault();
     e.stopPropagation();
     const draggedId = e.dataTransfer.getData('application/react-dnd-id');
-
     if (draggedId && draggedId !== element.id) {
       onMoveElement(draggedId, element.id);
     }
   };
 
+  // Move tool: drag element to reposition
   const handleMoveMouseDown = (e: React.MouseEvent) => {
     if (!isMoveMode || isPreview || element.id === 'root' || !elementRef.current) return;
     e.preventDefault();
@@ -116,11 +128,8 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
       for (const [key, rawValue] of Object.entries(patch)) {
         const value = rawValue == null ? '' : String(rawValue);
         const cssKey = key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-        if (!value) {
-          el.style.removeProperty(cssKey);
-        } else {
-          el.style.setProperty(cssKey, value);
-        }
+        if (!value) el.style.removeProperty(cssKey);
+        else el.style.setProperty(cssKey, value);
       }
     };
 
@@ -175,24 +184,83 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
     window.addEventListener('mouseup', onMouseUp);
   };
 
+  // Move mode: resize via handle drag
+  const handleResizeMouseDown = (e: React.MouseEvent, dir: ResizeDir) => {
+    if (!isMoveMode || !elementRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const el = elementRef.current;
+    const computed = window.getComputedStyle(el);
+    const startW = parseFloat(computed.width) || 0;
+    const startH = parseFloat(computed.height) || 0;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const parsedLeft = parseFloat(computed.left) || 0;
+    const parsedTop = parseFloat(computed.top) || 0;
+
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      let newW = startW;
+      let newH = startH;
+      let newLeft = parsedLeft;
+      let newTop = parsedTop;
+
+      if (dir.includes('e')) newW = Math.max(10, startW + dx);
+      if (dir.includes('s')) newH = Math.max(10, startH + dy);
+      if (dir.includes('w')) { newW = Math.max(10, startW - dx); newLeft = parsedLeft + (startW - newW); }
+      if (dir.includes('n')) { newH = Math.max(10, startH - dy); newTop = parsedTop + (startH - newH); }
+
+      el.style.width = `${Math.round(newW)}px`;
+      el.style.height = `${Math.round(newH)}px`;
+      if (dir.includes('w') || dir.includes('n')) {
+        el.style.left = `${Math.round(newLeft)}px`;
+        el.style.top = `${Math.round(newTop)}px`;
+      }
+    };
+
+    const onMouseUp = () => {
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      const finalW = el.style.width;
+      const finalH = el.style.height;
+      const finalLeft = el.style.left;
+      const finalTop = el.style.top;
+      onResize(element.id, finalW, finalH);
+      if (dir.includes('w') || dir.includes('n')) {
+        onMoveByPosition(element.id, {
+          position: 'absolute',
+          left: finalLeft,
+          top: finalTop,
+          width: finalW,
+          height: finalH,
+        });
+      }
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
   const mergedStyle: React.CSSProperties = {
     ...element.styles,
     animation: element.animation,
-    // Selection Highlighting
     outline: !isPreview && isSelected
       ? '2px solid #3b82f6'
       : (element.id === 'root' ? 'none' : (!isPreview ? '1px dashed transparent' : 'none')),
     outlineOffset: !isPreview && isSelected ? '-2px' : '0px',
     boxShadow: !isPreview && isSelected ? '0 0 0 4px rgba(59, 130, 246, 0.2)' : 'none',
-
-    // Resizing logic
+    // In move mode, use custom handles instead of CSS resize
     resize: (!isPreview && !isMoveMode && isSelected ? 'both' : 'none') as React.CSSProperties['resize'],
     overflow: (
       !isPreview && isSelected && element.type !== 'img'
         ? 'hidden'
         : (element.styles.overflow || 'visible')
     ) as React.CSSProperties['overflow'],
-
     position: (element.styles.position as React.CSSProperties['position']) || 'relative',
     cursor: (
       isPreview
@@ -215,7 +283,6 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
     onDrop: handleDrop,
     onMouseUp: handleMouseUp,
     onMouseDown: handleMoveMouseDown,
-    // Spread custom attributes (data-id, aria-*, etc.)
     ...(element.attributes || {}),
     style: mergedStyle,
     onClick: handleClick,
@@ -224,11 +291,11 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
 
   // Render children recursively
   const children = element.children.map(child => (
-      <EditorCanvas
-        key={child.id}
-        element={child}
-        selectedId={selectedId}
-        selectedPathIds={selectedPathIds}
+    <EditorCanvas
+      key={child.id}
+      element={child}
+      selectedId={selectedId}
+      selectedPathIds={selectedPathIds}
       onSelect={onSelect}
       resolveImage={resolveImage}
       onMoveElement={onMoveElement}
@@ -238,98 +305,97 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
     />
   ));
 
-  switch (element.type) {
-    case 'img':
-      const imgSrc = resolveImage && element.src ? resolveImage(element.src) : (element.src || 'https://picsum.photos/200/200');
-      return (
-        <img
-          src={imgSrc}
-          alt={element.name}
-          {...commonProps}
+  // Resize handle overlay — visible only when selected in move mode
+  const resizeHandles = isMoveMode && isSelected && element.id !== 'root' ? (
+    <>
+      {RESIZE_HANDLES.map(({ dir, cursor, style }) => (
+        <button
+          key={dir}
+          type="button"
+          onMouseDown={(e) => handleResizeMouseDown(e, dir)}
+          style={{
+            position: 'absolute',
+            background: dir.length === 1 ? 'rgba(59,130,246,0.2)' : 'rgba(59,130,246,0.92)',
+            border: '2px solid #fff',
+            borderRadius: dir.length === 2 ? '4px' : '999px',
+            zIndex: 9999,
+            cursor,
+            pointerEvents: 'auto',
+            boxShadow: '0 0 0 1px rgba(37,99,235,0.45), 0 4px 10px rgba(59,130,246,0.35)',
+            ...style,
+          } as React.CSSProperties}
         />
-      );
-    case 'button':
-      return (
-        <button {...commonProps}>
-          {element.content}
-          {children}
-        </button>
-      );
-    case 'a':
-      return (
-        <a href={element.href || '#'} {...commonProps} onClick={(e) => {
-          if (!isPreview) { e.preventDefault(); handleClick(e); }
-          else { /* allow default */ }
-        }}>
-          {element.content}
-          {children}
-        </a>
-      );
-    case 'h1': return <h1 {...commonProps}>{element.content}{children}</h1>;
-    case 'h2': return <h2 {...commonProps}>{element.content}{children}</h2>;
-    case 'p': return <p {...commonProps}>{element.content}{children}</p>;
-    case 'section': return <section {...commonProps}>{children}</section>;
-    case 'span': return <span {...commonProps}>{element.content}{children}</span>;
-    case 'sup':
-      return (
-        <span style={{ position: 'relative', display: 'inline' }}>
-          <sup {...commonProps}>{element.content}{children}</sup>
-          {!isPreview && isSelected && (
-            <span
-              style={{
-                position: 'absolute',
-                top: '-18px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                backgroundColor: '#8b5cf6',
-                color: 'white',
-                padding: '2px 6px',
-                borderRadius: '4px',
-                fontSize: '10px',
-                fontWeight: 'bold',
-                whiteSpace: 'nowrap',
-                zIndex: 1000,
-                pointerEvents: 'none',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-              }}
-            >
-              SUP
-            </span>
-          )}
-        </span>
-      );
-    case 'sub':
-      return (
-        <span style={{ position: 'relative', display: 'inline' }}>
-          <sub {...commonProps}>{element.content}{children}</sub>
-          {!isPreview && isSelected && (
-            <span
-              style={{
-                position: 'absolute',
-                bottom: '-18px',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                backgroundColor: '#f59e0b',
-                color: 'white',
-                padding: '2px 6px',
-                borderRadius: '4px',
-                fontSize: '10px',
-                fontWeight: 'bold',
-                whiteSpace: 'nowrap',
-                zIndex: 1000,
-                pointerEvents: 'none',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-              }}
-            >
-              SUB
-            </span>
-          )}
-        </span>
-      );
-    case 'br': return <br {...commonProps} />;
-    case 'text': return <>{element.content}</>;
-    default: return <div {...commonProps}>{element.content}{children}</div>;
-  }
+      ))}
+    </>
+  ) : null;
+
+  // Wrap with a relative-positioned container so handles sit over the element
+  const wrapWithHandles = (el: React.ReactElement) => {
+    if (!isMoveMode || !isSelected || element.id === 'root') return el;
+    return (
+      <div style={{ position: 'relative', display: 'inline-block', boxSizing: 'border-box', overflow: 'visible' }}>
+        {el}
+        {resizeHandles}
+      </div>
+    );
+  };
+
+  const renderElement = (): React.ReactElement => {
+    switch (element.type) {
+      case 'img': {
+        const imgSrc = resolveImage && element.src ? resolveImage(element.src) : (element.src || 'https://picsum.photos/200/200');
+        return <img src={imgSrc} alt={element.name} {...commonProps} />;
+      }
+      case 'button':
+        return <button {...commonProps}>{element.content}{children}</button>;
+      case 'a':
+        return (
+          <a href={element.href || '#'} {...commonProps} onClick={(e) => {
+            if (!isPreview) { e.preventDefault(); handleClick(e); }
+          }}>
+            {element.content}{children}
+          </a>
+        );
+      case 'h1': return <h1 {...commonProps}>{element.content}{children}</h1>;
+      case 'h2': return <h2 {...commonProps}>{element.content}{children}</h2>;
+      case 'p': return <p {...commonProps}>{element.content}{children}</p>;
+      case 'section': return <section {...commonProps}>{children}</section>;
+      case 'span': return <span {...commonProps}>{element.content}{children}</span>;
+      case 'sup':
+        return (
+          <span style={{ position: 'relative', display: 'inline' }}>
+            <sup {...commonProps}>{element.content}{children}</sup>
+            {!isPreview && isSelected && (
+              <span style={{
+                position: 'absolute', top: '-18px', left: '50%', transform: 'translateX(-50%)',
+                backgroundColor: '#8b5cf6', color: 'white', padding: '2px 6px', borderRadius: '4px',
+                fontSize: '10px', fontWeight: 'bold', whiteSpace: 'nowrap', zIndex: 1000,
+                pointerEvents: 'none', boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+              }}>SUP</span>
+            )}
+          </span>
+        );
+      case 'sub':
+        return (
+          <span style={{ position: 'relative', display: 'inline' }}>
+            <sub {...commonProps}>{element.content}{children}</sub>
+            {!isPreview && isSelected && (
+              <span style={{
+                position: 'absolute', bottom: '-18px', left: '50%', transform: 'translateX(-50%)',
+                backgroundColor: '#f59e0b', color: 'white', padding: '2px 6px', borderRadius: '4px',
+                fontSize: '10px', fontWeight: 'bold', whiteSpace: 'nowrap', zIndex: 1000,
+                pointerEvents: 'none', boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+              }}>SUB</span>
+            )}
+          </span>
+        );
+      case 'br': return <br {...commonProps} />;
+      case 'text': return <>{element.content}</> as React.ReactElement;
+      default: return <div {...commonProps}>{element.content}{children}</div>;
+    }
+  };
+
+  return wrapWithHandles(renderElement());
 };
 
 const areEditorCanvasPropsEqual = (

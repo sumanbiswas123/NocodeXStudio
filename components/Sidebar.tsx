@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import FileExplorer from './FileExplorer';
 import Toolbox from './Toolbox';
-import LayersPanel from './LayersPanel';
+import ImagesPanel from './ImagesPanel';
+import MasterFeaturePanel from './MasterFeaturePanel';
 import { FileMap, VirtualElement } from '../types';
-import { FolderOpen, Box, Layers, MousePointer2, PenTool, Sparkles, Plus, Move } from 'lucide-react';
+import { FolderOpen, Box, MousePointer2, Sparkles, Move, Settings, Image as ImageIcon, Wand2 } from 'lucide-react';
 
 interface SidebarProps {
   files: FileMap;
@@ -17,6 +18,10 @@ interface SidebarProps {
   onDeletePath: (path: string, kind: 'file' | 'folder') => void;
   onDuplicateFile: (path: string) => void;
   onRefreshFiles: () => void;
+  onOpenProjectFolder: () => void;
+  onOpenCodePanel: () => void;
+  selectedFolderCloneSource: string | null;
+  onChooseFolderCloneSource: () => void;
   onAddElement: (type: string) => void;
   root: VirtualElement;
   selectedId: string | null;
@@ -26,12 +31,19 @@ interface SidebarProps {
   drawElementTag: string;
   setDrawElementTag: (tag: string) => void;
   theme: 'light' | 'dark';
+  showConfigButton: boolean;
+  onOpenConfig: () => void;
+  onLoadImage: (path: string) => void;
+  isPanelOpen: boolean;
+  onTogglePanelOpen: (next: boolean) => void;
+  showMasterTools?: boolean;
 }
 
 const TAB_ITEMS = [
   { key: 'files', icon: FolderOpen, label: 'Explorer' },
-  { key: 'layers', icon: Layers, label: 'Layers' },
+  { key: 'images', icon: ImageIcon, label: 'Images' },
   { key: 'toolbox', icon: Box, label: 'Add' },
+  { key: 'master', icon: Wand2, label: 'Master', beta: true },
 ] as const;
 
 type TabKey = typeof TAB_ITEMS[number]['key'];
@@ -48,6 +60,10 @@ const SidebarBase: React.FC<SidebarProps> = ({
   onDeletePath,
   onDuplicateFile,
   onRefreshFiles,
+  onOpenProjectFolder,
+  onOpenCodePanel,
+  selectedFolderCloneSource,
+  onChooseFolderCloneSource,
   onAddElement,
   root,
   selectedId,
@@ -56,15 +72,36 @@ const SidebarBase: React.FC<SidebarProps> = ({
   setInteractionMode,
   drawElementTag,
   setDrawElementTag,
-  theme
+  theme,
+  showConfigButton,
+  onOpenConfig,
+  onLoadImage,
+  isPanelOpen,
+  onTogglePanelOpen,
+  showMasterTools = true,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('files');
+  const visibleTabs = showMasterTools
+    ? TAB_ITEMS
+    : TAB_ITEMS.filter((tab) => tab.key !== 'master');
   const selectedAccent = theme === 'dark' ? '#67e8f9' : '#0891b2';
   const selectedGlow = theme === 'dark' ? 'rgba(103, 232, 249, 0.4)' : 'rgba(8, 145, 178, 0.22)';
 
+
+  const handleTabClick = (key: TabKey) => {
+    if (isPanelOpen && activeTab === key) {
+      onTogglePanelOpen(false);
+      return;
+    }
+    setActiveTab(key);
+    if (!isPanelOpen) {
+      onTogglePanelOpen(true);
+    }
+  };
+
   return (
     <div
-      className="flex h-full shrink-0 z-10"
+      className="flex h-full min-h-0 shrink-0 z-10 overflow-hidden"
       style={
         {
           ['--accent-primary' as any]: selectedAccent,
@@ -73,11 +110,11 @@ const SidebarBase: React.FC<SidebarProps> = ({
       }
     >
       {/* ─── Icon Rail ─── */}
-      <div 
+      <div
         className="w-12 flex flex-col items-center py-3 gap-1 border-r shrink-0"
-        style={{ 
-          backgroundColor: 'var(--bg-glass-strong)', 
-          borderColor: 'var(--border-color)' 
+        style={{
+          backgroundColor: 'var(--bg-glass-strong)',
+          borderColor: 'var(--border-color)'
         }}
       >
         {/* Mode Toggles */}
@@ -85,11 +122,10 @@ const SidebarBase: React.FC<SidebarProps> = ({
           <button
             onClick={() => setInteractionMode('edit')}
             title="Select / Edit"
-            className={`p-2 rounded-lg transition-all duration-200 group relative ${
-              interactionMode === 'edit' || interactionMode === 'inspect'
+            className={`p-2 rounded-lg transition-all duration-200 group relative ${interactionMode === 'edit' || interactionMode === 'inspect'
                 ? 'tab-active-glow animate-neonPulse'
                 : 'hover:bg-black/5'
-            }`}
+              }`}
             style={{
               color:
                 (interactionMode === 'edit' || interactionMode === 'inspect')
@@ -102,38 +138,24 @@ const SidebarBase: React.FC<SidebarProps> = ({
           <button
             onClick={() => setInteractionMode('move')}
             title="Move Element"
-            className={`p-2 rounded-lg transition-all duration-200 group relative ${
-              interactionMode === 'move'
+            className={`p-2 rounded-lg transition-all duration-200 group relative ${interactionMode === 'move'
                 ? 'bg-amber-500/20 text-amber-400 shadow-lg shadow-amber-500/10'
                 : 'hover:bg-black/5'
-            }`}
+              }`}
             style={{ color: interactionMode === 'move' ? undefined : 'var(--icon-color)' }}
           >
             <Move size={16} />
           </button>
-          <button
-            onClick={() => setInteractionMode('draw')}
-            title="Draw Element"
-            className={`p-2 rounded-lg transition-all duration-200 group relative ${
-              interactionMode === 'draw'
-                ? 'bg-emerald-500/20 text-emerald-400 shadow-lg shadow-emerald-500/10'
-                : 'hover:bg-black/5'
-            }`}
-            style={{ color: interactionMode === 'draw' ? undefined : 'var(--icon-color)' }}
-          >
-            <PenTool size={16} />
-          </button>
         </div>
 
         {/* Tab Icons */}
-        {TAB_ITEMS.map(({ key, icon: Icon, label }) => (
+        {visibleTabs.map(({ key, icon: Icon, label }) => (
           <button
             key={key}
-            onClick={() => setActiveTab(key)}
+            onClick={() => handleTabClick(key)}
             title={label}
-            className={`p-2 rounded-lg transition-all duration-200 relative glow-indicator ${
-              activeTab === key ? 'tab-active-glow' : 'hover:bg-black/5'
-            }`}
+            className={`p-2 rounded-lg transition-all duration-200 relative glow-indicator ${activeTab === key ? 'tab-active-glow' : 'hover:bg-black/5'
+              }`}
             style={{
               color:
                 activeTab === key
@@ -155,37 +177,65 @@ const SidebarBase: React.FC<SidebarProps> = ({
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Quick Add FAB */}
         <button
+          onClick={onOpenConfig}
+          title="Application Settings"
+          className="p-2 rounded-lg transition-all duration-200 hover:bg-black/5"
+          style={{ color: 'var(--icon-color)' }}
+        >
+          <Settings size={16} />
+        </button>
+
+        {showConfigButton && false && (
+          <button
+            onClick={onOpenConfig}
+            title="Presentation Settings"
+            className="p-2 rounded-lg transition-all duration-200 hover:bg-black/5"
+            style={{ color: 'var(--icon-color)' }}
+          >
+            <Settings size={16} />
+          </button>
+        )}
+
+        {/* Quick Add FAB - hidden for production */}
+        {/* <button
           onClick={() => { setActiveTab('toolbox'); }}
           title="Quick Add Element"
-          className={`p-2 rounded-xl text-white shadow-lg hover:scale-110 active:scale-95 transition-all duration-200 ${
+          className={`p-2 rounded-xl text-white shadow-lg active:scale-95 transition-all duration-200 ${
             theme === 'dark'
-              ? 'bg-gradient-to-br from-cyan-500 to-blue-500 shadow-cyan-500/35 hover:shadow-cyan-400/55'
-              : 'bg-gradient-to-br from-cyan-600 to-sky-600 shadow-cyan-500/25 hover:shadow-cyan-500/45'
+              ? 'bg-gradient-to-br from-cyan-500 to-blue-500 shadow-cyan-500/35'
+              : 'bg-gradient-to-br from-cyan-600 to-sky-600 shadow-cyan-500/25'
           }`}
         >
           <Plus size={16} />
-        </button>
+        </button> */}
       </div>
 
       {/* ─── Content Panel ─── */}
-      <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
+      <div
+        className={`min-w-0 flex flex-col h-full min-h-0 overflow-hidden transition-all duration-300 ${isPanelOpen ? 'flex-1 opacity-100' : 'w-0 opacity-0 pointer-events-none'}`}
+        style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}
+      >
         {/* Panel Header */}
-        <div 
+        <div
           className="px-3 py-2.5 border-b flex items-center justify-between backdrop-blur-sm"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-glass-strong)' }}
         >
           <div className="flex items-center gap-2">
             <Sparkles size={12} style={{ color: selectedAccent }} />
-            <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-              {TAB_ITEMS.find(t => t.key === activeTab)?.label}
+            <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+              <span>{TAB_ITEMS.find(t => t.key === activeTab)?.label}</span>
+              {showMasterTools && activeTab === 'master' ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold tracking-normal uppercase" style={{ color: '#1d4ed8', backgroundColor: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.35)' }}>
+                  Beta
+                </span>
+              ) : null}
             </span>
           </div>
         </div>
 
         {/* Draw Mode Selector (only when draw mode active) */}
-        {interactionMode === 'draw' && (
+        {false && interactionMode === 'draw' && (
           <div className="p-2 border-b animate-slideUp" style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(16,185,129,0.05)' }}>
             <label className="text-[9px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
               Drawing Element
@@ -210,7 +260,10 @@ const SidebarBase: React.FC<SidebarProps> = ({
         )}
 
         {/* Tab Content */}
-        <div className="flex-1 overflow-hidden custom-scrollbar animate-slideInLeft">
+        <div
+          className="flex-1 h-0 min-h-0 overflow-hidden custom-scrollbar animate-slideInLeft"
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {activeTab === 'files' ? (
             <FileExplorer
               files={files}
@@ -224,10 +277,16 @@ const SidebarBase: React.FC<SidebarProps> = ({
               onDeletePath={onDeletePath}
               onDuplicateFile={onDuplicateFile}
               onRefreshFiles={onRefreshFiles}
+              onOpenProjectFolder={onOpenProjectFolder}
+              onOpenCodePanel={onOpenCodePanel}
+              selectedFolderCloneSource={selectedFolderCloneSource}
+              onChooseFolderCloneSource={onChooseFolderCloneSource}
               theme={theme}
             />
-          ) : activeTab === 'layers' ? (
-            <LayersPanel root={root} selectedId={selectedId} onSelect={onSelectElement} theme={theme} />
+          ) : activeTab === 'images' ? (
+            <ImagesPanel files={files} activeFile={activeFile} onLoadImage={onLoadImage} theme={theme} />
+          ) : showMasterTools && activeTab === 'master' ? (
+            <MasterFeaturePanel files={files} onAddElement={onAddElement} isVisible={isPanelOpen && activeTab === 'master'} theme={theme} />
           ) : (
             <Toolbox onAddElement={onAddElement} />
           )}
@@ -265,6 +324,10 @@ const areSidebarPropsEqual = (
     prev.onDeletePath === next.onDeletePath &&
     prev.onDuplicateFile === next.onDuplicateFile &&
     prev.onRefreshFiles === next.onRefreshFiles &&
+    prev.onOpenProjectFolder === next.onOpenProjectFolder &&
+    prev.onOpenCodePanel === next.onOpenCodePanel &&
+    prev.selectedFolderCloneSource === next.selectedFolderCloneSource &&
+    prev.onChooseFolderCloneSource === next.onChooseFolderCloneSource &&
     prev.onAddElement === next.onAddElement &&
     prev.root === next.root &&
     prev.selectedId === next.selectedId &&
@@ -273,7 +336,13 @@ const areSidebarPropsEqual = (
     prev.setInteractionMode === next.setInteractionMode &&
     prev.drawElementTag === next.drawElementTag &&
     prev.setDrawElementTag === next.setDrawElementTag &&
-    prev.theme === next.theme
+    prev.theme === next.theme &&
+    prev.showConfigButton === next.showConfigButton &&
+    prev.onOpenConfig === next.onOpenConfig &&
+    prev.onLoadImage === next.onLoadImage &&
+    prev.isPanelOpen === next.isPanelOpen &&
+    prev.onTogglePanelOpen === next.onTogglePanelOpen &&
+    prev.showMasterTools === next.showMasterTools
   );
 };
 

@@ -1,6 +1,7 @@
-
 import React from 'react';
-import { Layout, Type, Image, MousePointerClick, Square, Box, Link as LinkIcon, Layers, CreditCard, Eye, Columns } from 'lucide-react';
+import { 
+  Type, Image, MousePointerClick, Square, Link as LinkIcon, Video
+} from 'lucide-react';
 
 interface ToolboxProps {
   onAddElement: (type: string) => void;
@@ -13,28 +14,13 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
       color: '#6366f1',
       items: [
         { type: 'div', label: 'Container', icon: Square },
-        { type: 'section', label: 'Section', icon: Box },
-        { type: 'container', label: 'Grid', icon: Layout }, 
-        { type: 'flex', label: 'Flex Row', icon: Columns },
-      ]
-    },
-    {
-      title: 'Components',
-      color: '#a855f7',
-      items: [
-        { type: 'preset:carousel', label: 'Carousel', icon: Layers },
-        { type: 'preset:flip-card', label: 'Flip Card', icon: CreditCard },
-        { type: 'preset:scroll-reveal', label: 'Scroll Reveal', icon: Eye },
       ]
     },
     {
       title: 'Typography',
       color: '#f59e0b',
       items: [
-        { type: 'h1', label: 'Heading 1', icon: Type },
-        { type: 'h2', label: 'Heading 2', icon: Type },
-        { type: 'p', label: 'Paragraph', icon: Type },
-        { type: 'span', label: 'Text Span', icon: Type },
+        { type: 'h1', label: 'Text', icon: Type },
       ]
     },
     {
@@ -42,6 +28,7 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
       color: '#ec4899',
       items: [
         { type: 'img', label: 'Image', icon: Image },
+        { type: 'video', label: 'Video', icon: Video },
       ]
     },
     {
@@ -51,12 +38,16 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
         { type: 'button', label: 'Button', icon: MousePointerClick },
         { type: 'a', label: 'Link', icon: LinkIcon },
       ]
-    }
+    },
+    
   ];
 
   return (
-    <div className="flex flex-col h-full" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
-      <div className="flex-1 overflow-y-auto p-2.5 space-y-4 custom-scrollbar">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-2.5 space-y-4 custom-scrollbar"
+        style={{ overscrollBehavior: 'contain' }}
+      >
         {categories.map((cat, catIdx) => (
           <div key={cat.title} className="animate-slideInLeft" style={{ animationDelay: `${catIdx * 50}ms` }}>
             {/* Category Header */}
@@ -78,6 +69,18 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
                     event.dataTransfer.effectAllowed = 'copy';
                     event.dataTransfer.setData('application/x-nocodex-element', item.type);
                     event.dataTransfer.setData('text/plain', item.type);
+                    window.dispatchEvent(
+                      new CustomEvent('nocodex-toolbox-drag-state', {
+                        detail: { active: true, type: item.type },
+                      }),
+                    );
+                  }}
+                  onDragEnd={() => {
+                    window.dispatchEvent(
+                      new CustomEvent('nocodex-toolbox-drag-state', {
+                        detail: { active: false, type: '' },
+                      }),
+                    );
                   }}
                   className="panel-card flex flex-col items-center justify-center p-2.5 group cursor-pointer active:scale-95 transition-all duration-200"
                   title={`Add ${item.label}`}

@@ -163,7 +163,7 @@ const LayersPanelBase: React.FC<LayersPanelProps> = ({ root, selectedId, onSelec
     };
 
     return (
-        <div className="h-full flex flex-col" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
+        <div className="h-full min-h-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
             {/* Search */}
             <div className="p-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
                 <div 
@@ -197,7 +197,10 @@ const LayersPanelBase: React.FC<LayersPanelProps> = ({ root, selectedId, onSelec
             </div>
 
             {/* Tree */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <div
+                className="flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+                style={{ overscrollBehavior: 'contain' }}
+            >
                 {renderElement(root)}
             </div>
         </div>

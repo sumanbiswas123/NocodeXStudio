@@ -6,15 +6,16 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
+import html2canvas from "html2canvas";
 import { flushSync } from "react-dom";
 import Sidebar from "./components/Sidebar";
-import EditorCanvas from "./components/EditorCanvas";
 import PropertiesPanel from "./components/PropertiesPanel";
 import StyleInspectorPanel from "./components/StyleInspectorPanel";
 import Terminal from "./components/Terminal";
-import CodeWorkspace from "./components/CodeWorkspace";
+import ColorCodeEditor from "./components/ColorCodeEditor";
+import DetachedCodeEditorWindow from "./components/DetachedCodeEditorWindow";
 import CommandPalette from "./components/CommandPalette";
-import TitleBar from "./components/TitleBar";
+import ConfigEditorModal from "./components/ConfigEditorModal";
 import { INITIAL_ROOT, INJECTED_STYLES } from "./constants";
 import {
   VirtualElement,
@@ -31,8 +32,6 @@ import {
   PanelRight,
   Maximize2,
   Minimize2,
-  Command,
-  Play,
   Tablet,
   RotateCw,
   FolderOpen,
@@ -45,3789 +44,234 @@ import {
   Redo2,
   Settings2,
   Code2,
+  Sparkles,
+  Copy,
+  Trash2,
+  MoveUp,
+  MoveDown,
+  Shrink,
+  Expand,
+  StickyNote,
+  X,
+  Camera,
+  FileDown,
 } from "lucide-react";
 
-// --- Helper Functions (Same as before) ---
-const findElementById = (
-  root: VirtualElement,
-  id: string,
-): VirtualElement | null => {
-  if (root.id === id) return root;
-  for (const child of root.children) {
-    const found = findElementById(child, id);
-    if (found) return found;
-  }
-  return null;
-};
-
-const collectPathIdsToElement = (
-  root: VirtualElement,
-  id: string | null,
-): Set<string> | null => {
-  if (!id) return null;
-  const path: string[] = [];
-  const walk = (node: VirtualElement): boolean => {
-    if (node.id === id) {
-      path.push(node.id);
-      return true;
-    }
-    for (const child of node.children) {
-      if (walk(child)) {
-        path.push(node.id);
-        return true;
-      }
-    }
-    return false;
-  };
-  if (!walk(root)) return null;
-  return new Set(path);
-};
-
-const updateElementInTree = (
-  root: VirtualElement,
-  id: string,
-  updater: (el: VirtualElement) => VirtualElement,
-): VirtualElement => {
-  if (root.id === id) {
-    const updated = updater(root);
-    return updated === root ? root : updated;
-  }
-  let didChange = false;
-  const nextChildren = root.children.map((child) => {
-    const updatedChild = updateElementInTree(child, id, updater);
-    if (updatedChild !== child) {
-      didChange = true;
-    }
-    return updatedChild;
-  });
-  if (!didChange) return root;
-  return { ...root, children: nextChildren };
-};
-
-const deleteElementFromTree = (
-  root: VirtualElement,
-  id: string,
-): VirtualElement => {
-  let didChange = false;
-  const nextChildren: VirtualElement[] = [];
-  for (const child of root.children) {
-    if (child.id === id) {
-      didChange = true;
-      continue;
-    }
-    const updatedChild = deleteElementFromTree(child, id);
-    if (updatedChild !== child) {
-      didChange = true;
-    }
-    nextChildren.push(updatedChild);
-  }
-  if (!didChange) return root;
-  return { ...root, children: nextChildren };
-};
-
-const normalizePath = (path: string): string => path.replace(/\\/g, "/");
-const PREVIEW_LAYER_ID_PREFIX = "preview-path:";
-const PREVIEW_MOUNT_PATH = "/__vh__";
-const SHARED_MOUNT_PATH = "/shared";
-const SHARED_MOUNT_PATH_IN_PREVIEW = "/__vh__/shared";
-
-const joinPath = (base: string, entry: string): string =>
-  `${base.replace(/[\\/]$/, "")}/${entry}`;
-
-const getParentPath = (path: string): string | null => {
-  const normalized = normalizePath(path).replace(/[\\/]$/, "");
-  const idx = normalized.lastIndexOf("/");
-  if (idx <= 0) return null;
-  return normalized.slice(0, idx);
-};
-
-const IGNORED_FOLDERS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".turbo",
-  ".cache",
-  "coverage",
-]);
-const THEME_STORAGE_KEY = "nocode-x-studio-theme";
-const PREVIEW_AUTOSAVE_STORAGE_KEY = "nocode-x-studio-preview-autosave";
-const MAX_CANVAS_HISTORY = 80;
-const MAX_PREVIEW_HISTORY = 60;
-const MAX_PREVIEW_CONSOLE_ENTRIES = 400;
-const MAX_PREVIEW_DOC_CACHE_ENTRIES = 8;
-const MAX_PREVIEW_DOC_CACHE_CHARS = 2_500_000;
-const SHARED_FONT_VIRTUAL_DIR = "shared/media/fonts";
-const PRESENTATION_CSS_VIRTUAL_PATH = "shared/css/presentation.css";
-const FONT_CACHE_VIRTUAL_PATH = "shared/js/nocodex-fonts.json";
-const FONT_CACHE_VERSION = 1;
-const DEFAULT_EDITOR_FONTS = [
-  "Arial",
-  "Helvetica",
-  "Times New Roman",
-  "Georgia",
-  "Courier New",
-  "Verdana",
-  "Trebuchet MS",
-  "Impact",
-  "sans-serif",
-  "serif",
-  "monospace",
-];
-const PREVIEW_DRAW_ALLOWED_TAGS = new Set([
-  "div",
-  "section",
-  "p",
-  "span",
-  "h1",
-  "h2",
-  "h3",
-  "button",
-  "img",
-]);
-const normalizePreviewDrawTag = (raw: string): string => {
-  const next = String(raw || "")
-    .trim()
-    .toLowerCase();
-  if (PREVIEW_DRAW_ALLOWED_TAGS.has(next)) return next;
-  return "div";
-};
-
-type FontCachePayload = {
-  version: number;
-  source: "presentation.css";
-  generatedAt: string;
-  fonts: string[];
-};
-
-type MaybeViewTransitionDocument = Document & {
-  startViewTransition?: (updateCallback: () => void) => {
-    finished: Promise<void>;
-  };
-};
-
-const sanitizeFontFamilyName = (raw: string): string =>
-  String(raw || "")
-    .trim()
-    .replace(/^['"]+|['"]+$/g, "")
-    .trim();
-
-const dedupeFontFamilies = (families: string[]): string[] => {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of families) {
-    const normalized = sanitizeFontFamilyName(raw);
-    if (!normalized) continue;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(normalized);
-  }
-  return out;
-};
-
-const buildEditorFontOptions = (projectFamilies: string[]): string[] =>
-  dedupeFontFamilies([...projectFamilies, ...DEFAULT_EDITOR_FONTS]);
-
-const parsePresentationCssFontFamilies = (cssContent: string): string[] => {
-  if (!cssContent) return [];
-  const out: string[] = [];
-  const faceRegex = /@font-face\s*\{[\s\S]*?\}/gi;
-  let blockMatch: RegExpExecArray | null = null;
-  while ((blockMatch = faceRegex.exec(cssContent)) !== null) {
-    const block = blockMatch[0];
-    const familyMatch = block.match(/font-family\s*:\s*([^;]+);/i);
-    if (!familyMatch) continue;
-    out.push(sanitizeFontFamilyName(familyMatch[1]));
-  }
-  return dedupeFontFamilies(out);
-};
-
-const parseFontCacheFamilies = (raw: string): string[] => {
-  try {
-    const parsed = JSON.parse(raw) as Partial<FontCachePayload> | null;
-    if (!parsed || !Array.isArray(parsed.fonts)) return [];
-    return dedupeFontFamilies(parsed.fonts.map((item) => String(item || "")));
-  } catch {
-    return [];
-  }
-};
-
-const deriveFontFamilyFromFontFileName = (fileName: string): string => {
-  const base = String(fileName || "").replace(/\.[^.]+$/, "");
-  const normalized = base.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-  return normalized || base || "Custom Font";
-};
-
-const fontFormatFromFileName = (fileName: string): string => {
-  const ext =
-    String(fileName || "")
-      .split(".")
-      .pop()
-      ?.toLowerCase() || "";
-  if (ext === "woff2") return "woff2";
-  if (ext === "woff") return "woff";
-  if (ext === "ttf") return "truetype";
-  if (ext === "otf") return "opentype";
-  if (ext === "eot") return "embedded-opentype";
-  return ext || "truetype";
-};
-
-const relativePathBetweenVirtualFiles = (
-  fromFilePath: string,
-  toFilePath: string,
-): string => {
-  const fromParts = normalizeProjectRelative(fromFilePath)
-    .split("/")
-    .filter(Boolean);
-  const toParts = normalizeProjectRelative(toFilePath)
-    .split("/")
-    .filter(Boolean);
-  if (fromParts.length > 0) fromParts.pop();
-  let pivot = 0;
-  while (
-    pivot < fromParts.length &&
-    pivot < toParts.length &&
-    fromParts[pivot].toLowerCase() === toParts[pivot].toLowerCase()
-  ) {
-    pivot += 1;
-  }
-  const upward = new Array(Math.max(0, fromParts.length - pivot)).fill("..");
-  const downward = toParts.slice(pivot);
-  const combined = [...upward, ...downward].join("/");
-  return combined || toParts[toParts.length - 1] || "";
-};
-
-const collectSharedFontFamiliesFromFileMap = (fileMap: FileMap): string[] =>
-  dedupeFontFamilies(
-    Object.values(fileMap)
-      .filter((file) => {
-        if (file.type !== "font") return false;
-        const normalized = normalizeProjectRelative(file.path).toLowerCase();
-        return normalized.startsWith(`${SHARED_FONT_VIRTUAL_DIR}/`);
-      })
-      .map((file) => deriveFontFamilyFromFontFileName(file.name)),
-  );
-
-const inferFileType = (name: string): ProjectFile["type"] => {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
-  if (lower.endsWith(".css")) return "css";
-  if (lower.endsWith(".js")) return "js";
-  if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return "image";
-  if (lower.match(/\.(woff|woff2|ttf|otf|eot)$/)) return "font";
-  return "unknown";
-};
-
-const isTextFileType = (type: ProjectFile["type"]): boolean =>
-  type !== "image" && type !== "font";
-
-const isSvgPath = (path: string): boolean =>
-  normalizePath(path).toLowerCase().endsWith(".svg");
-
-const isCodeEditableFile = (
-  path: string,
-  type: ProjectFile["type"],
-): boolean => isTextFileType(type) || isSvgPath(path);
-
-const toFileUrl = (absolutePath: string): string => {
-  const normalized = normalizePath(absolutePath);
-  return normalized.startsWith("/")
-    ? `file://${normalized}`
-    : `file:///${normalized}`;
-};
-
-const mimeFromType = (type: ProjectFile["type"], fileName: string): string => {
-  if (type === "image") {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    if (ext === "svg") return "image/svg+xml";
-    if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
-    if (ext === "gif") return "image/gif";
-    if (ext === "webp") return "image/webp";
-    return "image/png";
-  }
-  if (type === "font") {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    if (ext === "woff2") return "font/woff2";
-    if (ext === "woff") return "font/woff";
-    if (ext === "ttf") return "font/ttf";
-    if (ext === "otf") return "font/otf";
-    if (ext === "eot") return "application/vnd.ms-fontobject";
-    return "application/octet-stream";
-  }
-  return "application/octet-stream";
-};
-
-const toByteArray = (value: any): Uint8Array => {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (Array.isArray(value)) return new Uint8Array(value);
-  if (value?.buffer instanceof ArrayBuffer) return new Uint8Array(value.buffer);
-  return new Uint8Array();
-};
-
-const isExternalUrl = (raw: string): boolean =>
-  /^(https?:|data:|blob:|mailto:|tel:|#|javascript:)/i.test(raw);
-
-const normalizeProjectRelative = (rawPath: string): string => {
-  const normalized = rawPath.replace(/\\/g, "/");
-  const parts = normalized.split("/");
-  const out: string[] = [];
-  for (const part of parts) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      out.pop();
-      continue;
-    }
-    out.push(part);
-  }
-  return out.join("/");
-};
-
-const resolveProjectRelativePath = (
-  currentFile: string,
-  target: string,
-): string | null => {
-  const trimmed = target.trim();
-  if (!trimmed || isExternalUrl(trimmed)) return null;
-
-  const pathOnly = trimmed.split("#")[0].split("?")[0];
-  if (!pathOnly) return null;
-
-  if (pathOnly.startsWith("/")) {
-    return normalizeProjectRelative(pathOnly.slice(1));
-  }
-  const currentDir = currentFile.includes("/")
-    ? currentFile.slice(0, currentFile.lastIndexOf("/"))
-    : "";
-  const joined = currentDir ? `${currentDir}/${pathOnly}` : pathOnly;
-  return normalizeProjectRelative(joined);
-};
-
-const findFilePathCaseInsensitive = (
-  fileMap: FileMap,
-  candidate: string,
-): string | null => {
-  if (!candidate) return null;
-  if (fileMap[candidate]) return candidate;
-  const lower = candidate.toLowerCase();
-  const exactLower = Object.keys(fileMap).find(
-    (k) => k.toLowerCase() === lower,
-  );
-  return exactLower ?? null;
-};
-
-const resolvePreviewNavigationPath = (
-  currentHtmlPath: string,
-  rawTarget: string,
-  fileMap: FileMap,
-): string | null => {
-  const normalizedRaw = String(rawTarget || "").trim();
-  if (!normalizedRaw) return null;
-  if (
-    /^(https?:|data:|blob:|mailto:|tel:|javascript:|#)/i.test(normalizedRaw)
-  ) {
-    return null;
-  }
-
-  const directCandidate = normalizeProjectRelative(
-    normalizedRaw.replace(/^\/+/, ""),
-  );
-  const variants = directCandidate.startsWith("shared/")
-    ? [directCandidate, directCandidate.slice("shared/".length)]
-    : [directCandidate, `shared/${directCandidate}`];
-
-  for (const candidate of variants) {
-    const matched = findFilePathCaseInsensitive(fileMap, candidate);
-    if (!matched) continue;
-    const file = fileMap[matched];
-    if (file?.type === "html") {
-      const lower = matched.toLowerCase();
-      if (lower.startsWith("shared/media/")) return null;
-      return matched;
-    }
-  }
-
-  const resolved = resolveProjectRelativePath(currentHtmlPath, normalizedRaw);
-  if (!resolved) return null;
-  const resolvedVariants = resolved.startsWith("shared/")
-    ? [resolved, resolved.slice("shared/".length)]
-    : [resolved, `shared/${resolved}`];
-  for (const candidate of resolvedVariants) {
-    const matched = findFilePathCaseInsensitive(fileMap, candidate);
-    if (!matched) continue;
-    const file = fileMap[matched];
-    if (file?.type === "html") {
-      const lower = matched.toLowerCase();
-      if (lower.startsWith("shared/media/")) return null;
-      return matched;
-    }
-  }
-
-  return null;
-};
-
-const isPathWithinBase = (basePath: string, candidatePath: string): boolean => {
-  const base = normalizePath(basePath)
-    .replace(/[\\/]$/, "")
-    .toLowerCase();
-  const candidate = normalizePath(candidatePath).toLowerCase();
-  return candidate === base || candidate.startsWith(`${base}/`);
-};
-
-const toMountRelativePath = (
-  basePath: string,
-  absolutePath: string,
-): string | null => {
-  const base = normalizePath(basePath).replace(/[\\/]$/, "");
-  const absolute = normalizePath(absolutePath);
-  if (!isPathWithinBase(base, absolute)) return null;
-  const trimmed = absolute.startsWith(`${base}/`)
-    ? absolute.slice(base.length + 1)
-    : absolute.slice(base.length);
-  return normalizeProjectRelative(trimmed.replace(/^\/+/, ""));
-};
-
-const rewriteInlineAssetRefs = (
-  raw: string,
-  currentFile: string,
-  fileMap: FileMap,
-): string => {
-  let content = raw;
-
-  content = content.replace(
-    /\b(src|href)=["']([^"']+)["']/gi,
-    (full, attrName, rawValue) => {
-      const resolved = resolveProjectRelativePath(currentFile, rawValue);
-      if (!resolved) return full;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0
-      ) {
-        return full;
-      }
-      if (file.type === "image" || file.type === "font") {
-        return `${attrName}="${file.content}"`;
-      }
-      return full;
-    },
-  );
-
-  content = content.replace(
-    /url\((['"]?)([^'")]+)\1\)/gi,
-    (full, quote, rawValue) => {
-      const resolved = resolveProjectRelativePath(currentFile, rawValue);
-      if (!resolved) return full;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0
-      ) {
-        return full;
-      }
-      if (file.type === "image" || file.type === "font") {
-        return `url("${file.content}")`;
-      }
-      return full;
-    },
-  );
-
-  content = content.replace(/\bsrcset=["']([^"']+)["']/gi, (full, rawValue) => {
-    const rawSrcset = String(rawValue || "").trim();
-    if (!rawSrcset || /^data:/i.test(rawSrcset)) return full;
-    const parts = rawSrcset.split(",");
-    let changed = false;
-    const nextParts = parts.map((part) => {
-      const token = part.trim();
-      if (!token) return token;
-      const [rawUrl, ...descriptorParts] = token.split(/\s+/);
-      const resolved = resolveProjectRelativePath(currentFile, rawUrl);
-      if (!resolved) return token;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0 ||
-        (file.type !== "image" && file.type !== "font")
-      ) {
-        return token;
-      }
-      changed = true;
-      const descriptor = descriptorParts.join(" ");
-      return descriptor ? `${file.content} ${descriptor}` : file.content;
-    });
-    if (!changed) return full;
-    return `srcset="${nextParts.join(", ")}"`;
-  });
-
-  return content;
-};
-
-const buildPreviewRuntimeScript = (
-  fileMap: FileMap,
-  htmlPath: string,
-  includePaths?: string[],
-): string => {
-  const includeSet =
-    includePaths && includePaths.length > 0 ? new Set(includePaths) : null;
-  const records: Record<
-    string,
-    { kind: "text"; content: string } | { kind: "data"; data: string }
-  > = {};
-
-  for (const [path, file] of Object.entries(fileMap)) {
-    const lowerPath = String(path || "").toLowerCase();
-    const allowShared = lowerPath.startsWith("shared/");
-    if (includeSet && !includeSet.has(path) && !allowShared) continue;
-    if (typeof file.content !== "string" || file.content.trim().length === 0) {
-      continue;
-    }
-    if (file.type === "image" || file.type === "font") {
-      records[path] = { kind: "data", data: file.content };
-      continue;
-    }
-    const transformed =
-      file.type === "html" || file.type === "css"
-        ? rewriteInlineAssetRefs(file.content, path, fileMap)
-        : file.content;
-    records[path] = { kind: "text", content: transformed };
-  }
-
-  const payload = JSON.stringify(records).replace(/<\//g, "<\\/");
-  const safeEntry = JSON.stringify(htmlPath).replace(/<\//g, "<\\/");
-
-  return `
-  (function () {
-    var __FILES = ${payload};
-    var __FILE_KEYS = Object.keys(__FILES);
-    var __LOWER_KEY_MAP = {};
-    for (var i = 0; i < __FILE_KEYS.length; i++) {
-      __LOWER_KEY_MAP[__FILE_KEYS[i].toLowerCase()] = __FILE_KEYS[i];
-    }
-    var __ENTRY = ${safeEntry};
-    var __ENTRY_DIR = __ENTRY.indexOf('/') > -1 ? __ENTRY.slice(0, __ENTRY.lastIndexOf('/')) : '';
-    var __ORIG_FETCH = window.fetch ? window.fetch.bind(window) : null;
-    var __XHR_OPEN = XMLHttpRequest.prototype.open;
-    var __XHR_SEND = XMLHttpRequest.prototype.send;
-
-    function normalize(path) {
-      var normalized = String(path || '').replace(/\\\\/g, '/');
-      var parts = normalized.split('/');
-      var out = [];
-      for (var i = 0; i < parts.length; i++) {
-        var part = parts[i];
-        if (!part || part === '.') continue;
-        if (part === '..') { out.pop(); continue; }
-        out.push(part);
-      }
-      return out.join('/');
-    }
-
-    function resolveFrom(baseFile, target) {
-      if (!target) return null;
-      if (/^(data:|blob:|mailto:|tel:|javascript:)/i.test(target)) return null;
-      var cleaned = String(target).split('#')[0].split('?')[0];
-      try { cleaned = decodeURIComponent(cleaned); } catch (e) {}
-      if (!cleaned) return null;
-      if (/^https?:/i.test(cleaned)) {
-        try {
-          var u = new URL(cleaned);
-          cleaned = u.pathname || '';
-        } catch (e) { return null; }
-      }
-      if (cleaned.startsWith('/')) return normalize(cleaned.slice(1));
-      var baseDir = baseFile.indexOf('/') > -1 ? baseFile.slice(0, baseFile.lastIndexOf('/')) : '';
-      return normalize(baseDir ? (baseDir + '/' + cleaned) : cleaned);
-    }
-
-    function getMime(path) {
-      var lower = String(path || '').toLowerCase();
-      if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html';
-      if (lower.endsWith('.css')) return 'text/css';
-      if (lower.endsWith('.js')) return 'text/javascript';
-      if (lower.endsWith('.json')) return 'application/json';
-      if (lower.endsWith('.svg')) return 'image/svg+xml';
-      return 'text/plain';
-    }
-
-    function lookupRecord(path) {
-      if (!path) return null;
-      if (__FILES[path]) return { key: path, rec: __FILES[path] };
-
-      var lowerPath = String(path).toLowerCase();
-      var exactLower = __LOWER_KEY_MAP[lowerPath];
-      if (exactLower && __FILES[exactLower]) {
-        return { key: exactLower, rec: __FILES[exactLower] };
-      }
-
-      for (var i = 0; i < __FILE_KEYS.length; i++) {
-        var key = __FILE_KEYS[i];
-        var lowerKey = key.toLowerCase();
-        if (lowerKey === lowerPath || lowerKey.endsWith('/' + lowerPath)) {
-          return { key: key, rec: __FILES[key] };
-        }
-      }
-      return null;
-    }
-
-    function getPathVariants(path) {
-      var variants = [];
-      var normalized = normalize(path);
-      if (!normalized) return variants;
-      variants.push(normalized);
-      if (normalized.startsWith('shared/')) {
-        variants.push(normalized.slice('shared/'.length));
-      } else {
-        variants.push('shared/' + normalized);
-      }
-      return variants;
-    }
-
-    function toPath(input) {
-      var raw = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-      if (!raw) return null;
-      return resolveFrom(__ENTRY, raw);
-    }
-
-    function getRecord(input) {
-      var path = toPath(input);
-      if (!path) return null;
-      var variants = getPathVariants(path);
-      for (var i = 0; i < variants.length; i++) {
-        var found = lookupRecord(variants[i]);
-        if (found) return { path: found.key, rec: found.rec };
-      }
-
-      if (__ENTRY_DIR) {
-        for (var j = 0; j < variants.length; j++) {
-          var prefixed = normalize(__ENTRY_DIR + '/' + variants[j]);
-          var prefixedFound = lookupRecord(prefixed);
-          if (prefixedFound) {
-            return { path: prefixedFound.key, rec: prefixedFound.rec };
-          }
-        }
-      }
-      return { path: path, rec: null };
-    }
-
-    function resolveNavigationTarget(target) {
-      if (!target) return null;
-      var raw = String(target || '').trim();
-      if (!raw) return null;
-      if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#)/i.test(raw)) return null;
-
-      var resolved = resolveFrom(__ENTRY, raw);
-      if (!resolved) return null;
-      var variants = getPathVariants(resolved);
-
-      for (var i = 0; i < variants.length; i++) {
-        var found = lookupRecord(variants[i]);
-        if (!found || !found.rec || found.rec.kind !== 'text') continue;
-        var lower = String(found.key || '').toLowerCase();
-        if (lower.endsWith('.html') || lower.endsWith('.htm')) {
-          if (lower.startsWith('shared/media/')) return null;
-          return found.key;
-        }
-      }
-      return null;
-    }
-
-    function toDataUrl(path, rec) {
-      if (!rec) return null;
-      if (rec.kind === 'data') return rec.data;
-      var mime = getMime(path);
-      return 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(rec.content);
-    }
-
-    function rewriteCssText(cssText) {
-      return String(cssText || '').replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function(full, _quote, raw) {
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return 'url("' + rewritten + '")';
-      });
-    }
-
-    function rewriteHtmlMarkup(markup) {
-      var next = String(markup || '');
-      next = next.replace(/\\b(src|href|srcset)=["']([^"']+)["']/gi, function(full, attr, raw) {
-        if (String(attr).toLowerCase() === 'srcset') {
-          var rewrittenSet = rewriteSrcsetValue(raw);
-          if (!rewrittenSet) return full;
-          return attr + '="' + rewrittenSet + '"';
-        }
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return attr + '="' + rewritten + '"';
-      });
-      next = next.replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function(full, _q, raw) {
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return 'url("' + rewritten + '")';
-      });
-      return next;
-    }
-
-    function rewriteAttrValue(rawValue) {
-      if (!rawValue) return null;
-      var resolved = getRecord(rawValue);
-      if (!resolved || !resolved.rec) return null;
-      return toDataUrl(resolved.path, resolved.rec);
-    }
-
-    function rewriteSrcsetValue(rawValue) {
-      if (!rawValue) return null;
-      var srcset = String(rawValue).trim();
-      if (!srcset || /^data:/i.test(srcset)) return null;
-      var parts = srcset.split(',');
-      var changed = false;
-      for (var i = 0; i < parts.length; i++) {
-        var token = String(parts[i] || '').trim();
-        if (!token) continue;
-        var segs = token.split(/\s+/);
-        var rawUrl = segs[0];
-        var rewritten = rewriteAttrValue(rawUrl);
-        if (!rewritten) continue;
-        changed = true;
-        var descriptor = segs.slice(1).join(' ');
-        parts[i] = descriptor ? (rewritten + ' ' + descriptor) : rewritten;
-      }
-      return changed ? parts.join(', ') : null;
-    }
-
-    function patchElementAttributes(root) {
-      if (!root || !root.querySelectorAll) return;
-      if (root.tagName === 'STYLE' && root.textContent) {
-        root.textContent = rewriteCssText(root.textContent);
-      }
-      var nodes = root.querySelectorAll('[src], [href], [srcset]');
-      for (var i = 0; i < nodes.length; i++) {
-        var node = nodes[i];
-        if (node.tagName === 'STYLE' && node.textContent) {
-          node.textContent = rewriteCssText(node.textContent);
-        }
-        if (node.hasAttribute('src')) {
-          var src = node.getAttribute('src');
-          var nextSrc = rewriteAttrValue(src);
-          if (nextSrc) node.setAttribute('src', nextSrc);
-        }
-        if (node.hasAttribute('href')) {
-          var href = node.getAttribute('href');
-          var rel = (node.getAttribute('rel') || '').toLowerCase();
-          var nextHref = rewriteAttrValue(href);
-          if (nextHref && (rel === 'stylesheet' || node.tagName === 'A' || node.tagName === 'LINK')) {
-            node.setAttribute('href', nextHref);
-          }
-        }
-        if (node.hasAttribute('srcset')) {
-          var srcset = node.getAttribute('srcset');
-          var nextSrcset = rewriteSrcsetValue(srcset);
-          if (nextSrcset) node.setAttribute('srcset', nextSrcset);
-        }
-      }
-    }
-
-    var __APPEND_CHILD = Node.prototype.appendChild;
-    Node.prototype.appendChild = function(child) {
-      patchElementAttributes(child);
-      return __APPEND_CHILD.call(this, child);
-    };
-
-    var __INSERT_BEFORE = Node.prototype.insertBefore;
-    Node.prototype.insertBefore = function(newNode, referenceNode) {
-      patchElementAttributes(newNode);
-      return __INSERT_BEFORE.call(this, newNode, referenceNode);
-    };
-
-    var __SET_ATTR = Element.prototype.setAttribute;
-    Element.prototype.setAttribute = function(name, value) {
-      var lower = String(name || '').toLowerCase();
-      if (lower === 'srcset') {
-        var rewrittenSet = rewriteSrcsetValue(value);
-        if (rewrittenSet) value = rewrittenSet;
-      } else if (lower === 'src' || lower === 'href') {
-        var rewritten = rewriteAttrValue(value);
-        if (rewritten) value = rewritten;
-      } else if (lower === 'style' && typeof value === 'string') {
-        value = rewriteCssText(value);
-      }
-      return __SET_ATTR.call(this, name, value);
-    };
-
-    function patchUrlProperty(proto, propName) {
-      if (!proto) return;
-      var desc = Object.getOwnPropertyDescriptor(proto, propName);
-      if (!desc || !desc.set || !desc.get) return;
-      if (!desc.configurable) return;
-      Object.defineProperty(proto, propName, {
-        configurable: true,
-        enumerable: desc.enumerable,
-        get: function() {
-          return desc.get.call(this);
-        },
-        set: function(value) {
-          if (propName === 'srcset') {
-            var rewrittenSet = rewriteSrcsetValue(value);
-            return desc.set.call(this, rewrittenSet || value);
-          }
-          var rewritten = rewriteAttrValue(value);
-          return desc.set.call(this, rewritten || value);
-        }
-      });
-    }
-
-    patchUrlProperty(window.HTMLImageElement && window.HTMLImageElement.prototype, 'src');
-    patchUrlProperty(window.HTMLImageElement && window.HTMLImageElement.prototype, 'srcset');
-    patchUrlProperty(window.HTMLScriptElement && window.HTMLScriptElement.prototype, 'src');
-    patchUrlProperty(window.HTMLLinkElement && window.HTMLLinkElement.prototype, 'href');
-    patchUrlProperty(window.HTMLAnchorElement && window.HTMLAnchorElement.prototype, 'href');
-    patchUrlProperty(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'src');
-    patchUrlProperty(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'srcset');
-    patchUrlProperty(window.HTMLIFrameElement && window.HTMLIFrameElement.prototype, 'src');
-
-    var __INSERT_ADJ = Element.prototype.insertAdjacentHTML;
-    Element.prototype.insertAdjacentHTML = function(position, text) {
-      return __INSERT_ADJ.call(this, position, rewriteHtmlMarkup(text));
-    };
-
-    var innerHtmlDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
-    if (innerHtmlDesc && innerHtmlDesc.set && innerHtmlDesc.get) {
-      Object.defineProperty(Element.prototype, 'innerHTML', {
-        configurable: true,
-        enumerable: innerHtmlDesc.enumerable,
-        get: function() {
-          return innerHtmlDesc.get.call(this);
-        },
-        set: function(value) {
-          return innerHtmlDesc.set.call(this, rewriteHtmlMarkup(value));
-        }
-      });
-    }
-
-    var __DOC_WRITE = document.write ? document.write.bind(document) : null;
-    if (__DOC_WRITE) {
-      document.write = function() {
-        var args = [];
-        for (var i = 0; i < arguments.length; i++) {
-          args.push(rewriteHtmlMarkup(arguments[i]));
-        }
-        return __DOC_WRITE.apply(document, args);
-      };
-    }
-
-    if (document && document.documentElement) {
-      patchElementAttributes(document.documentElement);
-      var observer = new MutationObserver(function(mutations) {
-        for (var i = 0; i < mutations.length; i++) {
-          var m = mutations[i];
-          for (var j = 0; j < m.addedNodes.length; j++) {
-            patchElementAttributes(m.addedNodes[j]);
-          }
-        }
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
-
-    function notifyNavigate(targetPath) {
-      if (!targetPath || !window.parent || window.parent === window) return;
-      try {
-        window.parent.postMessage({ type: 'PREVIEW_NAVIGATE', path: targetPath }, '*');
-      } catch (e) {}
-    }
-
-    var __previewSelectedEl = null;
-    var __previewEditingEl = null;
-    var __previewMode = 'preview';
-    var __previewSelectionMode = 'default';
-    var __previewEditableTags = {
-      p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-      a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
-      i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
-    };
-
-    function postPreviewMessage(type, payload) {
-      if (!window.parent || window.parent === window) return;
-      try {
-        var message = { type: type };
-        if (payload && typeof payload === 'object') {
-          for (var key in payload) {
-            if (Object.prototype.hasOwnProperty.call(payload, key)) {
-              message[key] = payload[key];
-            }
-          }
-        }
-        window.parent.postMessage(message, '*');
-      } catch (e) {}
-    }
-
-    function clearPreviewSelection() {
-      if (__previewSelectedEl && __previewSelectedEl.classList) {
-        __previewSelectedEl.classList.remove('__nx-preview-selected');
-      }
-      __previewSelectedEl = null;
-    }
-    function isPreviewEditMode() {
-      return __previewMode === 'edit';
-    }
-
-    function isPreviewBaseSelectable(el) {
-      if (!el) return false;
-      var tag = String(el.tagName || '').toLowerCase();
-      return Boolean(
-        tag &&
-        tag !== 'script' &&
-        tag !== 'style' &&
-        tag !== 'head' &&
-        tag !== 'meta' &&
-        tag !== 'link' &&
-        tag !== 'html' &&
-        tag !== 'body'
-      );
-    }
-
-    function hasOwnTextNode(el) {
-      if (!el) return false;
-      for (var i = 0; i < el.childNodes.length; i++) {
-        var child = el.childNodes[i];
-        if (child && child.nodeType === 3 && String(child.textContent || '').trim()) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    function isElementImageCandidate(el) {
-      if (!el || !isPreviewBaseSelectable(el)) return false;
-      var tag = String(el.tagName || '').toLowerCase();
-      if (tag === 'img' || tag === 'picture' || tag === 'source') return true;
-      try {
-        var computed = window.getComputedStyle(el);
-        var bg = computed ? String(computed.backgroundImage || '') : '';
-        if (bg && bg !== 'none' && /url\\(/i.test(bg)) return true;
-      } catch (e) {}
-      return false;
-    }
-
-    function normalizeSelectionMode(raw) {
-      var mode = String(raw || '').toLowerCase();
-      if (mode === 'text' || mode === 'image' || mode === 'css') return mode;
-      return 'default';
-    }
-
-    function findBestDescendant(root, selector, predicate, pointX, pointY) {
-      var descendants = root.querySelectorAll ? root.querySelectorAll(selector) : [];
-      var best = null;
-      var bestArea = Number.POSITIVE_INFINITY;
-      var bestDistance = Number.POSITIVE_INFINITY;
-      for (var d = 0; d < descendants.length; d++) {
-        var candidate = descendants[d];
-        if (!candidate || candidate === root) continue;
-        if (predicate && !predicate(candidate)) continue;
-        var rect = candidate.getBoundingClientRect ? candidate.getBoundingClientRect() : null;
-        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-        var distance = 0;
-        if (pointX !== null && pointY !== null) {
-          var dx = pointX < rect.left ? (rect.left - pointX) : (pointX > rect.right ? (pointX - rect.right) : 0);
-          var dy = pointY < rect.top ? (rect.top - pointY) : (pointY > rect.bottom ? (pointY - rect.bottom) : 0);
-          distance = (dx * dx) + (dy * dy);
-        }
-        var area = rect.width * rect.height;
-        if (
-          distance < bestDistance ||
-          (distance === bestDistance && area < bestArea)
-        ) {
-          best = candidate;
-          bestArea = area;
-          bestDistance = distance;
-        }
-      }
-      return best;
-    }
-
-    function applySelectionModeDecorations() {
-      if (!document || !document.body) return;
-      var staleImages = document.querySelectorAll('.__nx-preview-image-candidate');
-      for (var si = 0; si < staleImages.length; si++) {
-        staleImages[si].classList.remove('__nx-preview-image-candidate');
-      }
-      var staleCss = document.querySelectorAll('.__nx-preview-css-candidate');
-      for (var sc = 0; sc < staleCss.length; sc++) {
-        staleCss[sc].classList.remove('__nx-preview-css-candidate');
-      }
-      if (!isPreviewEditMode()) return;
-      if (__previewSelectionMode === 'image') {
-        var all = document.querySelectorAll('*');
-        for (var i = 0; i < all.length; i++) {
-          var el = all[i];
-          if (isElementImageCandidate(el)) {
-            el.classList.add('__nx-preview-image-candidate');
-          }
-        }
-      } else if (__previewSelectionMode === 'css') {
-        var cssEls = document.querySelectorAll('body *');
-        for (var j = 0; j < cssEls.length; j++) {
-          var cssEl = cssEls[j];
-          if (isPreviewBaseSelectable(cssEl)) {
-            cssEl.classList.add('__nx-preview-css-candidate');
-          }
-        }
-      }
-    }
-
-    function getPreviewSelectableTarget(node, event) {
-      var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
-      var pointX = event && typeof event.clientX === 'number' ? event.clientX : null;
-      var pointY = event && typeof event.clientY === 'number' ? event.clientY : null;
-      while (current && current !== document.body) {
-        if (!isPreviewBaseSelectable(current)) {
-          current = current.parentElement;
-          continue;
-        }
-        if (__previewSelectionMode === 'text') {
-          if (hasOwnTextNode(current)) return current;
-          var nearText = findBestDescendant(
-            current,
-            'p,span,h1,h2,h3,h4,h5,h6,a,button,label,strong,em,small,b,i,u,li,td,th,blockquote,pre,div',
-            hasOwnTextNode,
-            pointX,
-            pointY,
-          );
-          if (nearText) return nearText;
-        } else if (__previewSelectionMode === 'image') {
-          if (isElementImageCandidate(current)) return current;
-          var nearImage = findBestDescendant(current, '*', isElementImageCandidate, pointX, pointY);
-          if (nearImage) return nearImage;
-        } else {
-          return current;
-        }
-        current = current.parentElement;
-      }
-      return null;
-    }
-
-    function getPreviewElementPath(el) {
-      if (!el || !document.body || !document.body.contains(el)) return null;
-      var path = [];
-      var cursor = el;
-      while (cursor && cursor !== document.body) {
-        var parent = cursor.parentElement;
-        if (!parent) return null;
-        var children = parent.children;
-        var idx = -1;
-        for (var i = 0; i < children.length; i++) {
-          if (children[i] === cursor) {
-            idx = i;
-            break;
-          }
-        }
-        if (idx < 0) return null;
-        path.unshift(idx);
-        cursor = parent;
-      }
-      return path;
-    }
-
-    function readElementByPath(path) {
-      if (!document.body || !path || !path.length) return null;
-      var cursor = document.body;
-      for (var i = 0; i < path.length; i++) {
-        var idx = Number(path[i]);
-        if (!isFinite(idx) || idx < 0) return null;
-        var children = cursor.children || [];
-        cursor = children[idx];
-        if (!cursor) return null;
-      }
-      return cursor;
-    }
-
-    function toCamelStyleKey(raw) {
-      return String(raw || '').replace(/-([a-z])/g, function(_all, c) { return c.toUpperCase(); });
-    }
-
-    function toCssStyleKey(raw) {
-      return String(raw || '').replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
-    }
-
-    function normalizeFontFamilyValue(raw) {
-      var value = String(raw || '').trim();
-      if (!value) return '';
-      if (value.indexOf(',') > -1) return value;
-      if (
-        (value.charAt(0) === "'" && value.charAt(value.length - 1) === "'") ||
-        (value.charAt(0) === '"' && value.charAt(value.length - 1) === '"')
-      ) {
-        return value;
-      }
-      var lower = value.toLowerCase();
-      if (
-        lower === 'serif' ||
-        lower === 'sans-serif' ||
-        lower === 'monospace' ||
-        lower === 'cursive' ||
-        lower === 'fantasy' ||
-        lower === 'system-ui'
-      ) {
-        return value;
-      }
-      if (/\\s/.test(value)) {
-        return "'" + value.replace(/'/g, "\\\\'") + "'";
-      }
-      return value;
-    }
-
-    function getElementComputedStyles(el) {
-      var out = {};
-      if (!el || !window.getComputedStyle) return out;
-      try {
-        var computed = window.getComputedStyle(el);
-        for (var i = 0; i < computed.length; i++) {
-          var key = computed[i];
-          var value = computed.getPropertyValue(key);
-          if (!value) continue;
-          out[toCamelStyleKey(key)] = value;
-        }
-      } catch (e) {}
-      return out;
-    }
-
-    function getCustomAttributes(el) {
-      var out = {};
-      if (!el || !el.attributes) return out;
-      var reserved = { id: true, class: true, style: true, src: true, href: true };
-      for (var i = 0; i < el.attributes.length; i++) {
-        var attr = el.attributes[i];
-        if (!attr || !attr.name) continue;
-        var lower = String(attr.name).toLowerCase();
-        if (reserved[lower]) continue;
-        out[attr.name] = attr.value || '';
-      }
-      return out;
-    }
-
-    function applyStylePatchToElement(el, styles) {
-      if (!el || !el.style || !styles || typeof styles !== 'object') return;
-      for (var key in styles) {
-        if (!Object.prototype.hasOwnProperty.call(styles, key)) continue;
-        var cssKey = toCssStyleKey(key);
-        var rawValue = styles[key];
-        var value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
-        if (cssKey === 'font-family') {
-          value = normalizeFontFamilyValue(value);
-        }
-        if (!value) {
-          el.style.removeProperty(cssKey);
-        } else {
-          if (cssKey === 'animation') {
-            el.style.setProperty('animation', 'none');
-            if (typeof el.offsetWidth === 'number') {
-              el.offsetWidth;
-            }
-          }
-          el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
-        }
-      }
-    }
-
-    function canInlineEdit(el) {
-      if (!el) return false;
-      if (el.isContentEditable) return false;
-      var tag = String(el.tagName || '').toLowerCase();
-      if (!__previewEditableTags[tag] && !(tag === 'div' && hasOwnTextNode(el))) return false;
-      if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
-      return true;
-    }
-
-    function beginInlineEdit(el) {
-      if (!el || !canInlineEdit(el)) return;
-      if (__previewEditingEl && __previewEditingEl !== el) {
-        __previewEditingEl.blur();
-      }
-      var path = getPreviewElementPath(el);
-      if (!path) return;
-
-      __previewEditingEl = el;
-      el.classList.add('__nx-preview-editing');
-      el.setAttribute('contenteditable', 'true');
-      el.setAttribute('data-nx-inline-editing', 'true');
-      try {
-        var range = document.createRange();
-        range.selectNodeContents(el);
-        var selection = window.getSelection();
-        if (selection) {
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
-      } catch (e) {}
-      try { el.focus(); } catch (e) {}
-
-      var done = false;
-      var normalizeEditableHtml = function(raw) {
-        var html = String(raw || '');
-        // Normalize block splits produced by contentEditable Enter behavior.
-        html = html.split('<div><br></div>').join('<br>');
-        html = html.split('<div>').join('<br>');
-        html = html.split('</div>').join('');
-        html = html.split('<p>').join('<br>');
-        html = html.split('</p>').join('');
-        while (
-          html.startsWith('<br>') ||
-          html.startsWith('<br/>') ||
-          html.startsWith('<br />')
-        ) {
-          if (html.startsWith('<br />')) {
-            html = html.slice(6);
-          } else if (html.startsWith('<br/>')) {
-            html = html.slice(5);
-          } else {
-            html = html.slice(4);
-          }
-        }
-        return html;
-      };
-      var insertLineBreakAtCursor = function() {
-        try {
-          var sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0) return;
-          var range = sel.getRangeAt(0);
-          range.deleteContents();
-          var br = document.createElement('br');
-          range.insertNode(br);
-          range.setStartAfter(br);
-          range.setEndAfter(br);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } catch (e) {}
-      };
-      var draftRaf = 0;
-      var scheduleDraftSync = function() {
-        if (draftRaf) return;
-        draftRaf = requestAnimationFrame(function() {
-          draftRaf = 0;
-          postPreviewMessage('PREVIEW_INLINE_EDIT_DRAFT', {
-            path: path,
-            html: normalizeEditableHtml(el.innerHTML)
-          });
-        });
-      };
-      var finish = function(commit) {
-        if (done) return;
-        done = true;
-        if (draftRaf) {
-          cancelAnimationFrame(draftRaf);
-          draftRaf = 0;
-        }
-        el.removeEventListener('blur', onBlur, true);
-        el.removeEventListener('keydown', onKeyDown, true);
-        el.removeEventListener('input', onInput, true);
-        el.removeAttribute('contenteditable');
-        el.removeAttribute('data-nx-inline-editing');
-        el.classList.remove('__nx-preview-editing');
-        __previewEditingEl = null;
-        if (commit) {
-          postPreviewMessage('PREVIEW_INLINE_EDIT', {
-            path: path,
-            html: normalizeEditableHtml(el.innerHTML)
-          });
-        }
-      };
-
-      var onBlur = function() {
-        finish(true);
-      };
-      var onKeyDown = function(event) {
-        if (!event) return;
-        if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
-          event.preventDefault();
-          insertLineBreakAtCursor();
-          scheduleDraftSync();
-        } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-          event.preventDefault();
-          finish(true);
-        } else if (event.key === 'Escape') {
-          event.preventDefault();
-          finish(false);
-        }
-      };
-      var onInput = function() {
-        scheduleDraftSync();
-      };
-
-      el.addEventListener('blur', onBlur, true);
-      el.addEventListener('keydown', onKeyDown, true);
-      el.addEventListener('input', onInput, true);
-    }
-
-    try {
-      var __previewStyle = document.createElement('style');
-      __previewStyle.setAttribute('data-preview-inline-editor', 'true');
-      __previewStyle.textContent =
-        '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
-        '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
-        '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
-        '.__nx-draw-new{outline:2px dashed rgba(99,102,241,0.85)!important;outline-offset:0;}' +
-        '[data-nx-inline-editing=\"true\"]{cursor:text!important;}' +
-        '@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}' +
-        '@keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}' +
-        '@keyframes zoomIn{from{transform:scale(0.8);opacity:0;}to{transform:scale(1);opacity:1;}}' +
-        '@keyframes bounce{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}}' +
-        '@keyframes pulse{0%{opacity:1;}50%{opacity:.5;}100%{opacity:1;}}' +
-        '@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}' +
-        '@keyframes flip{0%{transform:perspective(400px) rotateY(90deg);opacity:0;}100%{transform:perspective(400px) rotateY(0deg);opacity:1;}}' +
-        '@keyframes wiggle{0%,100%{transform:rotate(-3deg);}50%{transform:rotate(3deg);}}' +
-        '@keyframes revealScroll{from{opacity:0;transform:translateY(30px);}to{opacity:1;transform:translateY(0);}}';
-      if (document.head) document.head.appendChild(__previewStyle);
-    } catch (e) {}
-
-    window.addEventListener('message', function(event) {
-      var payload = event && event.data;
-      if (typeof payload === 'string') {
-        try {
-          payload = JSON.parse(payload);
-        } catch (e) {
-          return;
-        }
-      }
-      if (!payload || !payload.type) return;
-      if (payload.type === 'PREVIEW_SET_MODE') {
-        var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
-        __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
-        __previewMode = nextMode;
-        if (nextMode !== 'edit') {
-          clearPreviewSelection();
-        }
-        applySelectionModeDecorations();
-        return;
-      }
-      if (payload.type === 'PREVIEW_APPLY_STYLE') {
-        var target = null;
-        if (payload.path && payload.path.length) {
-          target = readElementByPath(payload.path);
-        }
-        if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
-          target = __previewSelectedEl;
-        }
-        if (!target) {
-          target = document.querySelector('.__nx-preview-selected');
-        }
-        if (target) {
-          applyStylePatchToElement(target, payload.styles);
-        }
-      }
-    });
-
-    document.addEventListener('click', function(event) {
-      if (!isPreviewEditMode()) {
-        var navCandidate = event && event.target && event.target.closest ? event.target.closest('a[href]') : null;
-        if (navCandidate) {
-          var rawHref = navCandidate.getAttribute('href');
-          if (rawHref) {
-            var trimmedHref = String(rawHref).trim();
-            if (
-              trimmedHref &&
-              !/^(javascript:|mailto:|tel:|#)/i.test(trimmedHref)
-            ) {
-              var navTarget = resolveNavigationTarget(trimmedHref);
-              if (navTarget) {
-                event.preventDefault();
-                event.stopPropagation();
-                notifyNavigate(navTarget);
-              }
-            }
-          }
-        }
-        return;
-      }
-      var target = event && event.target;
-      var selected = getPreviewSelectableTarget(target, event);
-      if (selected) {
-        clearPreviewSelection();
-        __previewSelectedEl = selected;
-        if (__previewSelectedEl.classList) {
-          __previewSelectedEl.classList.add('__nx-preview-selected');
-        }
-        postPreviewMessage('PREVIEW_SELECT', {
-          path: getPreviewElementPath(__previewSelectedEl),
-          tag: String(__previewSelectedEl.tagName || '').toLowerCase(),
-          id: __previewSelectedEl.id || '',
-          className: typeof __previewSelectedEl.className === 'string' ? __previewSelectedEl.className : '',
-          attributes: getCustomAttributes(__previewSelectedEl),
-          text: __previewSelectedEl.textContent || '',
-          html: __previewSelectedEl.innerHTML || '',
-          src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
-          href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
-          inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
-          computedStyles: getElementComputedStyles(__previewSelectedEl)
-        });
-      }
-
-      if (__previewEditingEl) return;
-      var target = event && event.target;
-      if (!target || !target.closest) return;
-      if (event.detail && event.detail > 1) return;
-      var anchor = target.closest('a[href]');
-      if (!anchor) return;
-      event.preventDefault();
-      event.stopPropagation();
-    }, true);
-
-    document.addEventListener('dblclick', function(event) {
-      if (!isPreviewEditMode()) return;
-      var target = event && event.target;
-      if (__previewEditingEl) {
-        if (
-          target &&
-          (__previewEditingEl === target ||
-            (__previewEditingEl.contains &&
-              __previewEditingEl.contains(target)))
-        ) {
-          return;
-        }
-        try { __previewEditingEl.blur(); } catch (e) {}
-      }
-      var selected = getPreviewSelectableTarget(target, event);
-      if (!selected || !canInlineEdit(selected)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      beginInlineEdit(selected);
-    }, true);
-
-    document.addEventListener('keydown', function(event) {
-      if (!event) return;
-      var key = String(event.key || '').toLowerCase();
-      var code = String(event.code || '');
-      if (!key) return;
-      var hasModifier = !!(event.ctrlKey || event.metaKey);
-      var target = event.target;
-      var targetTag =
-        target && target.tagName ? String(target.tagName).toLowerCase() : '';
-      var isInlineEditing =
-        !!(
-          __previewEditingEl &&
-          target &&
-          (target === __previewEditingEl ||
-            (__previewEditingEl.contains && __previewEditingEl.contains(target)))
-        );
-      var isTargetEditable =
-        isInlineEditing ||
-        !!(target && target.isContentEditable) ||
-        targetTag === 'input' ||
-        targetTag === 'textarea' ||
-        targetTag === 'select';
-
-      var shouldForward = false;
-      if (isTargetEditable) {
-        shouldForward =
-          hasModifier &&
-          (key === 's' ||
-            key === 'p' ||
-            key === 't' ||
-            key === 'f' ||
-            key === 'e' ||
-            key === 'k' ||
-            code === 'Backquote');
-      } else if (key === 'escape') {
-        shouldForward = true;
-      } else if (!hasModifier && !event.altKey && (key === 'w' || key === 'e')) {
-        shouldForward = true;
-      } else if (
-        hasModifier &&
-        (key === 'k' ||
-          key === 'f' ||
-          key === 'p' ||
-          key === 'e' ||
-          code === 'Backquote' ||
-          key === 'j' ||
-          key === 's' ||
-          key === 't' ||
-          key === 'z' ||
-          key === 'u' ||
-          key === 'y')
-      ) {
-        shouldForward = true;
-      }
-      if (!shouldForward) return;
-
-      if (typeof event.stopImmediatePropagation === 'function') {
-        event.stopImmediatePropagation();
-      }
-      event.stopPropagation();
-      if (event.cancelable) event.preventDefault();
-      postPreviewMessage('PREVIEW_HOTKEY', {
-        key: key,
-        code: code,
-        ctrlKey: !!event.ctrlKey,
-        metaKey: !!event.metaKey,
-        shiftKey: !!event.shiftKey,
-        altKey: !!event.altKey,
-        editable: isTargetEditable
-      });
-    }, true);
-
-    var __LOCATION_ASSIGN = window.location.assign ? window.location.assign.bind(window.location) : null;
-    if (__LOCATION_ASSIGN) {
-      try {
-        window.location.assign = function(url) {
-          var navTarget = resolveNavigationTarget(url);
-          if (navTarget) {
-            notifyNavigate(navTarget);
-            return;
-          }
-          return __LOCATION_ASSIGN(url);
-        };
-      } catch (e) {}
-    }
-
-    var __LOCATION_REPLACE = window.location.replace ? window.location.replace.bind(window.location) : null;
-    if (__LOCATION_REPLACE) {
-      try {
-        window.location.replace = function(url) {
-          var navTarget = resolveNavigationTarget(url);
-          if (navTarget) {
-            notifyNavigate(navTarget);
-            return;
-          }
-          return __LOCATION_REPLACE(url);
-        };
-      } catch (e) {}
-    }
-
-    if (__ORIG_FETCH) {
-      window.fetch = function(input, init) {
-        var method = (init && init.method) || (input && input.method) || 'GET';
-        if (String(method).toUpperCase() !== 'GET') return __ORIG_FETCH(input, init);
-        var resolved = getRecord(input);
-        if (!resolved || !resolved.rec) return __ORIG_FETCH(input, init);
-        if (resolved.rec.kind === 'data') return __ORIG_FETCH(resolved.rec.data, init);
-        return Promise.resolve(
-          new Response(resolved.rec.content, {
-            status: 200,
-            headers: { 'Content-Type': getMime(resolved.path) + '; charset=utf-8' }
-          })
-        );
-      };
-    }
-
-    XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-      this.__codexMethod = method;
-      this.__codexUrl = url;
-      this.__codexAsync = async;
-      this.__codexUser = user;
-      this.__codexPassword = password;
-      return __XHR_OPEN.apply(this, arguments);
-    };
-
-    XMLHttpRequest.prototype.send = function(body) {
-      var method = String(this.__codexMethod || 'GET').toUpperCase();
-      if (method === 'GET') {
-        var resolved = getRecord(this.__codexUrl);
-        if (resolved && resolved.rec) {
-          var dataUrl = resolved.rec.kind === 'data'
-            ? resolved.rec.data
-            : ('data:' + getMime(resolved.path) + ';charset=utf-8,' + encodeURIComponent(resolved.rec.content));
-          __XHR_OPEN.call(
-            this,
-            method,
-            dataUrl,
-            this.__codexAsync !== false,
-            this.__codexUser,
-            this.__codexPassword
-          );
-        }
-      }
-      return __XHR_SEND.call(this, body);
-    };
-  })();
-  `;
-};
-
-const createPreviewDocument = (
-  fileMap: FileMap,
-  htmlPath: string,
-  includePaths?: string[],
-): string => {
-  const entry = fileMap[htmlPath];
-  if (
-    !entry ||
-    typeof entry.content !== "string" ||
-    entry.content.trim().length === 0
-  ) {
-    return "";
-  }
-  let html = entry.content;
-  const runtimeScript = buildPreviewRuntimeScript(
-    fileMap,
-    htmlPath,
-    includePaths,
-  );
-
-  if (/<head[\s>]/i.test(html)) {
-    html = html.replace(
-      /<head([^>]*)>/i,
-      `<head$1>\n<script data-preview-runtime="true">\n${runtimeScript}\n</script>\n`,
-    );
-  } else {
-    html = `<head><script data-preview-runtime="true">\n${runtimeScript}\n</script></head>\n${html}`;
-  }
-
-  html = html.replace(
-    /<link\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi,
-    (full, beforeHref, hrefValue, afterHref) => {
-      if (!/rel=["']stylesheet["']/i.test(full)) return full;
-      const resolved = resolveProjectRelativePath(htmlPath, hrefValue);
-      if (!resolved) return full;
-      const cssFile = fileMap[resolved];
-      if (
-        !cssFile ||
-        typeof cssFile.content !== "string" ||
-        cssFile.content.trim().length === 0
-      ) {
-        return full;
-      }
-      return `<style data-source="${resolved}">\n${rewriteInlineAssetRefs(cssFile.content, resolved, fileMap)}\n</style>`;
-    },
-  );
-
-  html = html.replace(
-    /<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
-    (full, beforeSrc, srcValue, afterSrc) => {
-      const resolved = resolveProjectRelativePath(htmlPath, srcValue);
-      if (!resolved) return full;
-      const jsFile = fileMap[resolved];
-      if (
-        !jsFile ||
-        typeof jsFile.content !== "string" ||
-        jsFile.content.trim().length === 0
-      ) {
-        return full;
-      }
-      return `<script${beforeSrc}${afterSrc} data-source="${resolved}">\n${jsFile.content}\n</script>`;
-    },
-  );
-
-  html = rewriteInlineAssetRefs(html, htmlPath, fileMap);
-
-  return html;
-};
-
-const pickDefaultHtmlFile = (fileMap: FileMap): string | null => {
-  const htmlFiles = Object.values(fileMap).filter((f) => f.type === "html");
-  if (htmlFiles.length === 0) return null;
-
-  const slide000 = htmlFiles.find((f) =>
-    /_000\/index\.html$/i.test(normalizePath(f.path)),
-  );
-  if (slide000) return slide000.path;
-
-  const slide001 = htmlFiles.find((f) =>
-    /_001\/index\.html$/i.test(normalizePath(f.path)),
-  );
-  if (slide001) return slide001.path;
-
-  const slideIndexFiles = htmlFiles
-    .map((f) => ({ file: f, normalizedPath: normalizePath(f.path) }))
-    .filter(({ normalizedPath }) =>
-      /_([0-9]{3,})\/index\.html$/i.test(normalizedPath),
-    )
-    .sort((a, b) => {
-      const aMatch = a.normalizedPath.match(/_([0-9]{3,})\/index\.html$/i);
-      const bMatch = b.normalizedPath.match(/_([0-9]{3,})\/index\.html$/i);
-      const aNum = aMatch
-        ? Number.parseInt(aMatch[1], 10)
-        : Number.MAX_SAFE_INTEGER;
-      const bNum = bMatch
-        ? Number.parseInt(bMatch[1], 10)
-        : Number.MAX_SAFE_INTEGER;
-      if (aNum !== bNum) return aNum - bNum;
-      return a.normalizedPath.localeCompare(b.normalizedPath);
-    });
-  if (slideIndexFiles.length > 0) {
-    return slideIndexFiles[0].file.path;
-  }
-
-  const indexHtml =
-    htmlFiles.find((f) => f.path.toLowerCase() === "index.html") ||
-    htmlFiles.find((f) => f.name.toLowerCase() === "index.html");
-  return (indexHtml || htmlFiles[0]).path;
-};
-
-const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
-(function () {
-  var __docEl = document && document.documentElement ? document.documentElement : null;
-  if (__docEl && __docEl.getAttribute('data-nx-mounted-preview-bridge') === '1') return;
-  if (__docEl) __docEl.setAttribute('data-nx-mounted-preview-bridge', '1');
-  window.__nxMountedPreviewBridgeInstalled = true;
-
-  var __previewSelectedEl = null;
-  var __previewEditingEl = null;
-  var __previewHoverEl = null;
-  var __previewHoverBadge = null;
-  var __previewHoverOutline = null;
-  var __previewHoverRaf = 0;
-  var __previewMode = 'preview';
-  var __previewSelectionMode = 'default';
-  var __previewToolMode = 'edit';
-  var __previewDrawTag = 'div';
-  var __previewMoveDrag = null;
-  var __previewDrawDraft = null;
-  var __previewDrawState = null;
-  var __previewEditableTags = {
-    p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-    a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
-    i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
-  };
-
-  function syncModeFromHost() {
-    try {
-      var hostMode = String(window.__nxPreviewHostMode || '').toLowerCase();
-      if (hostMode === 'preview' || hostMode === 'edit') {
-        __previewMode = hostMode;
-      }
-      __previewSelectionMode = normalizeSelectionMode(window.__nxPreviewHostSelectionMode);
-      __previewToolMode = normalizeToolMode(window.__nxPreviewHostToolMode);
-      __previewDrawTag = normalizeDrawTag(window.__nxPreviewHostDrawTag);
-    } catch (e) {}
-  }
-
-  function postPreviewMessage(type, payload) {
-    if (!window.parent || window.parent === window) return;
-    try {
-      var message = { type: type };
-      if (payload && typeof payload === 'object') {
-        for (var key in payload) {
-          if (Object.prototype.hasOwnProperty.call(payload, key)) {
-            message[key] = payload[key];
-          }
-        }
-      }
-      window.parent.postMessage(message, '*');
-    } catch (e) {}
-  }
-
-  function clearPreviewSelection() {
-    if (__previewSelectedEl && __previewSelectedEl.classList) {
-      __previewSelectedEl.classList.remove('__nx-preview-selected');
-    }
-    __previewSelectedEl = null;
-    // Also sweep the DOM to catch any elements that had the class added directly
-    // (e.g. via PREVIEW_INJECT_ELEMENT) without going through __previewSelectedEl.
-    try {
-      var extras = document.querySelectorAll('.__nx-preview-selected');
-      for (var ci = 0; ci < extras.length; ci++) {
-        extras[ci].classList.remove('__nx-preview-selected');
-      }
-    } catch (e) {}
-  }
-
-  function emitPreviewSelection(el) {
-    if (!el) return;
-    postPreviewMessage('PREVIEW_SELECT', {
-      path: getPreviewElementPath(el),
-      tag: String(el.tagName || '').toLowerCase(),
-      id: el.id || '',
-      className: typeof el.className === 'string' ? el.className : '',
-      attributes: getCustomAttributes(el),
-      text: el.textContent || '',
-      html: el.innerHTML || '',
-      src: extractImageSource(el),
-      href: el.getAttribute ? (el.getAttribute('href') || '') : '',
-      inlineStyle: el.getAttribute ? (el.getAttribute('style') || '') : '',
-      computedStyles: getElementComputedStyles(el)
-    });
-  }
-
-  function selectPreviewElement(el) {
-    if (!el) return;
-    clearPreviewSelection();
-    __previewSelectedEl = el;
-    if (__previewSelectedEl.classList) {
-      __previewSelectedEl.classList.add('__nx-preview-selected');
-    }
-    emitPreviewSelection(__previewSelectedEl);
-  }
-
-  function clearPreviewHover() {
-    __previewHoverEl = null;
-    if (__previewHoverRaf) {
-      cancelAnimationFrame(__previewHoverRaf);
-      __previewHoverRaf = 0;
-    }
-    if (__previewHoverBadge) {
-      __previewHoverBadge.style.display = 'none';
-    }
-    if (__previewHoverOutline) {
-      __previewHoverOutline.style.display = 'none';
-    }
-  }
-
-  function isPreviewEditMode() {
-    syncModeFromHost();
-    return __previewMode === 'edit';
-  }
-
-  function isPreviewBaseSelectable(el) {
-    if (!el) return false;
-    var tag = String(el.tagName || '').toLowerCase();
-    return Boolean(
-      tag &&
-      tag !== 'script' &&
-      tag !== 'style' &&
-      tag !== 'head' &&
-      tag !== 'meta' &&
-      tag !== 'link' &&
-      tag !== 'html' &&
-      tag !== 'body'
-    );
-  }
-
-  function hasOwnTextNode(el) {
-    if (!el) return false;
-    for (var i = 0; i < el.childNodes.length; i++) {
-      var child = el.childNodes[i];
-      if (child && child.nodeType === 3 && String(child.textContent || '').trim()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function isElementImageCandidate(el) {
-    if (!el || !isPreviewBaseSelectable(el)) return false;
-    var tag = String(el.tagName || '').toLowerCase();
-    if (tag === 'img' || tag === 'picture' || tag === 'source') return true;
-    try {
-      var computed = window.getComputedStyle(el);
-      var bg = computed ? String(computed.backgroundImage || '') : '';
-      if (bg && bg !== 'none' && /url\\(/i.test(bg)) return true;
-    } catch (e) {}
-    return false;
-  }
-
-  function extractImageSource(el) {
-    if (!el) return '';
-    var tag = String(el.tagName || '').toLowerCase();
-    if (tag === 'img' || tag === 'source') {
-      var attrSrc = el.getAttribute ? (el.getAttribute('src') || '') : '';
-      if (attrSrc) return attrSrc;
-    }
-    try {
-      var computed = window.getComputedStyle(el);
-      var bg = computed ? String(computed.backgroundImage || '') : '';
-      var match = bg && bg.match(/url\\((['"]?)(.*?)\\1\\)/i);
-      if (match && match[2]) return match[2];
-    } catch (e) {}
-    return '';
-  }
-
-  function normalizeSelectionMode(raw) {
-    var mode = String(raw || '').toLowerCase();
-    if (mode === 'text' || mode === 'image' || mode === 'css') return mode;
-    return 'default';
-  }
-
-  function normalizeToolMode(raw) {
-    var mode = String(raw || '').toLowerCase();
-    if (mode === 'move' || mode === 'draw' || mode === 'inspect') return mode;
-    return 'edit';
-  }
-
-  function normalizeDrawTag(raw) {
-    var tag = String(raw || '').toLowerCase();
-    var allowed = {
-      div: true, section: true, p: true, span: true,
-      h1: true, h2: true, h3: true, button: true, img: true
-    };
-    return allowed[tag] ? tag : 'div';
-  }
-
-  function findBestDescendant(root, selector, predicate, pointX, pointY) {
-    var descendants = root.querySelectorAll ? root.querySelectorAll(selector) : [];
-    var best = null;
-    var bestArea = Number.POSITIVE_INFINITY;
-    var bestDistance = Number.POSITIVE_INFINITY;
-    for (var d = 0; d < descendants.length; d++) {
-      var candidate = descendants[d];
-      if (!candidate || candidate === root) continue;
-      if (predicate && !predicate(candidate)) continue;
-      var rect = candidate.getBoundingClientRect ? candidate.getBoundingClientRect() : null;
-      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-      var distance = 0;
-      if (pointX !== null && pointY !== null) {
-        var dx = pointX < rect.left ? (rect.left - pointX) : (pointX > rect.right ? (pointX - rect.right) : 0);
-        var dy = pointY < rect.top ? (rect.top - pointY) : (pointY > rect.bottom ? (pointY - rect.bottom) : 0);
-        distance = (dx * dx) + (dy * dy);
-      }
-      var area = rect.width * rect.height;
-      if (
-        distance < bestDistance ||
-        (distance === bestDistance && area < bestArea)
-      ) {
-        best = candidate;
-        bestArea = area;
-        bestDistance = distance;
-      }
-    }
-    return best;
-  }
-
-  function applySelectionModeDecorations() {
-    if (!document || !document.body) return;
-    var staleImages = document.querySelectorAll('.__nx-preview-image-candidate');
-    for (var si = 0; si < staleImages.length; si++) {
-      staleImages[si].classList.remove('__nx-preview-image-candidate');
-    }
-    var staleCss = document.querySelectorAll('.__nx-preview-css-candidate');
-    for (var sc = 0; sc < staleCss.length; sc++) {
-      staleCss[sc].classList.remove('__nx-preview-css-candidate');
-    }
-    if (!isPreviewEditMode()) return;
-    if (__previewSelectionMode === 'image') {
-      var all = document.querySelectorAll('*');
-      for (var i = 0; i < all.length; i++) {
-        var el = all[i];
-        if (isElementImageCandidate(el)) {
-          el.classList.add('__nx-preview-image-candidate');
-        }
-      }
-    } else if (__previewSelectionMode === 'css') {
-      var cssEls = document.querySelectorAll('body *');
-      for (var j = 0; j < cssEls.length; j++) {
-        var cssEl = cssEls[j];
-        if (isPreviewBaseSelectable(cssEl)) {
-          cssEl.classList.add('__nx-preview-css-candidate');
-        }
-      }
-    }
-  }
-
-  function getPreviewSelectableTarget(node, event) {
-    var current = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
-    var pointX = event && typeof event.clientX === 'number' ? event.clientX : null;
-    var pointY = event && typeof event.clientY === 'number' ? event.clientY : null;
-    while (current && current !== document.body) {
-      if (!isPreviewBaseSelectable(current)) {
-        current = current.parentElement;
-        continue;
-      }
-      if (__previewSelectionMode === 'text') {
-        if (hasOwnTextNode(current)) return current;
-        var nearText = findBestDescendant(
-          current,
-          'p,span,h1,h2,h3,h4,h5,h6,a,button,label,strong,em,small,b,i,u,li,td,th,blockquote,pre,div',
-          hasOwnTextNode,
-          pointX,
-          pointY,
-        );
-        if (nearText) return nearText;
-      } else if (__previewSelectionMode === 'image') {
-        if (isElementImageCandidate(current)) return current;
-        var nearImage = findBestDescendant(current, '*', isElementImageCandidate, pointX, pointY);
-        if (nearImage) return nearImage;
-      } else {
-        return current;
-      }
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  function getPreviewElementPath(el) {
-    if (!el || !document.body || !document.body.contains(el)) return null;
-    var path = [];
-    var cursor = el;
-    while (cursor && cursor !== document.body) {
-      var parent = cursor.parentElement;
-      if (!parent) return null;
-      var children = parent.children;
-      var idx = -1;
-      for (var i = 0; i < children.length; i++) {
-        if (children[i] === cursor) {
-          idx = i;
-          break;
-        }
-      }
-      if (idx < 0) return null;
-      path.unshift(idx);
-      cursor = parent;
-    }
-    return path;
-  }
-
-  function readElementByPath(path) {
-    if (!document.body || !path || !path.length) return null;
-    var cursor = document.body;
-    for (var i = 0; i < path.length; i++) {
-      var idx = Number(path[i]);
-      if (!isFinite(idx) || idx < 0) return null;
-      var children = cursor.children || [];
-      cursor = children[idx];
-      if (!cursor) return null;
-    }
-    return cursor;
-  }
-
-  function toCamelStyleKey(raw) {
-    return String(raw || '').replace(/-([a-z])/g, function(_all, c) { return c.toUpperCase(); });
-  }
-
-  function toCssStyleKey(raw) {
-    return String(raw || '').replace(/[A-Z]/g, function(m) { return '-' + m.toLowerCase(); });
-  }
-
-  function normalizeFontFamilyValue(raw) {
-    var value = String(raw || '').trim();
-    if (!value) return '';
-    if (value.indexOf(',') > -1) return value;
-    if (
-      (value.charAt(0) === "'" && value.charAt(value.length - 1) === "'") ||
-      (value.charAt(0) === '"' && value.charAt(value.length - 1) === '"')
-    ) {
-      return value;
-    }
-    var lower = value.toLowerCase();
-    if (
-      lower === 'serif' ||
-      lower === 'sans-serif' ||
-      lower === 'monospace' ||
-      lower === 'cursive' ||
-      lower === 'fantasy' ||
-      lower === 'system-ui'
-    ) {
-      return value;
-    }
-    if (/\\s/.test(value)) {
-      return "'" + value.replace(/'/g, "\\\\'") + "'";
-    }
-    return value;
-  }
-
-  function getElementComputedStyles(el) {
-    var out = {};
-    if (!el || !window.getComputedStyle) return out;
-    try {
-      var computed = window.getComputedStyle(el);
-      for (var i = 0; i < computed.length; i++) {
-        var key = computed[i];
-        var value = computed.getPropertyValue(key);
-        if (!value) continue;
-        out[toCamelStyleKey(key)] = value;
-      }
-    } catch (e) {}
-    return out;
-  }
-
-  function getCustomAttributes(el) {
-    var out = {};
-    if (!el || !el.attributes) return out;
-    var reserved = { id: true, class: true, style: true, src: true, href: true };
-    for (var i = 0; i < el.attributes.length; i++) {
-      var attr = el.attributes[i];
-      if (!attr || !attr.name) continue;
-      var lower = String(attr.name).toLowerCase();
-      if (reserved[lower]) continue;
-      out[attr.name] = attr.value || '';
-    }
-    return out;
-  }
-
-  function applyStylePatchToElement(el, styles) {
-    if (!el || !el.style || !styles || typeof styles !== 'object') return;
-    for (var key in styles) {
-      if (!Object.prototype.hasOwnProperty.call(styles, key)) continue;
-      var cssKey = toCssStyleKey(key);
-      var rawValue = styles[key];
-      var value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
-      if (cssKey === 'font-family') {
-        value = normalizeFontFamilyValue(value);
-      }
-      if (!value) {
-        el.style.removeProperty(cssKey);
-      } else {
-        if (cssKey === 'animation') {
-          el.style.setProperty('animation', 'none');
-          if (typeof el.offsetWidth === 'number') {
-            el.offsetWidth;
-          }
-        }
-        el.style.setProperty(cssKey, value, cssKey === 'font-family' ? 'important' : '');
-      }
-    }
-  }
-
-  function canInlineEdit(el) {
-    if (!el) return false;
-    if (el.isContentEditable) return false;
-    var tag = String(el.tagName || '').toLowerCase();
-    if (!__previewEditableTags[tag] && !(tag === 'div' && hasOwnTextNode(el))) return false;
-    if (el.closest('svg,canvas,video,audio,iframe,select,input,textarea')) return false;
-    return true;
-  }
-
-  function ensureHoverBadge() {
-    if (__previewHoverBadge && document.body && document.body.contains(__previewHoverBadge)) {
-      return __previewHoverBadge;
-    }
-    if (!document.body) return null;
-    var badge = document.createElement('div');
-    badge.setAttribute('data-preview-hover-badge', 'true');
-    badge.style.display = 'none';
-    document.body.appendChild(badge);
-    __previewHoverBadge = badge;
-    return badge;
-  }
-
-  function ensureHoverOutline() {
-    if (__previewHoverOutline && document.body && document.body.contains(__previewHoverOutline)) {
-      return __previewHoverOutline;
-    }
-    if (!document.body) return null;
-    var outline = document.createElement('div');
-    outline.setAttribute('data-preview-hover-outline', 'true');
-    outline.style.display = 'none';
-    document.body.appendChild(outline);
-    __previewHoverOutline = outline;
-    return outline;
-  }
-
-  function getElementMetaLabel(el, rect) {
-    if (!el) return '';
-    var width = rect ? Math.max(0, Math.round(rect.width)) : 0;
-    var height = rect ? Math.max(0, Math.round(rect.height)) : 0;
-    var tag = String(el.tagName || 'div').toLowerCase();
-    var id = el.id ? ('#' + el.id) : '';
-    var cls = '';
-    if (typeof el.className === 'string' && el.className.trim()) {
-      cls = '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.');
-    }
-    var dims = width + 'x' + height;
-    if (__previewSelectionMode === 'image') {
-      var imgSrc = extractImageSource(el);
-      var shortSrc = imgSrc ? imgSrc.slice(0, 72) : '';
-      return tag + id + cls + '  ' + dims + (shortSrc ? ('  ' + shortSrc) : '');
-    }
-    if (__previewSelectionMode === 'css') {
-      var cssSnippet = '';
-      try {
-        var computed = window.getComputedStyle(el);
-        if (computed) {
-          var display = computed.display ? ('display:' + computed.display) : '';
-          var position = computed.position ? ('position:' + computed.position) : '';
-          var color = computed.color ? ('color:' + computed.color) : '';
-          cssSnippet = [display, position, color].filter(Boolean).join('; ');
-        }
-      } catch (e) {}
-      return tag + id + cls + '  ' + dims + (cssSnippet ? ('  ' + cssSnippet) : '');
-    }
-    return tag + id + cls + '  ' + dims;
-  }
-
-  function updateHoverBadgePosition() {
-    if (!isPreviewEditMode() || !__previewHoverEl || __previewEditingEl) {
-      if (__previewHoverBadge) __previewHoverBadge.style.display = 'none';
-      if (__previewHoverOutline) __previewHoverOutline.style.display = 'none';
-      return;
-    }
-    var badge = ensureHoverBadge();
-    var outline = ensureHoverOutline();
-    if (!badge || !outline) return;
-    var rect = __previewHoverEl.getBoundingClientRect ? __previewHoverEl.getBoundingClientRect() : null;
-    if (!rect) {
-      badge.style.display = 'none';
-      outline.style.display = 'none';
-      return;
-    }
-    outline.style.display = 'block';
-    outline.style.left = Math.round(rect.left - 2) + 'px';
-    outline.style.top = Math.round(rect.top - 2) + 'px';
-    outline.style.width = Math.max(0, Math.round(rect.width + 4)) + 'px';
-    outline.style.height = Math.max(0, Math.round(rect.height + 4)) + 'px';
-
-    badge.textContent = getElementMetaLabel(__previewHoverEl, rect);
-    badge.style.display = 'block';
-    var top = rect.top - badge.offsetHeight - 10;
-    if (top < 6) top = rect.bottom + 10;
-    var left = rect.left + 2;
-    var maxLeft = Math.max(6, window.innerWidth - badge.offsetWidth - 6);
-    if (left > maxLeft) left = maxLeft;
-    if (left < 6) left = 6;
-    badge.style.left = Math.round(left) + 'px';
-    badge.style.top = Math.round(top) + 'px';
-  }
-
-  function setPreviewHover(el) {
-    if (__previewHoverEl === el) {
-      return;
-    }
-    __previewHoverEl = el || null;
-    updateHoverBadgePosition();
-  }
-
-  function requestHoverUpdate() {
-    if (__previewHoverRaf) return;
-    __previewHoverRaf = requestAnimationFrame(function() {
-      __previewHoverRaf = 0;
-      updateHoverBadgePosition();
-    });
-  }
-
-  function beginInlineEdit(el) {
-    if (!el || !canInlineEdit(el)) return;
-    if (__previewEditingEl && __previewEditingEl !== el) {
-      __previewEditingEl.blur();
-    }
-    var path = getPreviewElementPath(el);
-    if (!path) return;
-
-    __previewEditingEl = el;
-    el.classList.add('__nx-preview-editing');
-    el.setAttribute('contenteditable', 'true');
-    el.setAttribute('data-nx-inline-editing', 'true');
-    try {
-      var range = document.createRange();
-      range.selectNodeContents(el);
-      var selection = window.getSelection();
-      if (selection) {
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-    } catch (e) {}
-    try { el.focus(); } catch (e) {}
-
-    var done = false;
-    var normalizeEditableHtml = function(raw) {
-      var html = String(raw || '');
-      html = html.split('<div><br></div>').join('<br>');
-      html = html.split('<div>').join('<br>');
-      html = html.split('</div>').join('');
-      html = html.split('<p>').join('<br>');
-      html = html.split('</p>').join('');
-      while (
-        html.startsWith('<br>') ||
-        html.startsWith('<br/>') ||
-        html.startsWith('<br />')
-      ) {
-        if (html.startsWith('<br />')) {
-          html = html.slice(6);
-        } else if (html.startsWith('<br/>')) {
-          html = html.slice(5);
-        } else {
-          html = html.slice(4);
-        }
-      }
-      return html;
-    };
-    var insertLineBreakAtCursor = function() {
-      try {
-        var sel = window.getSelection();
-        if (!sel || sel.rangeCount === 0) return;
-        var range = sel.getRangeAt(0);
-        range.deleteContents();
-        var br = document.createElement('br');
-        range.insertNode(br);
-        range.setStartAfter(br);
-        range.setEndAfter(br);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch (e) {}
-    };
-    var draftRaf = 0;
-    var scheduleDraftSync = function() {
-      if (draftRaf) return;
-      draftRaf = requestAnimationFrame(function() {
-        draftRaf = 0;
-        postPreviewMessage('PREVIEW_INLINE_EDIT_DRAFT', {
-          path: path,
-          html: normalizeEditableHtml(el.innerHTML)
-        });
-      });
-    };
-    var finish = function(commit) {
-      if (done) return;
-      done = true;
-      if (draftRaf) {
-        cancelAnimationFrame(draftRaf);
-        draftRaf = 0;
-      }
-      el.removeEventListener('blur', onBlur, true);
-      el.removeEventListener('keydown', onKeyDown, true);
-      el.removeEventListener('input', onInput, true);
-      el.removeAttribute('contenteditable');
-      el.removeAttribute('data-nx-inline-editing');
-      el.classList.remove('__nx-preview-editing');
-      __previewEditingEl = null;
-      if (commit) {
-        postPreviewMessage('PREVIEW_INLINE_EDIT', {
-          path: path,
-          html: normalizeEditableHtml(el.innerHTML)
-        });
-      }
-    };
-
-    var onBlur = function() {
-      finish(true);
-    };
-    var onKeyDown = function(event) {
-      if (!event) return;
-      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault();
-        insertLineBreakAtCursor();
-        scheduleDraftSync();
-      } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        finish(true);
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        finish(false);
-      }
-    };
-    var onInput = function() {
-      scheduleDraftSync();
-    };
-
-    el.addEventListener('blur', onBlur, true);
-    el.addEventListener('keydown', onKeyDown, true);
-    el.addEventListener('input', onInput, true);
-  }
-
-  function emitPathChanged() {
-    postPreviewMessage('PREVIEW_PATH_CHANGED', {
-      path: window.location.pathname || ''
-    });
-  }
-
-  try {
-    syncModeFromHost();
-    if (!document.querySelector('style[data-preview-inline-editor]')) {
-      var __previewStyle = document.createElement('style');
-      __previewStyle.setAttribute('data-preview-inline-editor', 'true');
-      __previewStyle.textContent =
-        '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
-        '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
-        '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
-        '.__nx-draw-new{outline:2px dashed rgba(99,102,241,0.85)!important;outline-offset:0!important;}' +
-        '[data-preview-draw-draft="true"]{position:fixed;z-index:2147483645;pointer-events:none;border:2px dashed rgba(250,204,21,0.95);background:rgba(250,204,21,0.18);border-radius:6px;box-shadow:0 0 0 1px rgba(234,179,8,0.7);}'+
-        '[data-preview-hover-outline="true"]{position:fixed;z-index:2147483646;pointer-events:none;border:3px solid rgba(16,185,129,0.98);background:rgba(16,185,129,0.12);border-radius:8px;box-shadow:0 0 0 1px rgba(5,150,105,0.9),0 12px 28px rgba(0,0,0,0.28);transition:left .14s cubic-bezier(.2,.8,.2,1),top .14s cubic-bezier(.2,.8,.2,1),width .14s cubic-bezier(.2,.8,.2,1),height .14s cubic-bezier(.2,.8,.2,1),opacity .12s ease;}' +
-        '[data-preview-hover-badge="true"]{position:fixed;z-index:2147483647;pointer-events:none;background:rgba(2,6,23,0.99);color:#ecfeff;border:3px solid rgba(34,211,238,0.95);font:800 20px/1.3 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;letter-spacing:.2px;padding:12px 16px;border-radius:12px;white-space:nowrap;max-width:94vw;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 0 rgba(0,0,0,0.45);box-shadow:0 16px 32px rgba(2,6,23,0.6);}' +
-        '[data-nx-inline-editing="true"]{cursor:text!important;}' +
-        '@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}' +
-        '@keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}' +
-        '@keyframes zoomIn{from{transform:scale(0.8);opacity:0;}to{transform:scale(1);opacity:1;}}' +
-        '@keyframes bounce{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}}' +
-        '@keyframes pulse{0%{opacity:1;}50%{opacity:.5;}100%{opacity:1;}}' +
-        '@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}' +
-        '@keyframes flip{0%{transform:perspective(400px) rotateY(90deg);opacity:0;}100%{transform:perspective(400px) rotateY(0deg);opacity:1;}}' +
-        '@keyframes wiggle{0%,100%{transform:rotate(-3deg);}50%{transform:rotate(3deg);}}' +
-        '@keyframes revealScroll{from{opacity:0;transform:translateY(30px);}to{opacity:1;transform:translateY(0);}}';
-      if (document.head) document.head.appendChild(__previewStyle);
-    }
-  } catch (e) {}
-
-  window.addEventListener('message', function(event) {
-    var payload = event && event.data;
-    if (typeof payload === 'string') {
-      try {
-        payload = JSON.parse(payload);
-      } catch (e) {
-        return;
-      }
-    }
-    if (!payload || !payload.type) return;
-    if (payload.type === 'PREVIEW_SET_MODE') {
-      var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
-      __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
-      __previewToolMode = normalizeToolMode(payload.toolMode);
-      __previewDrawTag = normalizeDrawTag(payload.drawTag);
-      __previewMode = nextMode;
-      // Clear temporary draw-highlight and selection state
-      // whenever the user switches away from draw mode.
-      if (__previewToolMode !== 'draw') {
-        var drawNewEls = document.querySelectorAll('.__nx-draw-new');
-        for (var di = 0; di < drawNewEls.length; di++) {
-          drawNewEls[di].classList.remove('__nx-draw-new');
-        }
-        // Also clear the element selection outline — the drawn element should not
-        // remain highlighted with the blue border after you switch tools.
-        clearPreviewSelection();
-        clearPreviewHover();
-      }
-      if (nextMode !== 'edit') {
-        __previewMoveDrag = null;
-        __previewDrawState = null;
-        if (__previewDrawDraft) {
-          __previewDrawDraft.style.display = 'none';
-        }
-        if (document.body) {
-          document.body.style.userSelect = '';
-          document.body.style.cursor = '';
-        }
-      }
-      if (nextMode !== 'edit') {
-        clearPreviewSelection();
-        clearPreviewHover();
-        applySelectionModeDecorations();
-      } else {
-        applySelectionModeDecorations();
-        requestHoverUpdate();
-      }
-      return;
-    }
-    if (payload.type === 'PREVIEW_APPLY_STYLE') {
-      var target = null;
-      if (payload.path && payload.path.length) {
-        target = readElementByPath(payload.path);
-      }
-      if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
-        target = __previewSelectedEl;
-      }
-      if (!target) {
-        target = document.querySelector('.__nx-preview-selected');
-      }
-      if (target) {
-        applyStylePatchToElement(target, payload.styles);
-      }
-    }
-    if (payload.type === 'PREVIEW_INJECT_ELEMENT') {
-      var injectParentPath = payload.parentPath;
-      var injectTag = typeof payload.tag === 'string' ? payload.tag : 'div';
-      var injectStyles = payload.styles || {};
-      var injectIndex = typeof payload.index === 'number' ? payload.index : -1;
-      var injectParent = null;
-      if (Array.isArray(injectParentPath) && injectParentPath.length > 0) {
-        injectParent = readElementByPath(injectParentPath);
-      }
-      if (!injectParent) injectParent = document.body;
-      if (!injectParent) return;
-      // Ensure the parent is positioned so absolute children are visible
-      if (injectParent !== document.body) {
-        var computedParentPos = window.getComputedStyle(injectParent).position;
-        if (!computedParentPos || computedParentPos === 'static') {
-          injectParent.style.position = 'relative';
-        }
-      }
-      var newEl = document.createElement(injectTag);
-      applyStylePatchToElement(newEl, injectStyles);
-      // Default visual so empty divs are visible
-      var lowerInjectTag = injectTag.toLowerCase();
-      if (lowerInjectTag === 'img') {
-        newEl.setAttribute('src', 'https://picsum.photos/420/260');
-        newEl.setAttribute('alt', 'Image');
-      } else if (lowerInjectTag === 'p' || lowerInjectTag === 'span' || lowerInjectTag === 'button' || lowerInjectTag === 'h1' || lowerInjectTag === 'h2' || lowerInjectTag === 'h3') {
-        newEl.textContent = 'New Text';
-      } else if (lowerInjectTag === 'div' || lowerInjectTag === 'section' || lowerInjectTag === 'article' || lowerInjectTag === 'aside' || lowerInjectTag === 'main' || lowerInjectTag === 'header' || lowerInjectTag === 'footer' || lowerInjectTag === 'nav') {
-        // Apply temporary highlight class — no inline styles saved to HTML.
-        newEl.classList.add('__nx-draw-new');
-      }
-      // Insert at the correct child index
-      var refSibling = injectIndex >= 0 ? (injectParent.children[injectIndex] || null) : null;
-      injectParent.insertBefore(newEl, refSibling);
-      // Transfer selection to this new element
-      var prevSelected = document.querySelectorAll('.__nx-preview-selected');
-      for (var si = 0; si < prevSelected.length; si++) {
-        prevSelected[si].classList.remove('__nx-preview-selected');
-      }
-      __previewSelectedEl = newEl;
-      newEl.classList.add('__nx-preview-selected');
-      newEl.classList.add('__nx-draw-new');
-      // Emit a select event back to the host so the right panel syncs
-      var newPath = Array.isArray(injectParentPath) ? injectParentPath.slice() : [];
-      newPath.push(injectIndex >= 0 ? injectIndex : injectParent.children.length - 1);
-      var computedStyles = getElementComputedStyles(newEl);
-      window.parent.postMessage(JSON.stringify({
-        type: 'PREVIEW_SELECT',
-        path: newPath,
-        tag: injectTag,
-        id: newEl.id || '',
-        className: newEl.className || '',
-        attributes: getCustomAttributes(newEl),
-        text: newEl.textContent || '',
-        html: newEl.innerHTML || '',
-        inlineStyle: newEl.getAttribute('style') || '',
-        computedStyles: computedStyles
-      }), '*');
-    }
-  });
-
-  try {
-    var __PUSH = history.pushState ? history.pushState.bind(history) : null;
-    if (__PUSH) {
-      history.pushState = function() {
-        var result = __PUSH.apply(history, arguments);
-        emitPathChanged();
-        return result;
-      };
-    }
-    var __REPLACE = history.replaceState ? history.replaceState.bind(history) : null;
-    if (__REPLACE) {
-      history.replaceState = function() {
-        var result = __REPLACE.apply(history, arguments);
-        emitPathChanged();
-        return result;
-      };
-    }
-    window.addEventListener('popstate', emitPathChanged);
-    window.addEventListener('hashchange', emitPathChanged);
-    setTimeout(emitPathChanged, 0);
-  } catch (e) {}
-
-  function isInsideInlineEditor(target) {
-    if (!__previewEditingEl || !target || !target.nodeType) return false;
-    return target === __previewEditingEl || (__previewEditingEl.contains && __previewEditingEl.contains(target));
-  }
-
-  function swallowInteraction(event) {
-    if (!isPreviewEditMode()) return;
-    if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
-    if (!event) return;
-    var target = event.target;
-    if (isInsideInlineEditor(target)) return;
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
-    event.stopPropagation();
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-  }
-
-  var __BLOCK_INTERACTION_EVENTS = [
-    'touchstart',
-    'touchmove',
-    'touchend',
-    'mousedown',
-    'mouseup',
-    'pointerdown',
-    'pointermove',
-    'pointerup',
-    'dragstart',
-    'wheel'
-  ];
-  for (var __blockIdx = 0; __blockIdx < __BLOCK_INTERACTION_EVENTS.length; __blockIdx++) {
-    document.addEventListener(__BLOCK_INTERACTION_EVENTS[__blockIdx], swallowInteraction, true);
-  }
-
-  var __NAV_KEYS = {
-    ArrowLeft: true,
-    ArrowRight: true,
-    ArrowUp: true,
-    ArrowDown: true,
-    PageUp: true,
-    PageDown: true,
-    Home: true,
-    End: true,
-    ' ': true,
-    Spacebar: true
-  };
-  document.addEventListener('keydown', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (!event) return;
-    if (isInsideInlineEditor(event.target)) return;
-    var key = event.key || '';
-    if (!__NAV_KEYS[key]) return;
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
-    event.stopPropagation();
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-  }, true);
-
-  document.addEventListener('keydown', function(event) {
-    if (!event) return;
-    var key = String(event.key || '').toLowerCase();
-    var code = String(event.code || '');
-    if (!key) return;
-    var hasModifier = !!(event.ctrlKey || event.metaKey);
-    var editableTarget = isInsideInlineEditor(event.target);
-    var target = event.target;
-    var targetTag =
-      target && target.tagName ? String(target.tagName).toLowerCase() : '';
-    if (!editableTarget) {
-      editableTarget =
-        !!(target && target.isContentEditable) ||
-        targetTag === 'input' ||
-        targetTag === 'textarea' ||
-        targetTag === 'select';
-    }
-
-    var shouldForward = false;
-    if (editableTarget) {
-      shouldForward =
-        hasModifier &&
-        (key === 's' ||
-          key === 'p' ||
-          key === 't' ||
-          key === 'f' ||
-          key === 'e' ||
-          key === 'k' ||
-          code === 'Backquote');
-    } else if (key === 'escape') {
-      shouldForward = true;
-    } else if (!hasModifier && !event.altKey && (key === 'w' || key === 'e')) {
-      shouldForward = true;
-    } else if (
-      hasModifier &&
-      (key === 'k' ||
-        key === 'f' ||
-        key === 'p' ||
-        key === 'e' ||
-        code === 'Backquote' ||
-        key === 'j' ||
-        key === 's' ||
-        key === 't' ||
-        key === 'z' ||
-        key === 'u' ||
-        key === 'y')
-    ) {
-      shouldForward = true;
-    }
-    if (!shouldForward) return;
-
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
-    event.stopPropagation();
-    if (event.cancelable) event.preventDefault();
-    postPreviewMessage('PREVIEW_HOTKEY', {
-      key: key,
-      code: code,
-      ctrlKey: !!event.ctrlKey,
-      metaKey: !!event.metaKey,
-      shiftKey: !!event.shiftKey,
-      altKey: !!event.altKey,
-      editable: editableTarget
-    });
-  }, true);
-
-  function ensureDrawDraftElement() {
-    if (__previewDrawDraft && document.body && document.body.contains(__previewDrawDraft)) {
-      return __previewDrawDraft;
-    }
-    if (!document.body) return null;
-    var draft = document.createElement('div');
-    draft.setAttribute('data-preview-draw-draft', 'true');
-    draft.style.display = 'none';
-    document.body.appendChild(draft);
-    __previewDrawDraft = draft;
-    return draft;
-  }
-
-  document.addEventListener('mousedown', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (!event || event.button !== 0) return;
-    if (__previewEditingEl) return;
-    var target = event.target;
-    if (__previewToolMode === 'move') {
-      var selected = getPreviewSelectableTarget(target, event);
-      if (!selected) return;
-      var path = getPreviewElementPath(selected);
-      if (!path || !path.length) return;
-      var parent = selected.offsetParent || selected.parentElement;
-      if (!parent || !parent.getBoundingClientRect) return;
-      var parentRect = parent.getBoundingClientRect();
-      var selectedRect = selected.getBoundingClientRect();
-      var computed = window.getComputedStyle(selected);
-      var parsedLeft = parseFloat(computed.left || '');
-      var parsedTop = parseFloat(computed.top || '');
-      var startLeft = isFinite(parsedLeft) ? parsedLeft : (selectedRect.left - parentRect.left + parent.scrollLeft);
-      var startTop = isFinite(parsedTop) ? parsedTop : (selectedRect.top - parentRect.top + parent.scrollTop);
-      var currentPosition = String(computed.position || '').toLowerCase();
-      var lockSize = !(currentPosition === 'absolute' || currentPosition === 'fixed');
-      __previewMoveDrag = {
-        element: selected,
-        path: path,
-        parent: parent,
-        parentRect: parentRect,
-        parentScrollLeft: parent.scrollLeft || 0,
-        parentScrollTop: parent.scrollTop || 0,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startLeft: startLeft,
-        startTop: startTop,
-        latestLeft: startLeft,
-        latestTop: startTop,
-        width: selectedRect.width || selected.offsetWidth || 0,
-        height: selectedRect.height || selected.offsetHeight || 0,
-        lockSize: lockSize,
-        hasDragged: false
-      };
-      selectPreviewElement(selected);
-      if (document.body) {
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'grabbing';
-      }
-      selected.style.cursor = 'grabbing';
-      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      event.stopPropagation();
-      if (event.cancelable) event.preventDefault();
-      return;
-    }
-    if (__previewToolMode === 'draw') {
-      var parentTarget = getPreviewSelectableTarget(target, event);
-      if (!parentTarget) parentTarget = document.body;
-      if (!parentTarget || parentTarget === document.documentElement) parentTarget = document.body;
-      var parentPath = parentTarget === document.body ? [] : (getPreviewElementPath(parentTarget) || []);
-      var parentRectForDraw = parentTarget.getBoundingClientRect ? parentTarget.getBoundingClientRect() : null;
-      if (!parentRectForDraw) return;
-      var startX = event.clientX - parentRectForDraw.left + (parentTarget.scrollLeft || 0);
-      var startY = event.clientY - parentRectForDraw.top + (parentTarget.scrollTop || 0);
-      __previewDrawState = {
-        parent: parentTarget,
-        parentPath: parentPath,
-        parentRect: parentRectForDraw,
-        startX: startX,
-        startY: startY,
-        latestX: startX,
-        latestY: startY
-      };
-      var draft = ensureDrawDraftElement();
-      if (draft) {
-        draft.style.display = 'block';
-        draft.style.left = Math.round(event.clientX) + 'px';
-        draft.style.top = Math.round(event.clientY) + 'px';
-        draft.style.width = '0px';
-        draft.style.height = '0px';
-      }
-      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      event.stopPropagation();
-      if (event.cancelable) event.preventDefault();
-    }
-  }, true);
-
-  document.addEventListener('mousemove', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (__previewMoveDrag) {
-      var drag = __previewMoveDrag;
-      var dx = event.clientX - drag.startClientX;
-      var dy = event.clientY - drag.startClientY;
-      if (!drag.hasDragged && Math.abs(dx) < 1 && Math.abs(dy) < 1) {
-        return;
-      }
-      if (!drag.hasDragged) {
-        drag.hasDragged = true;
-        drag.element.style.position = 'absolute';
-        drag.element.style.left = Math.round(drag.startLeft) + 'px';
-        drag.element.style.top = Math.round(drag.startTop) + 'px';
-        if (drag.lockSize) {
-          drag.element.style.width = Math.round(drag.width) + 'px';
-          drag.element.style.height = Math.round(drag.height) + 'px';
-        }
-      }
-      var maxLeft = Math.max(0, (drag.parent.clientWidth || drag.parentRect.width) - drag.width);
-      var maxTop = Math.max(0, (drag.parent.clientHeight || drag.parentRect.height) - drag.height);
-      var nextLeft = Math.max(0, Math.min(maxLeft, drag.startLeft + dx));
-      var nextTop = Math.max(0, Math.min(maxTop, drag.startTop + dy));
-      drag.latestLeft = nextLeft;
-      drag.latestTop = nextTop;
-      drag.element.style.left = Math.round(nextLeft) + 'px';
-      drag.element.style.top = Math.round(nextTop) + 'px';
-      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      event.stopPropagation();
-      if (event.cancelable) event.preventDefault();
-      return;
-    }
-    if (__previewDrawState) {
-      var draw = __previewDrawState;
-      var parentRectNow = draw.parent.getBoundingClientRect ? draw.parent.getBoundingClientRect() : draw.parentRect;
-      if (!parentRectNow) return;
-      var currentX = event.clientX - parentRectNow.left + (draw.parent.scrollLeft || 0);
-      var currentY = event.clientY - parentRectNow.top + (draw.parent.scrollTop || 0);
-      draw.latestX = currentX;
-      draw.latestY = currentY;
-      var leftInParent = Math.min(draw.startX, currentX);
-      var topInParent = Math.min(draw.startY, currentY);
-      var widthInParent = Math.abs(currentX - draw.startX);
-      var heightInParent = Math.abs(currentY - draw.startY);
-      var draftBox = ensureDrawDraftElement();
-      if (draftBox) {
-        draftBox.style.display = 'block';
-        draftBox.style.left = Math.round(parentRectNow.left - (draw.parent.scrollLeft || 0) + leftInParent) + 'px';
-        draftBox.style.top = Math.round(parentRectNow.top - (draw.parent.scrollTop || 0) + topInParent) + 'px';
-        draftBox.style.width = Math.round(widthInParent) + 'px';
-        draftBox.style.height = Math.round(heightInParent) + 'px';
-      }
-      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      event.stopPropagation();
-      if (event.cancelable) event.preventDefault();
-    }
-  }, true);
-
-  document.addEventListener('mouseup', function(event) {
-    if (__previewMoveDrag) {
-      var drag = __previewMoveDrag;
-      __previewMoveDrag = null;
-      if (document.body) {
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
-      }
-      drag.element.style.cursor = 'grab';
-      if (drag.hasDragged && drag.path && drag.path.length) {
-        var moveStyles = {
-          position: 'absolute',
-          left: Math.round(drag.latestLeft) + 'px',
-          top: Math.round(drag.latestTop) + 'px'
-        };
-        if (drag.lockSize) {
-          moveStyles.width = Math.round(drag.width) + 'px';
-          moveStyles.height = Math.round(drag.height) + 'px';
-        }
-        postPreviewMessage('PREVIEW_MOVE_COMMIT', {
-          path: drag.path,
-          styles: moveStyles
-        });
-      }
-      if (event) {
-        if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-        event.stopPropagation();
-        if (event.cancelable) event.preventDefault();
-      }
-      return;
-    }
-    if (__previewDrawState) {
-      var draw = __previewDrawState;
-      __previewDrawState = null;
-      var draft = ensureDrawDraftElement();
-      if (draft) draft.style.display = 'none';
-      var left = Math.min(draw.startX, draw.latestX);
-      var top = Math.min(draw.startY, draw.latestY);
-      var width = Math.abs(draw.latestX - draw.startX);
-      var height = Math.abs(draw.latestY - draw.startY);
-      if (width >= 6 && height >= 6) {
-        postPreviewMessage('PREVIEW_DRAW_CREATE', {
-          parentPath: draw.parentPath || [],
-          tag: __previewDrawTag,
-          styles: {
-            position: 'absolute',
-            left: Math.round(left) + 'px',
-            top: Math.round(top) + 'px',
-            width: Math.round(width) + 'px',
-            height: Math.round(height) + 'px',
-            zIndex: '50'
-          }
-        });
-      }
-      if (event) {
-        if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-        event.stopPropagation();
-        if (event.cancelable) event.preventDefault();
-      }
-    }
-  }, true);
-
-  document.addEventListener('click', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
-    event.stopPropagation();
-    var target = event && event.target;
-    var selected = getPreviewSelectableTarget(target, event);
-    if (selected) {
-      selectPreviewElement(selected);
-    }
-
-    if (__previewEditingEl) return;
-    if (!target || !target.closest) return;
-    if (event.detail && event.detail > 1) return;
-    var anchor = target.closest('a[href]');
-    if (!anchor) return;
-    event.preventDefault();
-    event.stopPropagation();
-  }, true);
-
-  document.addEventListener('mousemove', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
-    if (__previewEditingEl) return;
-    var target = event && event.target;
-    var hovered = getPreviewSelectableTarget(target, event);
-    setPreviewHover(hovered || null);
-  }, true);
-
-  document.addEventListener('mouseleave', function() {
-    clearPreviewHover();
-  }, true);
-  window.addEventListener('scroll', requestHoverUpdate, true);
-  window.addEventListener('resize', requestHoverUpdate, true);
-
-  document.addEventListener('dblclick', function(event) {
-    if (!isPreviewEditMode()) return;
-    if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
-    event.stopPropagation();
-    var target = event && event.target;
-    if (__previewEditingEl) {
-      if (
-        target &&
-        (__previewEditingEl === target ||
-          (__previewEditingEl.contains && __previewEditingEl.contains(target)))
-      ) {
-        return;
-      }
-      try { __previewEditingEl.blur(); } catch (e) {}
-    }
-    var selected = getPreviewSelectableTarget(target, event);
-    if (!selected || !canInlineEdit(selected)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    clearPreviewHover();
-    beginInlineEdit(selected);
-  }, true);
-})();
-`;
-
-const toCssPropertyName = (key: string): string =>
-  key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-
-const CSS_GENERIC_FONT_FAMILIES = new Set([
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui",
-  "ui-serif",
-  "ui-sans-serif",
-  "ui-monospace",
-  "emoji",
-  "math",
-  "fangsong",
-  "inherit",
-  "initial",
-  "unset",
-  "revert",
-  "revert-layer",
-]);
-
-const normalizeFontFamilyCssValue = (raw: string): string => {
-  const trimmed = String(raw || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.includes(",")) return trimmed;
-  if (
-    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-  ) {
-    return trimmed;
-  }
-  if (CSS_GENERIC_FONT_FAMILIES.has(trimmed.toLowerCase())) return trimmed;
-  if (/\s/.test(trimmed)) {
-    return `'${trimmed.replace(/'/g, "\\'")}'`;
-  }
-  return trimmed;
-};
-
-const readElementByPath = (root: Element, path: number[]): Element | null => {
-  let cursor: Element | null = root;
-  for (const step of path) {
-    if (!cursor) return null;
-    const childElements: Element[] = Array.from(cursor.children);
-    cursor = childElements[step] ?? null;
-  }
-  return cursor;
-};
-
-const normalizePreviewPath = (rawPath: unknown): number[] | null => {
-  if (!Array.isArray(rawPath)) return null;
-  const normalized = rawPath
-    .map((segment) => Number(segment))
-    .filter((segment) => Number.isFinite(segment))
-    .map((segment) => Math.max(0, Math.trunc(segment)));
-  if (normalized.length !== rawPath.length) return null;
-  return normalized;
-};
-
-const toPreviewLayerId = (path: number[]): string =>
-  `${PREVIEW_LAYER_ID_PREFIX}${path.join(".")}`;
-
-const fromPreviewLayerId = (id: string): number[] | null => {
-  if (!id.startsWith(PREVIEW_LAYER_ID_PREFIX)) return null;
-  const raw = id.slice(PREVIEW_LAYER_ID_PREFIX.length).trim();
-  if (!raw) return null;
-  const parts = raw.split(".").map((part) => Number(part));
-  if (parts.some((part) => !Number.isInteger(part) || part < 0)) return null;
-  return parts;
-};
-
-const parseInlineStyleText = (styleText: string): React.CSSProperties => {
-  const styles: Record<string, string> = {};
-  if (!styleText) return styles as React.CSSProperties;
-  const entries = styleText
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  for (const entry of entries) {
-    const colonIndex = entry.indexOf(":");
-    if (colonIndex <= 0) continue;
-    const rawKey = entry.slice(0, colonIndex).trim();
-    const rawValue = entry.slice(colonIndex + 1).trim();
-    if (!rawKey) continue;
-    const camelKey = rawKey.replace(/-([a-z])/g, (_all, c: string) =>
-      c.toUpperCase(),
-    );
-    styles[camelKey] = rawValue;
-  }
-  return styles as React.CSSProperties;
-};
-
-const extractComputedStylesFromElement = (
-  element: Element | null,
-): React.CSSProperties | null => {
-  if (!element || !(element instanceof HTMLElement)) return null;
-  const computed = window.getComputedStyle(element);
-  const out: Record<string, string> = {};
-  for (let i = 0; i < computed.length; i += 1) {
-    const key = computed[i];
-    const value = computed.getPropertyValue(key);
-    if (!value) continue;
-    const camelKey = key.replace(/-([a-z])/g, (_all, c: string) =>
-      c.toUpperCase(),
-    );
-    out[camelKey] = value;
-  }
-  return out as React.CSSProperties;
-};
-
-const RESERVED_ATTRIBUTE_NAMES = new Set(["id", "class", "style", "src", "href"]);
-
-const extractCustomAttributesFromElement = (
-  element: Element | null,
-): Record<string, string> | undefined => {
-  if (!element || !element.attributes) return undefined;
-  const out: Record<string, string> = {};
-  const attrs = element.attributes;
-  for (let index = 0; index < attrs.length; index += 1) {
-    const attr = attrs.item(index);
-    if (!attr || !attr.name) continue;
-    if (RESERVED_ATTRIBUTE_NAMES.has(attr.name.toLowerCase())) continue;
-    out[attr.name] = attr.value ?? "";
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-};
-
-const normalizeEditorMultilineText = (raw: string): string => {
-  const normalized = raw.replace(/\r\n?/g, "\n");
-  const lines = normalized
-    .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim());
-
-  let start = 0;
-  let end = lines.length - 1;
-  while (start <= end && !lines[start]) start += 1;
-  while (end >= start && !lines[end]) end -= 1;
-  if (start > end) return "";
-
-  const compacted: string[] = [];
-  let previousEmpty = false;
-  for (const line of lines.slice(start, end + 1)) {
-    const isEmpty = line.length === 0;
-    if (isEmpty && previousEmpty) continue;
-    compacted.push(line);
-    previousEmpty = isEmpty;
-  }
-  return compacted.join("\n");
-};
-
-const extractTextWithBreaks = (element: Element | null): string => {
-  if (!element) return "";
-  let out = "";
-  const normalizeExtractedTextNode = (raw: string): string => {
-    if (!raw) return "";
-    const normalized = raw.replace(/\r\n?/g, "\n");
-    if (normalized.trim().length === 0) {
-      // Keep inline spacing, drop formatting-only line breaks from pretty HTML.
-      return /[\n\r]/.test(normalized) ? "" : " ";
-    }
-    const lines = normalized
-      .split("\n")
-      .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim());
-    const nonEmptyCount = lines.reduce(
-      (count, line) => count + (line.length > 0 ? 1 : 0),
-      0,
-    );
-    if (nonEmptyCount <= 1) {
-      return normalized.replace(/[ \t\f\v]+/g, " ").trim();
-    }
-    return lines.join("\n");
-  };
-  const walk = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      out += normalizeExtractedTextNode(node.textContent || "");
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as Element;
-    if (el.tagName.toLowerCase() === "br") {
-      out += "\n";
-      return;
-    }
-    Array.from(el.childNodes).forEach(walk);
-  };
-  Array.from(element.childNodes).forEach(walk);
-  return normalizeEditorMultilineText(out);
-};
-
-const extractTextFromHtmlFragment = (html: string): string => {
-  const parser = new DOMParser();
-  const parsed = parser.parseFromString(`<div>${html || ""}</div>`, "text/html");
-  const root = parsed.body.firstElementChild;
-  if (!root) return "";
-  return extractTextWithBreaks(root);
-};
-
-const hasRichInlineTextStructure = (element: Element): boolean => {
-  const walker = element.ownerDocument.createTreeWalker(
-    element,
-    NodeFilter.SHOW_ELEMENT,
-  );
-  let current = walker.currentNode as Element | null;
-  while (current) {
-    if (current !== element && current.tagName.toLowerCase() !== "br") {
-      return true;
-    }
-    current = walker.nextNode() as Element | null;
-  }
-  return false;
-};
-
-const collectTextNodeGroupsByBreak = (element: Element): Text[][] => {
-  const groups: Text[][] = [[]];
-  const walk = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      groups[groups.length - 1].push(node as Text);
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as Element;
-    if (el.tagName.toLowerCase() === "br") {
-      groups.push([]);
-      return;
-    }
-    Array.from(el.childNodes).forEach(walk);
-  };
-  Array.from(element.childNodes).forEach(walk);
-  return groups;
-};
-
-const chooseTextSplitPoint = (
-  value: string,
-  start: number,
-  ideal: number,
-  maxEnd: number,
-): number => {
-  let end = Math.max(start, Math.min(ideal, maxEnd));
-  if (end <= start || end >= value.length) return end;
-  const window = 24;
-  const lower = Math.max(start + 1, end - window);
-  const upper = Math.min(maxEnd, end + window);
-  for (let offset = 0; offset <= window; offset += 1) {
-    const right = end + offset;
-    if (
-      right <= upper &&
-      right > start &&
-      /\s/.test(value.charAt(right - 1) || "")
-    ) {
-      return right;
-    }
-    const left = end - offset;
-    if (
-      left >= lower &&
-      left > start &&
-      /\s/.test(value.charAt(left - 1) || "")
-    ) {
-      return left;
-    }
-  }
-  return end;
-};
-
-const distributeTextAcrossNodes = (nodes: Text[], value: string): void => {
-  if (!nodes.length) return;
-  if (nodes.length === 1) {
-    nodes[0].textContent = value;
-    return;
-  }
-  const oldLengths = nodes.map((node) => (node.textContent || "").length);
-  const totalOldLength = oldLengths.reduce((sum, len) => sum + len, 0) || 1;
-  let cursor = 0;
-  for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index];
-    if (index === nodes.length - 1) {
-      node.textContent = value.slice(cursor);
-      break;
-    }
-    const remainingNodes = nodes.length - index - 1;
-    const maxEnd = Math.max(cursor, value.length - remainingNodes);
-    const proportional = Math.round(
-      (oldLengths[index] / totalOldLength) * value.length,
-    );
-    const ideal = cursor + proportional;
-    const split = chooseTextSplitPoint(value, cursor, ideal, maxEnd);
-    node.textContent = value.slice(cursor, split);
-    cursor = split;
-  }
-};
-
-const applyMultilineTextToElement = (element: Element, text: string): void => {
-  const normalizedInput = text.replace(/\r\n?/g, "\n");
-  if (hasRichInlineTextStructure(element)) {
-    const groups = collectTextNodeGroupsByBreak(element);
-    const allNodes = groups.flat();
-    if (allNodes.length > 0) {
-      const rawLines = normalizedInput.split("\n");
-      const normalizedLines =
-        groups.length > 0 && rawLines.length > groups.length
-          ? [
-              ...rawLines.slice(0, groups.length - 1),
-              rawLines.slice(groups.length - 1).join(" "),
-            ]
-          : rawLines;
-      for (let index = 0; index < groups.length; index += 1) {
-        const line = normalizedLines[index] ?? "";
-        distributeTextAcrossNodes(groups[index], line);
-      }
-      return;
-    }
-  }
-
-  const normalized = normalizeEditorMultilineText(normalizedInput);
-  while (element.firstChild) {
-    element.removeChild(element.firstChild);
-  }
-  const lines = normalized.split("\n");
-  lines.forEach((line, index) => {
-    element.appendChild(element.ownerDocument.createTextNode(line));
-    if (index < lines.length - 1) {
-      element.appendChild(element.ownerDocument.createElement("br"));
-    }
-  });
-};
-
-type PreviewHistoryEntry = {
-  past: string[];
-  present: string;
-  future: string[];
-};
-
-const addElementToTree = (
-  root: VirtualElement,
-  parentId: string,
-  newElement: VirtualElement,
-  position: "inside" | "before" | "after" = "inside",
-): VirtualElement => {
-  if (root.id === parentId && position === "inside") {
-    return { ...root, children: [...root.children, newElement] };
-  }
-  if (
-    root.children.some((child) => child.id === parentId) &&
-    position !== "inside"
-  ) {
-    const targetIndex = root.children.findIndex(
-      (child) => child.id === parentId,
-    );
-    const newChildren = [...root.children];
-    if (position === "before") newChildren.splice(targetIndex, 0, newElement);
-    else newChildren.splice(targetIndex + 1, 0, newElement);
-    return { ...root, children: newChildren };
-  }
-  let didChange = false;
-  const nextChildren = root.children.map((child) => {
-    const updatedChild = addElementToTree(child, parentId, newElement, position);
-    if (updatedChild !== child) {
-      didChange = true;
-    }
-    return updatedChild;
-  });
-  if (!didChange) return root;
-  return { ...root, children: nextChildren };
-};
-
-const TOOLBOX_DRAG_MIME = "application/x-nocodex-element";
-
-const createPresetIdFactory = (prefix: string): ((segment: string) => string) => {
-  const base = `${prefix.replace(/[^a-z0-9_-]/gi, "-")}-${Date.now()}`;
-  let counter = 0;
-  return (segment: string) => {
-    counter += 1;
-    return `${base}-${segment}-${counter}`;
-  };
-};
-
-const createVirtualNode = (
-  id: string,
-  type: string,
-  name: string,
-  styles: React.CSSProperties,
-  options?: {
-    content?: string;
-    className?: string;
-    attributes?: Record<string, string>;
-    children?: VirtualElement[];
-  },
-): VirtualElement => ({
-  id,
-  type,
-  name,
-  styles,
-  children: options?.children || [],
-  ...(options?.content !== undefined ? { content: options.content } : {}),
-  ...(options?.className ? { className: options.className } : {}),
-  ...(options?.attributes ? { attributes: options.attributes } : {}),
-});
-
-const buildPresetElement = (
-  presetType: string,
-  idFor: (segment: string) => string,
-): VirtualElement | null => {
-  if (presetType === "preset:carousel") {
-    return createVirtualNode(
-      idFor("carousel"),
-      "section",
-      "Carousel",
-      {
-        display: "flex",
-        gap: "16px",
-        overflowX: "auto",
-        padding: "16px",
-        borderRadius: "12px",
-        backgroundColor: "#f8fafc",
-        scrollSnapType: "x mandatory",
-      },
-      {
-        children: [
-          createVirtualNode(
-            idFor("card-a"),
-            "div",
-            "Slide Card",
-            {
-              minWidth: "260px",
-              height: "160px",
-              borderRadius: "10px",
-              background:
-                "linear-gradient(135deg, rgba(14,165,233,0.18), rgba(99,102,241,0.18))",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              scrollSnapAlign: "start",
-              fontWeight: 700,
-            },
-            { content: "Slide 1" },
-          ),
-          createVirtualNode(
-            idFor("card-b"),
-            "div",
-            "Slide Card",
-            {
-              minWidth: "260px",
-              height: "160px",
-              borderRadius: "10px",
-              background:
-                "linear-gradient(135deg, rgba(16,185,129,0.2), rgba(14,165,233,0.2))",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              scrollSnapAlign: "start",
-              fontWeight: 700,
-            },
-            { content: "Slide 2" },
-          ),
-        ],
-      },
-    );
-  }
-  if (presetType === "preset:flip-card") {
-    return createVirtualNode(
-      idFor("flip"),
-      "div",
-      "Flip Card",
-      {
-        width: "280px",
-        height: "180px",
-        perspective: "1000px",
-        position: "relative",
-      },
-      {
-        children: [
-          createVirtualNode(
-            idFor("inner"),
-            "div",
-            "Flip Inner",
-            {
-              position: "relative",
-              width: "100%",
-              height: "100%",
-              transformStyle: "preserve-3d",
-              transition: "transform 0.6s ease",
-              borderRadius: "14px",
-              overflow: "hidden",
-              boxShadow: "0 12px 30px rgba(2,6,23,0.16)",
-            },
-            {
-              children: [
-                createVirtualNode(
-                  idFor("front"),
-                  "div",
-                  "Front Face",
-                  {
-                    position: "absolute",
-                    inset: "0px",
-                    background:
-                      "linear-gradient(135deg, rgba(14,165,233,0.2), rgba(99,102,241,0.24))",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontWeight: 700,
-                    backfaceVisibility: "hidden",
-                  },
-                  { content: "Front" },
-                ),
-                createVirtualNode(
-                  idFor("back"),
-                  "div",
-                  "Back Face",
-                  {
-                    position: "absolute",
-                    inset: "0px",
-                    background:
-                      "linear-gradient(135deg, rgba(16,185,129,0.22), rgba(34,197,94,0.24))",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontWeight: 700,
-                    transform: "rotateY(180deg)",
-                    backfaceVisibility: "hidden",
-                  },
-                  { content: "Back" },
-                ),
-              ],
-            },
-          ),
-        ],
-      },
-    );
-  }
-  if (presetType === "preset:scroll-reveal") {
-    return createVirtualNode(
-      idFor("reveal"),
-      "section",
-      "Scroll Reveal Block",
-      {
-        padding: "24px",
-        borderRadius: "12px",
-        backgroundColor: "#f8fafc",
-        border: "1px solid rgba(148,163,184,0.3)",
-      },
-      {
-        attributes: { "data-scroll-reveal": "true" },
-        children: [
-          createVirtualNode(
-            idFor("title"),
-            "h2",
-            "Reveal Heading",
-            {
-              marginBottom: "8px",
-              fontSize: "24px",
-              fontWeight: 700,
-            },
-            { content: "Reveal On Scroll" },
-          ),
-          createVirtualNode(
-            idFor("body"),
-            "p",
-            "Reveal Text",
-            {
-              fontSize: "14px",
-              lineHeight: "1.6",
-            },
-            { content: "This block is tagged for preview scroll-reveal animations." },
-          ),
-        ],
-      },
-    );
-  }
-  return null;
-};
-
-const buildStandardElement = (type: string, id: string): VirtualElement => {
-  const normalized = type === "container" || type === "flex" ? "div" : type;
-  const baseStyles: React.CSSProperties = {
-    padding: "10px",
-    minHeight: "20px",
-  };
-  if (type === "flex") {
-    baseStyles.display = "flex";
-    baseStyles.gap = "8px";
-    baseStyles.alignItems = "center";
-  }
-  if (type === "container") {
-    baseStyles.width = "100%";
-    baseStyles.maxWidth = "960px";
-    baseStyles.margin = "0 auto";
-  }
-  return {
-    id,
-    type: normalized as ElementType,
-    name: normalized.charAt(0).toUpperCase() + normalized.slice(1),
-    styles: baseStyles,
-    children: [],
-    content: ["p", "h1", "h2", "h3", "button", "span"].includes(normalized)
-      ? "New Text"
-      : undefined,
-    ...(normalized === "img"
-      ? { src: "https://picsum.photos/200/300", name: "Image" }
-      : {}),
-  };
-};
-
-const materializeVirtualElement = (
-  doc: Document,
-  element: VirtualElement,
-): Node => {
-  if (element.type === "text") {
-    return doc.createTextNode(element.content || "");
-  }
-  const node = doc.createElement(element.type);
-  if (element.id) {
-    node.setAttribute("id", element.id);
-  }
-  if (element.className) {
-    node.setAttribute("class", element.className);
-  }
-  if (element.src) {
-    node.setAttribute("src", element.src);
-  }
-  if (element.href) {
-    node.setAttribute("href", element.href);
-  }
-  if (element.attributes) {
-    for (const [key, value] of Object.entries(element.attributes)) {
-      if (!key) continue;
-      node.setAttribute(key, value);
-    }
-  }
-  for (const [key, rawValue] of Object.entries(element.styles || {})) {
-    if (rawValue === undefined || rawValue === null || rawValue === "") continue;
-    const cssKey = key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
-    (node as HTMLElement).style.setProperty(cssKey, String(rawValue));
-  }
-  if (element.animation) {
-    (node as HTMLElement).style.setProperty("animation", element.animation);
-  }
-  if (element.content) {
-    node.appendChild(doc.createTextNode(element.content));
-  }
-  for (const child of element.children) {
-    node.appendChild(materializeVirtualElement(doc, child));
-  }
-  return node;
-};
-
-const buildPreviewLayerTreeFromElement = (
-  element: Element,
-  path: number[] = [],
-): VirtualElement => {
-  const tag = String(element.tagName || "div").toLowerCase();
-  const id = toPreviewLayerId(path);
-  const elementId = (element.getAttribute("id") || "").trim();
-  const classList = (element.getAttribute("class") || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2);
-  const displayName = [
-    elementId ? `#${elementId}` : "",
-    classList.length > 0 ? `.${classList.join(".")}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .trim() || tag.toUpperCase();
-  const children = Array.from(element.children).map((child, index) =>
-    buildPreviewLayerTreeFromElement(child, [...path, index]),
-  );
-  return {
-    id,
-    type: tag,
-    name: displayName,
-    content: normalizeEditorMultilineText(extractTextWithBreaks(element)),
-    html: element instanceof HTMLElement ? element.innerHTML || "" : "",
-    styles: {},
-    children,
-  };
-};
-
-// --- Device Context Menu ---
-const DeviceContextMenu: React.FC<{
-  type: "mobile" | "desktop" | "tablet";
-  position: { x: number; y: number };
-  mobileFrameStyle: "dynamic-island" | "punch-hole" | "notch";
-  setMobileFrameStyle: (s: "dynamic-island" | "punch-hole" | "notch") => void;
-  desktopResolution: "1080p" | "1.5k" | "2k" | "4k" | "resizable";
-  setDesktopResolution: (
-    r: "1080p" | "1.5k" | "2k" | "4k" | "resizable",
-  ) => void;
+import VibeAssistant from "./components/VibeAssistant";
+import { AIPipeline } from "./utils/ai/AIPipeline";
+
+import EditorContent from "./app/EditorContent";
+import { Provider } from "react-redux";
+import { store } from "./src/store";
+import PdfSelector from "./src/components/PdfSelector";
+import PdfAnnotationsOverlay from "./src/components/PdfAnnotationsOverlay";
+import {
+  setRecords,
+  setFileName,
+  setSourcePath,
+  setError,
+  setIsOpen,
+  setIsLoading,
+  setFocusedAnnotation,
+  setViewMode,
+  setTypeOverrides,
+  setClassifierMetrics,
+  addProcessingLog,
+  clearProcessingLogs,
+  resetState,
+} from "./src/store/annotationSlice";
+import { useDispatch, useSelector } from "react-redux";
+import { RootState } from "./src/store";
+import {
+  buildMappedPdfAnnotations,
+  evaluateAnnotationTypeClassifier,
+  PdfAnnotationRecord,
+  PdfAnnotationUiRecord,
+} from "./app/pdfAnnotationHelpers";
+import {
+  isEdaProject,
+  findElementById,
+  collectPathIdsToElement,
+  updateElementInTree,
+  deleteElementFromTree,
+  normalizePath,
+  PREVIEW_LAYER_ID_PREFIX,
+  PREVIEW_MOUNT_PATH,
+  SHARED_MOUNT_PATH,
+  SHARED_MOUNT_PATH_IN_PREVIEW,
+  joinPath,
+  getParentPath,
+  IGNORED_FOLDERS,
+  THEME_STORAGE_KEY,
+  PREVIEW_AUTOSAVE_STORAGE_KEY,
+  AI_BACKEND_STORAGE_KEY,
+  COLAB_URL_STORAGE_KEY,
+  SHOW_AI_FEATURES,
+  SHOW_SCREENSHOT_FEATURES,
+  SHOW_MASTER_TOOLS,
+  MAX_CANVAS_HISTORY,
+  MAX_PREVIEW_HISTORY,
+  MAX_PREVIEW_CONSOLE_ENTRIES,
+  MAX_PREVIEW_DOC_CACHE_ENTRIES,
+  MAX_PREVIEW_DOC_CACHE_CHARS,
+  SHARED_FONT_VIRTUAL_DIR,
+  PRESENTATION_CSS_VIRTUAL_PATH,
+  FONT_CACHE_VIRTUAL_PATH,
+  FONT_CACHE_VERSION,
+  CONFIG_JSON_PATH,
+  PORTFOLIO_CONFIG_PATH,
+  ADD_TOOL_COMPONENT_PRESETS,
+  ADD_TOOL_CSS_MARKER_START,
+  ADD_TOOL_CSS_MARKER_END,
+  ADD_TOOL_JS_MARKER_START,
+  ADD_TOOL_JS_MARKER_END,
+  VOID_HTML_TAGS,
+  ADD_TOOL_COMPONENTS_CSS_CONTENT,
+  ADD_TOOL_COMPONENTS_JS_CONTENT,
+  resolveConfigPathFromFiles,
+  getConfigPathCandidates,
+  scoreConfigContent,
+  DEFAULT_EDITOR_FONTS,
+  PREVIEW_DRAW_ALLOWED_TAGS,
+  normalizePreviewDrawTag,
+  FontCachePayload,
+  MaybeViewTransitionDocument,
+  sanitizeFontFamilyName,
+  dedupeFontFamilies,
+  buildEditorFontOptions,
+  parsePresentationCssFontFamilies,
+  parseFontCacheFamilies,
+  deriveFontFamilyFromFontFileName,
+  fontFormatFromFileName,
+  relativePathBetweenVirtualFiles,
+  collectSharedFontFamiliesFromFileMap,
+  inferFileType,
+  isTextFileType,
+  isSvgPath,
+  isCodeEditableFile,
+  toFileUrl,
+  mimeFromType,
+  toByteArray,
+  isExternalUrl,
+  normalizeProjectRelative,
+  resolveProjectRelativePath,
+  findFilePathCaseInsensitive,
+  resolvePreviewNavigationPath,
+  isPathWithinBase,
+  toMountRelativePath,
+  rewriteInlineAssetRefs,
+  buildPreviewRuntimeScript,
+  createPreviewDocument,
+  pickDefaultHtmlFile,
+  MOUNTED_PREVIEW_BRIDGE_SCRIPT,
+  toCssPropertyName,
+  parseNumericCssValue,
+  CSS_GENERIC_FONT_FAMILIES,
+  normalizeFontFamilyCssValue,
+  readElementByPath,
+  normalizePreviewPath,
+  toPreviewLayerId,
+  fromPreviewLayerId,
+  parseInlineStyleText,
+  extractComputedStylesFromElement,
+  RESERVED_ATTRIBUTE_NAMES,
+  extractCustomAttributesFromElement,
+  normalizeEditorMultilineText,
+  extractTextWithBreaks,
+  extractTextFromHtmlFragment,
+  hasRichInlineTextStructure,
+  collectTextNodeGroupsByBreak,
+  chooseTextSplitPoint,
+  distributeTextAcrossNodes,
+  applyMultilineTextToElement,
+  PreviewHistoryEntry,
+  addElementToTree,
+  TOOLBOX_DRAG_MIME,
+  hasToolboxDragType,
+  getToolboxDragPayload,
+  createPresetIdFactory,
+  createVirtualNode,
+  buildPresetElement,
+  buildPresetElementV2,
+  buildStandardElement,
+  materializeVirtualElement,
+  buildPreviewLayerTreeFromElement,
+  DeviceContextMenu,
+  PreviewConsoleLevel,
+  PreviewConsoleEntry,
+  PreviewSelectionMode,
+  PreviewSyncSource,
+  PendingPageSwitch,
+  PREVIEW_SELECTION_MODE_OPTIONS,
+} from "./app/appHelpers";
+import { resourceScanner } from "./utils/ai/ResourceScanner";
+const escapeConsoleHtml = (value: string): string =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const RECENT_PROJECTS_STORAGE_KEY = "nocodex_recent_projects_v1";
+const PDF_ANNOTATION_CACHE_KEY = "nocodex_pdf_annotation_cache_v1";
+const DEFAULT_COLAB_URL = "https://upset-hands-hope.loca.lt";
+const SCREENSHOT_INDEX_FILE = "shared/screenshots/index.json";
+const SCREENSHOT_DIR = "shared/screenshots";
+const PDF_EXPORT_DIR = "shared/pdf_exports";
+
+type ScreenshotMetadata = {
+  id: string;
+  createdAt: string;
+  projectPath: string;
+  slidePath: string | null;
+  slideId: string | null;
+  popupId: string | null;
+  popupSelector: string | null;
+  deviceMode: "desktop" | "mobile" | "tablet";
   tabletModel: "ipad" | "ipad-pro";
-  setTabletModel: (m: "ipad" | "ipad-pro") => void;
-  onClose: () => void;
-}> = ({
-  type,
-  position,
-  mobileFrameStyle,
-  setMobileFrameStyle,
-  desktopResolution,
-  setDesktopResolution,
-  tabletModel,
-  setTabletModel,
-  onClose,
-}) => {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onClickOut = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onClickOut);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onClickOut);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [onClose]);
-
-  const mobileItems = [
-    { label: "📱  iPhone — Dynamic Island", value: "dynamic-island" as const },
-    { label: "📱  iPhone — Notch", value: "notch" as const },
-    { label: "🤖  Android — Punch Hole", value: "punch-hole" as const },
-  ];
-
-  const desktopItems = [
-    { label: "🖥️  1080p (1920 × 1080)", value: "1080p" as const },
-    { label: "🖥️  1.5K (1600 × 900)", value: "1.5k" as const },
-    { label: "🖥️  2K (2560 × 1440)", value: "2k" as const },
-    { label: "🖥️  4K (3840 × 2160)", value: "4k" as const },
-    { label: "↔️  Resizable", value: "resizable" as const },
-  ];
-
-  const tabletItems = [
-    { label: "iPad (1536 x 2048)", value: "ipad" as const },
-    { label: "iPad Pro (2048 x 2732)", value: "ipad-pro" as const },
-  ];
-
-  const items =
-    type === "mobile"
-      ? mobileItems
-      : type === "desktop"
-        ? desktopItems
-        : tabletItems;
-  const currentValue =
-    type === "mobile"
-      ? mobileFrameStyle
-      : type === "desktop"
-        ? desktopResolution
-        : tabletModel;
-
-  return (
-    <div
-      ref={ref}
-      className="fixed z-[2000] py-1.5 rounded-xl overflow-hidden animate-fadeIn"
-      style={{
-        left: position.x,
-        top: position.y,
-        minWidth: "200px",
-        background: "var(--bg-glass-strong)",
-        backdropFilter: "blur(24px)",
-        border: "1px solid var(--border-color)",
-        boxShadow: "0 12px 40px -8px rgba(0,0,0,0.5)",
-      }}
-    >
-      <div
-        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {type === "mobile"
-          ? "Frame Style"
-          : type === "desktop"
-            ? "Resolution"
-            : "iPad Model"}
-      </div>
-      {items.map((item) => (
-        <button
-          key={item.value}
-          onClick={() => {
-            if (type === "mobile") setMobileFrameStyle(item.value as any);
-            else if (type === "desktop")
-              setDesktopResolution(item.value as any);
-            else setTabletModel(item.value as any);
-            onClose();
-          }}
-          className="w-full px-3 py-2 text-left text-[12px] font-medium flex items-center gap-2 transition-all duration-150"
-          style={{
-            color:
-              currentValue === item.value
-                ? "var(--accent-primary)"
-                : "var(--text-main)",
-            backgroundColor:
-              currentValue === item.value
-                ? "var(--accent-glow)"
-                : "transparent",
-          }}
-          onMouseEnter={(e) => {
-            if (currentValue !== item.value)
-              e.currentTarget.style.backgroundColor = "var(--input-bg)";
-          }}
-          onMouseLeave={(e) => {
-            if (currentValue !== item.value)
-              e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          <span>{item.label}</span>
-          {currentValue === item.value && (
-            <span className="ml-auto text-[10px] opacity-60">✓</span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
+  tabletOrientation: "landscape" | "portrait";
+  frameZoom: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  previewMode: "edit" | "preview";
+  interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
+  imagePath: string;
+  imageFileName: string;
 };
-
-type PreviewConsoleLevel = "log" | "info" | "warn" | "error" | "debug";
-type PreviewConsoleEntry = {
-  id: number;
-  level: PreviewConsoleLevel;
-  message: string;
-  source: string;
-  time: number;
-};
-type PreviewSelectionMode = "default" | "text" | "image" | "css";
-type PreviewSyncSource = "load" | "navigate" | "path_changed" | "explorer";
-type PendingPageSwitch = {
-  mode: "switch" | "refresh" | "preview" | "preview_mode";
-  fromPath: string;
-  nextPath: string;
-  source: PreviewSyncSource;
-  nextPreviewMode?: "edit" | "preview";
-};
-const PREVIEW_SELECTION_MODE_OPTIONS: Array<{
-  value: PreviewSelectionMode;
-  label: string;
-}> = [
-  { value: "default", label: "Default" },
-  { value: "text", label: "Text" },
-  { value: "image", label: "Image" },
-  { value: "css", label: "CSS" },
+const ANNOTATION_INTENT_OPTIONS = [
+  "stylingChange",
+  "textualChange",
+  "textInImage",
+  "notFound",
+  "referenceChange",
+  "assetChange",
+  "flowChange",
+  "piChange",
+  "siChange",
 ];
+
+const ALLOW_POPUP_OPEN_FROM_PDF = false;
+
+const resolvePreviewImagePath = (path: string) => path;
 
 const App: React.FC = () => {
+  // --- Redux Dispatch Setup ---
+  const dispatch = useDispatch();
+  const {
+    records: pdfAnnotationRecords,
+    fileName: pdfAnnotationFileName,
+    sourcePath: pdfAnnotationSourcePath,
+    error: pdfAnnotationError,
+    isOpen: isPdfAnnotationPanelOpen,
+    isLoading: isPdfAnnotationLoading,
+    focusedAnnotation: focusedPdfAnnotation,
+    viewMode: pdfAnnotationViewMode,
+    typeFilter: pdfAnnotationTypeFilter,
+    typeOverrides: pdfAnnotationTypeOverrides,
+    classifierMetrics: pdfAnnotationClassifierMetrics,
+  } = useSelector((state: RootState) => state.annotations);
+
   // --- Neutralino Setup ---
   useEffect(() => {
     Neutralino.events.on("ready", () =>
@@ -3837,6 +281,20 @@ const App: React.FC = () => {
 
   // --- State ---
   const [root, setRoot] = useState<VirtualElement>(INITIAL_ROOT);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [configModalInitialTab, setConfigModalInitialTab] = useState<
+    "references" | "slides" | "configRaw"
+  >("references");
+  const [isConfigModalSlidesOnly, setIsConfigModalSlidesOnly] = useState(false);
+  const [configModalConfigPath, setConfigModalConfigPath] = useState<
+    string | null
+  >(null);
+  const [configModalPortfolioPath, setConfigModalPortfolioPath] = useState<
+    string | null
+  >(null);
+  const [selectedFolderCloneSource, setSelectedFolderCloneSource] = useState<
+    string | null
+  >(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
@@ -3845,11 +303,35 @@ const App: React.FC = () => {
   });
   const [files, setFiles] = useState<FileMap>({});
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [recentProjects, setRecentProjects] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_PROJECTS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed
+            .filter((entry) => typeof entry === "string" && entry.trim())
+            .slice(0, 5)
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const [previewMountBasePath, setPreviewMountBasePath] = useState<
     string | null
   >(null);
   const [isPreviewMountReady, setIsPreviewMountReady] = useState(false);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [activeFile, setActiveFileRaw] = useState<string | null>(null);
+  const setActiveFile = useCallback(
+    (path: string | null | ((prev: string | null) => string | null)) => {
+      setActiveFileRaw((prev) => {
+        const next = typeof path === "function" ? path(prev) : path;
+        console.log("[DEBUG] activeFile changing from", prev, "to", next);
+        return next;
+      });
+    },
+    [],
+  );
   const [previewSyncedFile, setPreviewSyncedFile] = useState<string | null>(
     null,
   );
@@ -3872,13 +354,19 @@ const App: React.FC = () => {
     useState<string[]>(DEFAULT_EDITOR_FONTS);
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
+  const [isCompactConsoleOpening, setIsCompactConsoleOpening] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
   const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
+  const [isDetachedEditorOpen, setIsDetachedEditorOpen] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
-  const [codeDraftByPath, setCodeDraftByPath] = useState<Record<string, string>>({});
-  const [codeDirtyPathSet, setCodeDirtyPathSet] = useState<Record<string, true>>({});
+  const [codeDraftByPath, setCodeDraftByPath] = useState<
+    Record<string, string>
+  >({});
+  const [codeDirtyPathSet, setCodeDirtyPathSet] = useState<
+    Record<string, true>
+  >({});
   const [previewConsoleEntries, setPreviewConsoleEntries] = useState<
     PreviewConsoleEntry[]
   >([]);
@@ -3898,11 +386,27 @@ const App: React.FC = () => {
       return false;
     }
   });
+  const [aiBackend, setAiBackend] = useState<"local" | "colab">(() => {
+    try {
+      const saved = localStorage.getItem(AI_BACKEND_STORAGE_KEY);
+      return (saved as "local" | "colab") || "local";
+    } catch {
+      return "local";
+    }
+  });
+  const [colabUrl, setColabUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem(COLAB_URL_STORAGE_KEY) || DEFAULT_COLAB_URL;
+    } catch {
+      return DEFAULT_COLAB_URL;
+    }
+  });
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
   const [dirtyFiles, setDirtyFiles] = useState<string[]>([]);
   const [dirtyPathKeysByFile, setDirtyPathKeysByFile] = useState<
     Record<string, string[]>
   >({});
+  // PDF Annotation local states removed and managed by Redux.
 
   // Design Revamp States
   const [mobileFrameStyle, setMobileFrameStyle] = useState<
@@ -3916,17 +420,112 @@ const App: React.FC = () => {
     "portrait" | "landscape"
   >("landscape");
   const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0);
+  const [previewFrameLoadNonce, setPreviewFrameLoadNonce] = useState(0);
   const [frameZoom, setFrameZoom] = useState<50 | 75 | 100>(100);
   const [deviceCtxMenu, setDeviceCtxMenu] = useState<{
     type: "mobile" | "desktop" | "tablet";
     x: number;
     y: number;
   } | null>(null);
+
+  const [isVibeAssistantOpen, setIsVibeAssistantOpen] = useState(false);
+  const [vibeErrorContext, setVibeErrorContext] = useState<
+    string | undefined
+  >();
+
+  // Use a ref to track if a vibe update was just applied to handle errors
+  const lastVibeUpdateRef = useRef<number>(0);
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [rightPanelMode, setRightPanelMode] = useState<
+    "inspector" | "gallery"
+  >("inspector");
+  const [isScreenshotGalleryOpen, setIsScreenshotGalleryOpen] = useState(false);
+  const [screenshotItems, setScreenshotItems] = useState<ScreenshotMetadata[]>(
+    [],
+  );
+  const [screenshotPreviewUrls, setScreenshotPreviewUrls] = useState<
+    Record<string, string>
+  >({});
+  const [screenshotCaptureBusy, setScreenshotCaptureBusy] = useState(false);
+  const [screenshotSessionRestore, setScreenshotSessionRestore] = useState<{
+    leftOpen: boolean;
+    rightOpen: boolean;
+    rightMode: "inspector" | "gallery";
+  } | null>(null);
+  const [pdfExportLogs, setPdfExportLogs] = useState<string[]>([]);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isToolboxDragging, setIsToolboxDragging] = useState(false);
+  const toolboxDragTypeRef = useRef("");
   const [pendingPageSwitch, setPendingPageSwitch] =
     useState<PendingPageSwitch | null>(null);
+
+  const readPdfAnnotationCache = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(PDF_ANNOTATION_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        version: number;
+        projects: Record<
+          string,
+          {
+            lastPdfPath: string | null;
+            entries: Record<
+              string,
+              {
+                fileName: string;
+                records: PdfAnnotationUiRecord[];
+                storedAt: number;
+              }
+            >;
+          }
+        >;
+      };
+      if (!parsed || parsed.version !== 2) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const writePdfAnnotationCache = useCallback(
+    (
+      projectKey: string,
+      pdfPath: string,
+      fileName: string,
+      records: PdfAnnotationUiRecord[],
+    ) => {
+      try {
+        const existing = readPdfAnnotationCache() || {
+          version: 1,
+          projects: {},
+        };
+        const nextProjects = { ...existing.projects };
+        const projectEntry = nextProjects[projectKey] || {
+          lastPdfPath: null,
+          entries: {},
+        };
+        projectEntry.lastPdfPath = pdfPath;
+        projectEntry.entries = {
+          ...projectEntry.entries,
+          [pdfPath]: {
+            fileName,
+            records,
+            storedAt: Date.now(),
+          },
+        };
+        nextProjects[projectKey] = projectEntry;
+        localStorage.setItem(
+          PDF_ANNOTATION_CACHE_KEY,
+          JSON.stringify({ version: 2, projects: nextProjects }),
+        );
+      } catch {
+        // Ignore storage errors.
+      }
+    },
+    [readPdfAnnotationCache],
+  );
   const [isPageSwitchPromptOpen, setIsPageSwitchPromptOpen] = useState(false);
   const [isPageSwitchPromptBusy, setIsPageSwitchPromptBusy] = useState(false);
   // Keep both implementations available: switch to "docked" anytime.
@@ -3939,9 +538,96 @@ const App: React.FC = () => {
     useState<VirtualElement | null>(null);
   const [previewSelectedComputedStyles, setPreviewSelectedComputedStyles] =
     useState<React.CSSProperties | null>(null);
+  const [propertiesPanelRequestedTab, setPropertiesPanelRequestedTab] =
+    useState<"content" | "style" | "advanced" | null>(null);
+  const [
+    propertiesPanelRequestedTabNonce,
+    setPropertiesPanelRequestedTabNonce,
+  ] = useState(0);
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const previewStageRef = useRef<HTMLDivElement | null>(null);
+  const previewFocusedPdfElementRef = useRef<HTMLElement | null>(null);
+  const [previewSelectionBox, setPreviewSelectionBox] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [quickTextEdit, setQuickTextEdit] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+  }>({ open: false, x: 0, y: 0 });
+  const quickTextEditRef = useRef<HTMLDivElement | null>(null);
+  const quickTextRangeRef = useRef<Range | null>(null);
+  const QUICK_TEXT_PANEL_WIDTH = 320;
+  const QUICK_TEXT_PANEL_HEIGHT = 220;
+  const showQuickTextEdit = useCallback((x: number, y: number) => {
+    setQuickTextEdit({ open: true, x, y });
+  }, []);
+  const hideQuickTextEdit = useCallback(() => {
+    setQuickTextEdit((prev) => (prev.open ? { ...prev, open: false } : prev));
+  }, []);
+  const positionQuickTextEditAtRange = useCallback(
+    (range: Range) => {
+      const frame = previewFrameRef.current;
+      if (!frame) return;
+      const rect = range.getBoundingClientRect();
+      if (!rect || rect.width === 0 || rect.height === 0) {
+        hideQuickTextEdit();
+        return;
+      }
+      const frameRect = frame.getBoundingClientRect();
+      const spacing = 12;
+      const rightX = frameRect.left + rect.right + spacing;
+      const leftX =
+        frameRect.left + rect.left - QUICK_TEXT_PANEL_WIDTH - spacing;
+      let nextX = rightX;
+      if (nextX + QUICK_TEXT_PANEL_WIDTH > frameRect.right - spacing) {
+        nextX = leftX;
+      }
+      nextX = Math.max(
+        frameRect.left + spacing,
+        Math.min(
+          nextX,
+          frameRect.right - QUICK_TEXT_PANEL_WIDTH - spacing,
+        ),
+      );
+      const nextY = Math.max(
+        frameRect.top + spacing,
+        Math.min(
+          frameRect.top + rect.top,
+          frameRect.bottom - QUICK_TEXT_PANEL_HEIGHT - spacing,
+        ),
+      );
+      showQuickTextEdit(nextX, nextY);
+    },
+    [hideQuickTextEdit, showQuickTextEdit],
+  );
+  const [isPreviewResizing, setIsPreviewResizing] = useState(false);
+  const previewResizeDragRef = useRef<{
+    path: number[];
+    target: HTMLElement;
+    direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startTop: number;
+    startWidth: number;
+    startHeight: number;
+    scaleX: number;
+    scaleY: number;
+    canMoveLeft: boolean;
+    canMoveTop: boolean;
+  } | null>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState(256);
+  const [rightPanelWidth, setRightPanelWidth] = useState(264);
   const [isResizingLeftPanel, setIsResizingLeftPanel] = useState(false);
+  const [isResizingRightPanel, setIsResizingRightPanel] = useState(false);
+  const [rightPanelFloatingPosition, setRightPanelFloatingPosition] = useState({
+    left: 0,
+    top: 96,
+  });
   const filePathIndexRef = useRef<Record<string, string>>({});
   const presentationCssPathRef = useRef<string | null>(null);
   const fontCachePathRef = useRef<string | null>(null);
@@ -3954,6 +640,8 @@ const App: React.FC = () => {
   const binaryAssetUrlCacheRef = useRef<Record<string, string>>({});
   const previewDependencyIndexRef = useRef<Record<string, string[]>>({});
   const filesRef = useRef<FileMap>({});
+  const configModalConfigPathRef = useRef<string | null>(null);
+  const configModalPortfolioPathRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
   const selectedPreviewHtmlRef = useRef<string | null>(null);
   const interactionModeRef = useRef<
@@ -3978,16 +666,43 @@ const App: React.FC = () => {
   const leftPanelResizeStartWidthRef = useRef(256);
   const leftPanelPendingWidthRef = useRef(256);
   const leftPanelResizeRafRef = useRef<number | null>(null);
+  const rightPanelResizeStartXRef = useRef(0);
+  const rightPanelResizeStartWidthRef = useRef(264);
+  const rightPanelPendingWidthRef = useRef(264);
+  const rightPanelResizeRafRef = useRef<number | null>(null);
+  const rightPanelDragStartRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [isDraggingRightPanel, setIsDraggingRightPanel] = useState(false);
+  const rightPanelManualClosedRef = useRef(false);
+  const lastEditSelectionRef = useRef<string | null>(null);
+  const rightPanelRestorePendingRef = useRef(false);
+  const lastPanelDprRef = useRef<number | null>(null);
+  const pendingPopupOpenRef = useRef<{
+    selector: string | null;
+    popupId: string | null;
+  } | null>(null);
+  const codePanelRestoreRef = useRef<{
+    isLeftPanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    showTerminal: boolean;
+  } | null>(null);
   const previewConsoleSeqRef = useRef(0);
   const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
   const previewConsoleFlushTimerRef = useRef<number | null>(null);
   const saveMenuRef = useRef<HTMLDivElement | null>(null);
+  const bottomPanelRef = useRef<HTMLDivElement | null>(null);
+  const detachedConsoleWindowRef = useRef<Window | null>(null);
   const isRefreshingFilesRef = useRef(false);
   const saveCodeDraftsRef = useRef<(() => Promise<void>) | null>(null);
   const pendingPreviewWritesRef = useRef<Record<string, string>>({});
   const codeDraftByPathRef = useRef<Record<string, string>>({});
   const codeDirtyPathSetRef = useRef<Record<string, true>>({});
   const dirtyFilesRef = useRef<string[]>([]);
+  const lastAutoDprZoomRef = useRef<50 | 75 | 100>(100);
   const previewHistoryRef = useRef<Record<string, PreviewHistoryEntry>>({});
   const previewDocCacheRef = useRef<Record<string, string>>({});
   const previewDocCacheOrderRef = useRef<string[]>([]);
@@ -4001,15 +716,51 @@ const App: React.FC = () => {
   const applyPreviewDropCreateRef = useRef<
     ((type: string, clientX: number, clientY: number) => Promise<void>) | null
   >(null);
+  const explorerSelectionLockRef = useRef<string | null>(null);
+  const explorerSelectionLockUntilRef = useRef<number>(0);
   const themeTransitionInFlightRef = useRef(false);
   const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(
     null,
   );
   const BASE_STAGE_PADDING = 40;
+  const EXPLORER_LOCK_TTL_MS = 6000;
   const LEFT_PANEL_MIN_WIDTH = 220;
   const LEFT_PANEL_MAX_WIDTH = 520;
-  const RIGHT_PANEL_WIDTH = 264;
+  const LEFT_PANEL_STRETCHED_WIDTH = 360;
+  const LEFT_PANEL_COLLAPSED_WIDTH = 48;
+  const RIGHT_PANEL_MIN_WIDTH = 264;
+  const RIGHT_PANEL_MAX_WIDTH = 640;
   const CODE_PANEL_WIDTH = 620;
+
+  const requestPropertiesPanelTab = useCallback(
+    (tab: "content" | "style" | "advanced") => {
+      setPropertiesPanelRequestedTab(tab);
+      setPropertiesPanelRequestedTabNonce((prev) => prev + 1);
+    },
+    [],
+  );
+
+  const getDefaultRightPanelPosition = useCallback((width: number) => {
+    const viewportWidth =
+      typeof window !== "undefined" ? window.innerWidth : 1440;
+    const viewportHeight =
+      typeof window !== "undefined" ? window.innerHeight : 900;
+    return {
+      left: Math.max(8, viewportWidth - width - 40),
+      top: Math.max(56, Math.min(96, viewportHeight - 160)),
+    };
+  }, []);
+
+  useEffect(() => {
+    setRightPanelFloatingPosition((prev) => {
+      if (prev.left > 0) return prev;
+      const next = getDefaultRightPanelPosition(rightPanelWidth);
+      return {
+        left: next.left,
+        top: prev.top,
+      };
+    });
+  }, [getDefaultRightPanelPosition, rightPanelWidth]);
   const previewConsoleErrorCount = useMemo(
     () =>
       previewConsoleEntries.reduce(
@@ -4067,30 +818,6 @@ const App: React.FC = () => {
     binaryAssetUrlCacheRef.current = {};
   }, []);
 
-  const persistLoadedContentToState = useCallback(
-    (path: string, content: string) => {
-      setFiles((prev) => {
-        const existing = prev[path];
-        if (!existing) return prev;
-        if (
-          typeof existing.content === "string" &&
-          existing.content.length > 0 &&
-          existing.content === content
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [path]: {
-            ...existing,
-            content,
-          },
-        };
-      });
-    },
-    [],
-  );
-
   const invalidatePreviewDocCache = useCallback((path: string) => {
     if (!path) return;
     delete previewDocCacheRef.current[path];
@@ -4131,11 +858,11 @@ const App: React.FC = () => {
     isLeftPanelOpen &&
     isRightPanelOpen &&
     deviceMode !== "mobile";
-  const rightOverlayInset = bothPanelsOpen ? RIGHT_PANEL_WIDTH : 0;
+  const rightOverlayInset = bothPanelsOpen ? rightPanelWidth : 0;
   const floatingHorizontalInset =
     isFloatingPanels && deviceMode !== "mobile"
       ? (isLeftPanelOpen ? leftPanelWidth : 0) +
-        (isRightPanelOpen ? leftPanelWidth : 0)
+        (isRightPanelOpen ? rightPanelWidth : 0)
       : 0;
   useEffect(() => {
     const next: FileMap = { ...files };
@@ -4195,11 +922,179 @@ const App: React.FC = () => {
   useEffect(() => {
     dirtyFilesRef.current = dirtyFiles;
   }, [dirtyFiles]);
+  useEffect(() => {
+    configModalConfigPathRef.current = configModalConfigPath;
+  }, [configModalConfigPath]);
+  useEffect(() => {
+    configModalPortfolioPathRef.current = configModalPortfolioPath;
+  }, [configModalPortfolioPath]);
 
   const setActiveFileStable = useCallback((nextPath: string | null) => {
     activeFileRef.current = nextPath;
     setActiveFile((prev) => (prev === nextPath ? prev : nextPath));
   }, []);
+
+  const persistLoadedContentToState = useCallback(
+    (path: string, content: string) => {
+      setFiles((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        if (
+          typeof existing.content === "string" &&
+          existing.content.length > 0 &&
+          existing.content === content
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content,
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const loadFileContent = useCallback(
+    async (
+      relativePath: string,
+      options?: {
+        persistToState?: boolean;
+      },
+    ) => {
+      const persistToState = options?.persistToState ?? true;
+      const target = filesRef.current[relativePath];
+      if (!target) return;
+
+      if (typeof target.content === "string" && target.content.length > 0) {
+        if (target.type === "image" || target.type === "font") {
+          binaryAssetUrlCacheRef.current[relativePath] = target.content;
+          return target.content;
+        }
+        textFileCacheRef.current[relativePath] = target.content;
+        if (persistToState) {
+          persistLoadedContentToState(relativePath, target.content);
+        }
+        return target.content;
+      }
+
+      const cachedText = textFileCacheRef.current[relativePath];
+      if (typeof cachedText === "string" && cachedText.length > 0) {
+        if (persistToState) {
+          persistLoadedContentToState(relativePath, cachedText);
+        }
+        return cachedText;
+      }
+
+      const cachedBinary = binaryAssetUrlCacheRef.current[relativePath];
+      if (
+        (target.type === "image" || target.type === "font") &&
+        typeof cachedBinary === "string" &&
+        cachedBinary.length > 0
+      ) {
+        return cachedBinary;
+      }
+
+      const existingPending = loadingFilePromisesRef.current[relativePath];
+      if (existingPending) {
+        if (
+          !persistToState ||
+          target.type === "image" ||
+          target.type === "font"
+        ) {
+          return existingPending;
+        }
+        return existingPending.then((content) => {
+          if (typeof content === "string" && content.length > 0) {
+            persistLoadedContentToState(relativePath, content);
+          }
+          return content;
+        });
+      }
+
+      const absolutePath = filePathIndexRef.current[relativePath];
+      if (!absolutePath) return;
+
+      const pending = (async (): Promise<string | undefined> => {
+        loadingFilesRef.current.add(relativePath);
+        try {
+          let content = "";
+          if (target.type === "image" || target.type === "font") {
+            const binaryData = await (
+              Neutralino as any
+            ).filesystem.readBinaryFile(absolutePath);
+            const bytes = toByteArray(binaryData);
+            if (bytes.length === 0) return;
+            const mime = mimeFromType(target.type, target.name);
+            const sourceBuffer = bytes.buffer;
+            const binaryBuffer: ArrayBuffer =
+              sourceBuffer instanceof ArrayBuffer
+                ? sourceBuffer.slice(
+                    bytes.byteOffset,
+                    bytes.byteOffset + bytes.byteLength,
+                  )
+                : (() => {
+                    const copy = new Uint8Array(bytes.byteLength);
+                    copy.set(bytes);
+                    return copy.buffer;
+                  })();
+            const blob = new Blob([binaryBuffer], { type: mime });
+            const previousUrl = binaryAssetUrlCacheRef.current[relativePath];
+            if (previousUrl && previousUrl.startsWith("blob:")) {
+              try {
+                URL.revokeObjectURL(previousUrl);
+              } catch {
+                // Ignore stale blob revocation errors.
+              }
+            }
+            content = URL.createObjectURL(blob);
+            binaryAssetUrlCacheRef.current[relativePath] = content;
+          } else {
+            const loaded = await (Neutralino as any).filesystem.readFile(
+              absolutePath,
+            );
+            content =
+              typeof loaded === "string" ? loaded : String(loaded || "");
+            if (content.length > 0) {
+              textFileCacheRef.current[relativePath] = content;
+            }
+          }
+
+          const existingRefEntry = filesRef.current[relativePath];
+          if (existingRefEntry) {
+            filesRef.current = {
+              ...filesRef.current,
+              [relativePath]: {
+                ...existingRefEntry,
+                content,
+              },
+            };
+          }
+
+          if (persistToState && content.length > 0) {
+            persistLoadedContentToState(relativePath, content);
+          }
+
+          return content;
+        } catch (error) {
+          console.warn(
+            `Failed loading file content for ${relativePath}:`,
+            error,
+          );
+        } finally {
+          loadingFilesRef.current.delete(relativePath);
+          delete loadingFilePromisesRef.current[relativePath];
+        }
+      })();
+
+      loadingFilePromisesRef.current[relativePath] = pending;
+      return pending;
+    },
+    [persistLoadedContentToState],
+  );
   const persistProjectFontCache = useCallback(
     async (fontFamilies: string[]) => {
       const cacheVirtualPath = fontCachePathRef.current;
@@ -4349,6 +1244,17 @@ const App: React.FC = () => {
   );
   const shouldProcessPreviewPageSignal = useCallback((path: string) => {
     if (!path) return false;
+
+    // GUARD: Ignore common system/bridge files that cause sync loops
+    const lower = path.toLowerCase();
+    if (
+      lower.includes("shared/index.html") ||
+      lower.includes("__bridge.html") ||
+      lower.includes("vibe-bridge.html")
+    ) {
+      return false;
+    }
+
     const now = Date.now();
     const last = lastPreviewPageSignalRef.current;
     if (last && last.path === path && now - last.at < 700) {
@@ -4360,7 +1266,8 @@ const App: React.FC = () => {
   const hasUnsavedChangesForFile = useCallback(
     (path: string | null): boolean => {
       if (!path) return false;
-      if (typeof pendingPreviewWritesRef.current[path] === "string") return true;
+      if (typeof pendingPreviewWritesRef.current[path] === "string")
+        return true;
       if (typeof codeDraftByPathRef.current[path] === "string") return true;
       if (codeDirtyPathSetRef.current[path]) return true;
       return dirtyFilesRef.current.includes(path);
@@ -4377,14 +1284,15 @@ const App: React.FC = () => {
         );
       }
 
-      if (source === "load" || source === "path_changed") {
-        if (interactionModeRef.current !== "preview") {
+      if (activeFileRef.current === nextPath) {
+        if (
+          interactionModeRef.current !== "preview" &&
+          (source === "load" || source === "path_changed")
+        ) {
           setInteractionMode("preview");
         }
         return;
       }
-
-      if (activeFileRef.current === nextPath) return;
 
       const now = Date.now();
       const last = lastPreviewSyncRef.current;
@@ -4505,6 +1413,16 @@ const App: React.FC = () => {
     }
   }, [autoSaveEnabled]);
   useEffect(() => {
+    try {
+      localStorage.setItem(
+        RECENT_PROJECTS_STORAGE_KEY,
+        JSON.stringify(recentProjects.slice(0, 5)),
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [recentProjects]);
+  useEffect(() => {
     const onClickOutside = (event: MouseEvent) => {
       if (!saveMenuRef.current) return;
       if (!saveMenuRef.current.contains(event.target as Node)) {
@@ -4532,7 +1450,11 @@ const App: React.FC = () => {
       "--left-panel-width",
       `${leftPanelWidth}px`,
     );
-  }, [leftPanelWidth]);
+    appRootRef.current.style.setProperty(
+      "--right-panel-width",
+      `${rightPanelWidth}px`,
+    );
+  }, [leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
     if (!isResizingLeftPanel) return;
@@ -4580,6 +1502,97 @@ const App: React.FC = () => {
     };
   }, [isResizingLeftPanel]);
 
+  useEffect(() => {
+    if (!isResizingRightPanel) return;
+
+    const onMouseMove = (event: MouseEvent) => {
+      const delta = rightPanelResizeStartXRef.current - event.clientX;
+      rightPanelPendingWidthRef.current = Math.min(
+        RIGHT_PANEL_MAX_WIDTH,
+        Math.max(
+          RIGHT_PANEL_MIN_WIDTH,
+          rightPanelResizeStartWidthRef.current + delta,
+        ),
+      );
+      if (rightPanelResizeRafRef.current !== null) return;
+      rightPanelResizeRafRef.current = requestAnimationFrame(() => {
+        rightPanelResizeRafRef.current = null;
+        if (appRootRef.current) {
+          appRootRef.current.style.setProperty(
+            "--right-panel-width",
+            `${rightPanelPendingWidthRef.current}px`,
+          );
+        }
+      });
+    };
+
+    const onMouseUp = () => {
+      if (rightPanelResizeRafRef.current !== null) {
+        cancelAnimationFrame(rightPanelResizeRafRef.current);
+        rightPanelResizeRafRef.current = null;
+      }
+      setRightPanelWidth(rightPanelPendingWidthRef.current);
+      setIsResizingRightPanel(false);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isResizingRightPanel]);
+
+  useEffect(() => {
+    if (!isDraggingRightPanel) return;
+
+    const onMouseMove = (event: MouseEvent) => {
+      const start = rightPanelDragStartRef.current;
+      if (!start) return;
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 1440;
+      const viewportHeight =
+        typeof window !== "undefined" ? window.innerHeight : 900;
+      const nextLeft = Math.max(
+        8,
+        Math.min(
+          Math.max(8, viewportWidth - rightPanelWidth - 8),
+          start.left + (event.clientX - start.pointerX),
+        ),
+      );
+      const nextTop = Math.max(
+        56,
+        Math.min(
+          Math.max(56, viewportHeight - 140),
+          start.top + (event.clientY - start.pointerY),
+        ),
+      );
+      setRightPanelFloatingPosition({ left: nextLeft, top: nextTop });
+    };
+
+    const onMouseUp = () => {
+      rightPanelDragStartRef.current = null;
+      setIsDraggingRightPanel(false);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isDraggingRightPanel, rightPanelWidth]);
+
   const handleLeftPanelResizeStart = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (!isLeftPanelOpen) return;
@@ -4591,14 +1604,48 @@ const App: React.FC = () => {
     },
     [isLeftPanelOpen, leftPanelWidth],
   );
+  const handleLeftPanelStretchToggle = useCallback(() => {
+    setLeftPanelWidth((prev) =>
+      prev >= LEFT_PANEL_STRETCHED_WIDTH ? 256 : LEFT_PANEL_STRETCHED_WIDTH,
+    );
+  }, []);
+
+  const handleRightPanelResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isRightPanelOpen) return;
+      event.preventDefault();
+      rightPanelResizeStartXRef.current = event.clientX;
+      rightPanelResizeStartWidthRef.current = rightPanelWidth;
+      rightPanelPendingWidthRef.current = rightPanelWidth;
+      setIsResizingRightPanel(true);
+    },
+    [isRightPanelOpen, rightPanelWidth],
+  );
+
+  const handleRightPanelDragStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isFloatingPanels || !isRightPanelOpen) return;
+      if (
+        (event.target as HTMLElement).closest("button, input, select, textarea")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      rightPanelDragStartRef.current = {
+        pointerX: event.clientX,
+        pointerY: event.clientY,
+        left: rightPanelFloatingPosition.left,
+        top: rightPanelFloatingPosition.top,
+      };
+      setIsDraggingRightPanel(true);
+    },
+    [isFloatingPanels, isRightPanelOpen, rightPanelFloatingPosition],
+  );
 
   // --- History Management ---
   const pushHistory = useCallback((newState: VirtualElement) => {
     setHistory((curr) => ({
-      past: [
-        ...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)),
-        curr.present,
-      ],
+      past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
       present: newState,
       future: [],
     }));
@@ -4626,10 +1673,7 @@ const App: React.FC = () => {
       const newFuture = curr.future.slice(1);
       setRoot(next);
       return {
-        past: [
-          ...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)),
-          curr.present,
-        ],
+        past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
         present: next,
         future: newFuture,
       };
@@ -4639,8 +1683,7 @@ const App: React.FC = () => {
     (filePath: string, nextHtml: string, previousHtml?: string) => {
       const current = previewHistoryRef.current[filePath];
       if (!current) {
-        const baseline =
-          typeof previousHtml === "string" ? previousHtml : "";
+        const baseline = typeof previousHtml === "string" ? previousHtml : "";
         previewHistoryRef.current[filePath] =
           baseline && baseline !== nextHtml
             ? {
@@ -4751,7 +1794,8 @@ const App: React.FC = () => {
     async (path: string) => {
       if (!path) return;
       const hadCodeDraft =
-        typeof codeDraftByPath[path] === "string" || Boolean(codeDirtyPathSet[path]);
+        typeof codeDraftByPath[path] === "string" ||
+        Boolean(codeDirtyPathSet[path]);
       if (hadCodeDraft) {
         delete codeDraftByPathRef.current[path];
         delete codeDirtyPathSetRef.current[path];
@@ -4782,7 +1826,9 @@ const App: React.FC = () => {
       if (!absolutePath) return;
       let diskContent = "";
       try {
-        diskContent = await (Neutralino as any).filesystem.readFile(absolutePath);
+        diskContent = await (Neutralino as any).filesystem.readFile(
+          absolutePath,
+        );
       } catch (error) {
         console.warn(`Failed discarding unsaved changes for ${path}:`, error);
         window.alert("Could not discard changes. Please try again.");
@@ -4871,6 +1917,196 @@ const App: React.FC = () => {
     setPreviewNavigationFile((prev) => (prev === candidate ? prev : candidate));
     setPreviewRefreshNonce((prev) => prev + 1);
   }, [hasUnsavedChangesForFile, previewSyncedFile]);
+  const handleOpenConfigModal = useCallback(() => {
+    setConfigModalInitialTab("references");
+    setIsConfigModalSlidesOnly(false);
+    if (!projectPath) {
+      setConfigModalConfigPath(null);
+      setConfigModalPortfolioPath(null);
+      setIsConfigModalOpen(true);
+      return;
+    }
+    const pickBestPath = async (
+      suffix: "config.json" | "portfolioconfig.json",
+      kind: "config" | "portfolio",
+    ): Promise<string> => {
+      const candidates = getConfigPathCandidates(filesRef.current, suffix);
+      const fallback =
+        resolveConfigPathFromFiles(filesRef.current, suffix) ||
+        (suffix === "config.json" ? CONFIG_JSON_PATH : PORTFOLIO_CONFIG_PATH);
+      if (candidates.length === 0) return fallback;
+
+      let bestPath = fallback;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (const path of candidates) {
+        const loaded = await loadFileContent(path, { persistToState: true });
+        const score = scoreConfigContent(String(loaded || ""), kind);
+        console.info("[ConfigModal] Candidate score", { kind, path, score });
+        if (score > bestScore) {
+          bestScore = score;
+          bestPath = path;
+        }
+      }
+      return bestPath;
+    };
+
+    void (async () => {
+      const [configPath, portfolioPath] = await Promise.all([
+        pickBestPath("config.json", "config"),
+        pickBestPath("portfolioconfig.json", "portfolio"),
+      ]);
+      const refineConfigPath = async (initialPath: string | null) => {
+        if (!initialPath) return initialPath;
+        const initialContent = await loadFileContent(initialPath, {
+          persistToState: true,
+        });
+        const initialScore = scoreConfigContent(
+          String(initialContent || ""),
+          "config",
+        );
+        if (initialScore >= 20) return initialPath;
+        const pattern = /(^|\/)(?:mtconfig|config)\.(?:js|json)$/i;
+        const candidates = Object.keys(filesRef.current).filter((path) =>
+          pattern.test(path),
+        );
+        let bestPath = initialPath;
+        let bestScore = initialScore;
+        for (const candidate of candidates) {
+          const loaded = await loadFileContent(candidate, {
+            persistToState: false,
+          });
+          const score = scoreConfigContent(String(loaded || ""), "config");
+          if (score > bestScore) {
+            bestScore = score;
+            bestPath = candidate;
+          }
+        }
+        return bestPath;
+      };
+      const refinedConfigPath = await refineConfigPath(configPath);
+      setConfigModalConfigPath(refinedConfigPath);
+      setConfigModalPortfolioPath(portfolioPath);
+      console.groupCollapsed("[ConfigModal] Open");
+      console.info("[ConfigModal] Chosen config path:", refinedConfigPath);
+      console.info("[ConfigModal] Chosen portfolio path:", portfolioPath);
+      console.groupEnd();
+      await Promise.all([
+        refinedConfigPath
+          ? loadFileContent(refinedConfigPath, { persistToState: true })
+          : Promise.resolve(),
+        loadFileContent(portfolioPath, { persistToState: true }),
+      ]);
+      for (const [path, entry] of Object.entries(filesRef.current)) {
+        if (
+          entry?.type === "image" &&
+          /(^|\/)thumb\.(png|jpg|jpeg|webp|gif|svg)$/i.test(path)
+        ) {
+          void loadFileContent(path, { persistToState: true });
+        }
+      }
+      setIsConfigModalOpen(true);
+    })();
+  }, [loadFileContent, projectPath]);
+  const handleChooseFolderCloneSource = useCallback(() => {
+    setConfigModalInitialTab("slides");
+    setIsConfigModalSlidesOnly(true);
+    setIsConfigModalOpen(true);
+  }, []);
+  const handleSidebarLoadImage = useCallback(
+    (path: string) => {
+      void loadFileContent(path, { persistToState: true });
+    },
+    [loadFileContent],
+  );
+
+  const handleSaveConfig = useCallback(
+    async (newConfig: string, newPortfolio: string) => {
+      try {
+        const configPath =
+          configModalConfigPathRef.current ||
+          resolveConfigPathFromFiles(filesRef.current, "config.json") ||
+          CONFIG_JSON_PATH;
+        const portfolioPath =
+          configModalPortfolioPathRef.current ||
+          resolveConfigPathFromFiles(
+            filesRef.current,
+            "portfolioconfig.json",
+          ) ||
+          PORTFOLIO_CONFIG_PATH;
+
+        if (filesRef.current[configPath]) {
+          filesRef.current = {
+            ...filesRef.current,
+            [configPath]: {
+              ...filesRef.current[configPath],
+              content: newConfig,
+            },
+          };
+          setFiles(filesRef.current);
+
+          // mark dirty
+          if (!dirtyFilesRef.current.includes(configPath)) {
+            dirtyFilesRef.current.push(configPath);
+            setDirtyFiles((prev) => [...prev, configPath]);
+          }
+
+          if (filePathIndexRef.current[configPath]) {
+            await (Neutralino as any).filesystem.writeFile(
+              filePathIndexRef.current[configPath],
+              newConfig,
+            );
+
+            // mark clean
+            dirtyFilesRef.current = dirtyFilesRef.current.filter(
+              (entry) => entry !== configPath,
+            );
+            setDirtyFiles((prev) =>
+              prev.filter((entry) => entry !== configPath),
+            );
+          }
+        }
+
+        if (filesRef.current[portfolioPath]) {
+          filesRef.current = {
+            ...filesRef.current,
+            [portfolioPath]: {
+              ...filesRef.current[portfolioPath],
+              content: newPortfolio,
+            },
+          };
+          setFiles(filesRef.current);
+
+          // mark dirty
+          if (!dirtyFilesRef.current.includes(portfolioPath)) {
+            dirtyFilesRef.current.push(portfolioPath);
+            setDirtyFiles((prev) => [...prev, portfolioPath]);
+          }
+
+          if (filePathIndexRef.current[portfolioPath]) {
+            await (Neutralino as any).filesystem.writeFile(
+              filePathIndexRef.current[portfolioPath],
+              newPortfolio,
+            );
+
+            // mark clean
+            dirtyFilesRef.current = dirtyFilesRef.current.filter(
+              (entry) => entry !== portfolioPath,
+            );
+            setDirtyFiles((prev) =>
+              prev.filter((entry) => entry !== portfolioPath),
+            );
+          }
+        }
+
+        requestPreviewRefreshWithUnsavedGuard();
+      } catch (err) {
+        console.error("Failed to save config:", err);
+        alert("Failed to save configuration files.");
+      }
+    },
+    [requestPreviewRefreshWithUnsavedGuard],
+  );
+
   const requestSwitchToPreviewMode = useCallback(() => {
     if (interactionModeRef.current === "preview") {
       const currentPath = selectedPreviewHtmlRef.current;
@@ -4993,7 +2229,11 @@ const App: React.FC = () => {
     } finally {
       setIsPageSwitchPromptBusy(false);
     }
-  }, [commitPreviewActiveFileSync, discardUnsavedChangesForFile, pendingPageSwitch]);
+  }, [
+    commitPreviewActiveFileSync,
+    discardUnsavedChangesForFile,
+    pendingPageSwitch,
+  ]);
   const closePendingPageSwitchPrompt = useCallback(() => {
     if (isPageSwitchPromptBusy) return;
     setIsPageSwitchPromptOpen(false);
@@ -5048,9 +2288,10 @@ const App: React.FC = () => {
       cachePreviewDoc(filePath, previewDoc);
       setSelectedPreviewDoc(previewDoc);
     }
+    await flushPendingPreviewSaves();
     setPreviewRefreshNonce((prev) => prev + 1);
     schedulePreviewAutoSave();
-  }, [cachePreviewDoc, schedulePreviewAutoSave]);
+  }, [cachePreviewDoc, flushPendingPreviewSaves, schedulePreviewAutoSave]);
 
   const handlePreviewRedo = useCallback(async () => {
     const filePath = selectedPreviewHtmlRef.current;
@@ -5103,9 +2344,10 @@ const App: React.FC = () => {
       cachePreviewDoc(filePath, previewDoc);
       setSelectedPreviewDoc(previewDoc);
     }
+    await flushPendingPreviewSaves();
     setPreviewRefreshNonce((prev) => prev + 1);
     schedulePreviewAutoSave();
-  }, [cachePreviewDoc, schedulePreviewAutoSave]);
+  }, [cachePreviewDoc, flushPendingPreviewSaves, schedulePreviewAutoSave]);
 
   const runUndo = useCallback(() => {
     if (
@@ -5166,6 +2408,41 @@ const App: React.FC = () => {
     showTerminal,
   ]); // --- Keyboard Shortcuts ---
   useEffect(() => {
+    if (isCodePanelOpen) {
+      return;
+    }
+
+    if (interactionMode === "preview") {
+      rightPanelManualClosedRef.current = false;
+      setIsRightPanelOpen(false);
+      return;
+    }
+
+    if (interactionMode !== "edit") {
+      return;
+    }
+
+    if (rightPanelRestorePendingRef.current) {
+      rightPanelRestorePendingRef.current = false;
+      return;
+    }
+
+    if (selectedId !== lastEditSelectionRef.current) {
+      lastEditSelectionRef.current = selectedId;
+      rightPanelManualClosedRef.current = false;
+    }
+
+    if (!selectedId) {
+      setIsRightPanelOpen(false);
+      return;
+    }
+
+    if (!rightPanelManualClosedRef.current) {
+      setIsRightPanelOpen(true);
+    }
+  }, [interactionMode, isCodePanelOpen, selectedId]);
+
+  useEffect(() => {
     const isEditableTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
       const tag = target.tagName;
@@ -5206,6 +2483,20 @@ const App: React.FC = () => {
           setIsCodePanelOpen(false);
           return;
         }
+        if (key === "b") {
+          e.preventDefault();
+          setIsLeftPanelOpen(true);
+          return;
+        }
+        if (key === "i" && interactionModeRef.current === "edit") {
+          e.preventDefault();
+          rightPanelManualClosedRef.current = !isRightPanelOpen;
+          setIsRightPanelOpen((prev) => {
+            if (prev) return false;
+            return Boolean(selectedId);
+          });
+          return;
+        }
         if (key === "e") {
           e.preventDefault();
           setSidebarToolMode("edit");
@@ -5225,7 +2516,11 @@ const App: React.FC = () => {
         // Let native editor undo/redo work inside inputs/contentEditable.
         return;
       }
-      if (key === "escape" && isPageSwitchPromptOpen && !isPageSwitchPromptBusy) {
+      if (
+        key === "escape" &&
+        isPageSwitchPromptOpen &&
+        !isPageSwitchPromptBusy
+      ) {
         e.preventDefault();
         closePendingPageSwitchPrompt();
         return;
@@ -5241,7 +2536,7 @@ const App: React.FC = () => {
         if (key === "w") {
           e.preventDefault();
           if (!e.repeat) {
-            setIsLeftPanelOpen((prev) => !prev);
+            setIsLeftPanelOpen(true);
           }
           return;
         }
@@ -5270,6 +2565,20 @@ const App: React.FC = () => {
         setIsLeftPanelOpen(true);
         setIsRightPanelOpen(true);
         setIsCodePanelOpen(false);
+        return;
+      }
+      if (key === "b") {
+        e.preventDefault();
+        setIsLeftPanelOpen(true);
+        return;
+      }
+      if (key === "i" && interactionModeRef.current === "edit") {
+        e.preventDefault();
+        rightPanelManualClosedRef.current = !isRightPanelOpen;
+        setIsRightPanelOpen((prev) => {
+          if (prev) return false;
+          return Boolean(selectedId);
+        });
         return;
       }
       if (key === "p") {
@@ -5328,7 +2637,9 @@ const App: React.FC = () => {
     requestSwitchToPreviewMode,
     runRedo,
     runUndo,
+    selectedId,
     toggleZenMode,
+    isRightPanelOpen,
   ]);
 
   // --- Actions ---
@@ -5338,7 +2649,7 @@ const App: React.FC = () => {
       setPreviewSelectedPath(null);
       setPreviewSelectedElement(null);
       setPreviewSelectedComputedStyles(null);
-      if (deviceMode === "tablet") {
+      if (deviceMode === "tablet" && interactionModeRef.current === "edit") {
         setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
       }
@@ -5359,7 +2670,12 @@ const App: React.FC = () => {
   );
 
   const handleUpdateContent = useCallback(
-    (data: { content?: string; html?: string; src?: string; href?: string }) => {
+    (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
       if (!selectedId) return;
       const normalizedData =
         typeof data.html === "string" && typeof data.content !== "string"
@@ -5456,14 +2772,16 @@ const App: React.FC = () => {
     (type: string, position: "inside" | "before" | "after" = "inside") => {
       const idFor = createPresetIdFactory(type);
       const newElement =
-        buildPresetElement(type, idFor) ??
+        buildPresetElementV2(type, idFor) ??
         buildStandardElement(type, idFor("element"));
       const targetId = selectedId || root.id;
       const newRoot = addElementToTree(root, targetId, newElement, position);
       pushHistory(newRoot);
       setSelectedId(newElement.id);
+      setIsRightPanelOpen(true);
+      requestPropertiesPanelTab("content");
     },
-    [root, selectedId, pushHistory],
+    [root, selectedId, pushHistory, requestPropertiesPanelTab],
   );
 
   const handleDeleteElement = useCallback(() => {
@@ -5504,11 +2822,337 @@ const App: React.FC = () => {
   const handlePreviewRefresh = useCallback(() => {
     requestPreviewRefreshWithUnsavedGuard();
   }, [requestPreviewRefreshWithUnsavedGuard]);
+  const appendPdfAnnotationLog = useCallback(
+    (message: string, level: "info" | "warn" | "error" = "info") => {
+      dispatch(
+        addProcessingLog({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString(),
+          message,
+          level,
+        }),
+      );
+    },
+    [dispatch],
+  );
+  const runPdfAnnotationMapping = useCallback(
+    async (pdfPath: string, useCache: boolean) => {
+      if (!projectPath || isPdfAnnotationLoading) return;
+      const normalizedPdfPath = normalizePath(pdfPath);
+      const normalizedProject = normalizePath(projectPath);
+      dispatch(clearProcessingLogs());
+      appendPdfAnnotationLog("Starting PDF annotation mapping.");
+      if (useCache) {
+        appendPdfAnnotationLog("Checking local cache for previous results.");
+        const cache = readPdfAnnotationCache();
+        const cachedEntry =
+          cache?.projects?.[normalizedProject]?.entries?.[normalizedPdfPath];
+        if (cachedEntry) {
+          const cachedRecords = cachedEntry.records || [];
+          dispatch(setRecords(cachedRecords));
+          const metrics = evaluateAnnotationTypeClassifier(cachedRecords).micro;
+          dispatch(setClassifierMetrics(metrics as any));
+          dispatch(setFileName(cachedEntry.fileName || ""));
+          dispatch(setSourcePath(normalizedPdfPath));
+          dispatch(setError(null));
+          dispatch(setIsOpen(true));
+          dispatch(setFocusedAnnotation(null));
+          appendPdfAnnotationLog(
+            `Cache hit. Loaded ${cachedRecords.length} annotations.`,
+          );
+          return;
+        }
+        appendPdfAnnotationLog("Cache miss. Running full extraction.");
+      }
+
+      dispatch(setIsLoading(true));
+      dispatch(setError(null));
+      dispatch(setIsOpen(true));
+      dispatch(setFocusedAnnotation(null));
+      dispatch(setRecords([]));
+      try {
+        appendPdfAnnotationLog("Reading PDF file into memory.");
+        const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
+          normalizedPdfPath,
+        );
+        const pdfData = toByteArray(binaryData);
+        appendPdfAnnotationLog("Preparing PDF data for extraction.");
+        let preExtractedAnnotations: PdfAnnotationRecord[] | null = null;
+        try {
+          appendPdfAnnotationLog("Running background extractor script.");
+          const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+          const workerScriptPath = appRoot
+            ? `${appRoot}/scripts/pdf_annotation_worker.mjs`
+            : "";
+          const workerOutputPath = projectPath
+            ? `${normalizePath(projectPath)}/.nx_tmp_pdf_annotations_${Date.now()}.json`
+            : "";
+          if (workerScriptPath && workerOutputPath) {
+            const command = `node "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
+            const execResult = await (Neutralino as any).os.execCommand(
+              command,
+            );
+            if ((execResult?.exitCode ?? 1) === 0) {
+              appendPdfAnnotationLog("Parsing extractor output.");
+              const workerRaw = await (Neutralino as any).filesystem.readFile(
+                workerOutputPath,
+              );
+              const parsed = JSON.parse(String(workerRaw || "{}"));
+              if (Array.isArray(parsed?.annotations)) {
+                preExtractedAnnotations = parsed.annotations;
+                appendPdfAnnotationLog(
+                  `Extractor produced ${preExtractedAnnotations.length} annotations.`,
+                );
+              }
+            }
+            try {
+              await (Neutralino as any).filesystem.removeFile(workerOutputPath);
+            } catch {}
+          }
+        } catch (workerError) {
+          console.warn("Background PDF extraction failed:", workerError);
+          appendPdfAnnotationLog(
+            "Background extractor failed. No annotations returned.",
+            "warn",
+          );
+        }
+        if (!preExtractedAnnotations || preExtractedAnnotations.length === 0) {
+          throw new Error(
+            "Background PDF extractor failed or returned no annotations. In-app PDF worker fallback is disabled.",
+          );
+        }
+        appendPdfAnnotationLog("Mapping annotations to project files.");
+        const details = await buildMappedPdfAnnotations({
+          pdfData,
+          files,
+          absolutePathIndex: filePathIndexRef.current,
+          preExtractedAnnotations,
+          readBinaryFile: async (absolutePath: string) => {
+            const nextBinary = await (
+              Neutralino as any
+            ).filesystem.readBinaryFile(normalizePath(absolutePath));
+            const bytes = toByteArray(nextBinary);
+            const copy = new Uint8Array(bytes.byteLength);
+            copy.set(bytes);
+            return copy.buffer;
+          },
+        });
+        const fileName =
+          normalizePath(normalizedPdfPath)
+            .split("/")
+            .filter(Boolean)
+            .slice(-1)[0] || normalizedPdfPath;
+        dispatch(setRecords(details));
+        appendPdfAnnotationLog("Scoring annotation types.");
+        const metrics = evaluateAnnotationTypeClassifier(details).micro;
+        dispatch(setClassifierMetrics(metrics as any));
+        dispatch(setFileName(fileName));
+        dispatch(setSourcePath(normalizedPdfPath));
+        appendPdfAnnotationLog(
+          `Mapping complete. ${details.length} annotations ready.`,
+        );
+        appendPdfAnnotationLog("Caching results locally.");
+        writePdfAnnotationCache(
+          normalizedProject,
+          normalizedPdfPath,
+          fileName,
+          details,
+        );
+        appendPdfAnnotationLog("Results cached for faster reloads.");
+
+        // --- DEBUG EXPORT: Save mapping JSON to project root ---
+        try {
+          const debugOutputPath = `${normalizePath(projectPath)}/pdf_mapping_debug.json`;
+          await (Neutralino as any).filesystem.writeFile(
+            debugOutputPath,
+            JSON.stringify(details, null, 2),
+          );
+          console.log(
+            `[NX-DEBUG] Mapping JSON exported to: ${debugOutputPath}`,
+          );
+        } catch (exportError) {
+          console.warn(
+            "[NX-DEBUG] Failed to export mapping JSON:",
+            exportError,
+          );
+          appendPdfAnnotationLog(
+            "Debug export failed (non-blocking).",
+            "warn",
+          );
+        }
+      } catch (error) {
+        console.error("Failed to analyze annotated PDF:", error);
+        dispatch(setRecords([]));
+        dispatch(setClassifierMetrics(null));
+        dispatch(
+          setError(
+            error instanceof Error
+              ? error.message
+              : "Could not analyze this PDF inside the app.",
+          ),
+        );
+        appendPdfAnnotationLog(
+          error instanceof Error
+            ? `Error: ${error.message}`
+            : "Error: Could not analyze this PDF inside the app.",
+          "error",
+        );
+      } finally {
+        dispatch(setIsLoading(false));
+        appendPdfAnnotationLog("Processing finished.");
+      }
+    },
+    [
+      files,
+      isPdfAnnotationLoading,
+      projectPath,
+      readPdfAnnotationCache,
+      writePdfAnnotationCache,
+      dispatch,
+      appendPdfAnnotationLog,
+    ],
+  );
+  const handleOpenPdfAnnotationsPicker = useCallback(async () => {
+    if (!projectPath || isPdfAnnotationLoading) return;
+    if (pdfAnnotationRecords.length > 0) {
+      dispatch(setIsOpen(true));
+      return;
+    }
+
+    try {
+      const selections = await (Neutralino as any).os.showOpenDialog(
+        "Select annotated PDF",
+        {
+          multiSelections: false,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        },
+      );
+      const pdfPath = Array.isArray(selections) ? selections[0] : null;
+      if (!pdfPath) return;
+      await runPdfAnnotationMapping(pdfPath, true);
+    } catch (error) {
+      console.error("Failed to analyze annotated PDF:", error);
+      dispatch(setRecords([]));
+      dispatch(
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Could not analyze this PDF inside the app.",
+        ),
+      );
+    } finally {
+      // Loading handled by mapping helper.
+    }
+  }, [
+    isPdfAnnotationLoading,
+    pdfAnnotationRecords.length,
+    projectPath,
+    runPdfAnnotationMapping,
+    dispatch,
+  ]);
+  const handleRefreshPdfAnnotationMapping = useCallback(async () => {
+    if (!projectPath || isPdfAnnotationLoading) return;
+    try {
+      const selections = await (Neutralino as any).os.showOpenDialog(
+        "Select annotated PDF",
+        {
+          multiSelections: false,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        },
+      );
+      const pdfPath = Array.isArray(selections) ? selections[0] : null;
+      if (!pdfPath) return;
+      await runPdfAnnotationMapping(pdfPath, false);
+    } catch (error) {
+      console.error("Failed to refresh annotated PDF:", error);
+    }
+  }, [isPdfAnnotationLoading, projectPath, runPdfAnnotationMapping]);
+  const handleJumpToPdfAnnotation = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      if (!annotation.mappedFilePath) return;
+
+      const currentSlide = selectedPreviewHtmlRef.current;
+      const targetPath = normalizePath(annotation.mappedFilePath);
+      const normalizedCurrent = currentSlide ? normalizePath(currentSlide) : "";
+
+      const isTargetingCurrentSlide =
+        normalizedCurrent && targetPath === normalizedCurrent;
+      const hasInvocation = !!annotation.popupInvocation;
+
+      const isSharedPopup =
+        annotation.mappedFilePath.includes("/shared/") ||
+        annotation.detectedPageType === "Child/Popup" ||
+        hasInvocation;
+
+      console.log(`[NX-DEBUG] Jump Triggered:
+        Target: ${annotation.mappedFilePath}
+        Current: ${currentSlide}
+        Match: ${isTargetingCurrentSlide}
+        Type: ${annotation.detectedPageType}
+        Invocation: ${hasInvocation}
+      `);
+
+      // --- FIX: Logic for staying on context vs navigating ---
+      const isTargetingSlideButNotCurrent =
+        !isTargetingCurrentSlide &&
+        !annotation.mappedFilePath.includes("/shared/");
+
+      // If we are targeting the CURRENT slide OR it's a popup that belongs here, STAY.
+      if (isTargetingCurrentSlide) {
+        console.log(`[NX] Staying on current context. Same slide match.`);
+        dispatch(setFocusedAnnotation({ ...annotation }));
+        setPreviewMode("preview");
+        setInteractionMode("preview");
+        return;
+      }
+
+      // If it's a shared popup trigger BUT we are on some slide,
+      // check if we should navigate to the target slide first.
+      if (!isTargetingCurrentSlide && isTargetingSlideButNotCurrent) {
+        console.log(
+          `[NX] Navigating to target slide: ${annotation.mappedFilePath}`,
+        );
+        // Let it fall through to the navigation logic below
+      } else if (currentSlide && isSharedPopup) {
+        // This case handles truly "shared" resources that have no slide parent (legacy fallback)
+        console.log(`[NX] Shared popup case - staying on context.`);
+        dispatch(setFocusedAnnotation({ ...annotation }));
+        setPreviewMode("preview");
+        setInteractionMode("preview");
+        return;
+      }
+
+      dispatch(setFocusedAnnotation({ ...annotation }));
+      setSelectedId(null);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+      setSidebarToolMode("edit");
+      setPreviewMode("preview");
+      setInteractionMode("preview");
+      setActiveFileStable(annotation.mappedFilePath || "");
+      setPreviewSyncedFile(annotation.mappedFilePath);
+      setPreviewNavigationFile(annotation.mappedFilePath);
+      dispatch(setIsOpen(true));
+    },
+    [setActiveFileStable, dispatch],
+  );
   const openCodePanel = useCallback(() => {
-    setIsCodePanelOpen(true);
-    setIsLeftPanelOpen(false);
-    setIsRightPanelOpen(false);
-    setShowTerminal(false);
+    const currentPreview = selectedPreviewHtmlRef.current;
+    if (currentPreview && filesRef.current[currentPreview]?.type === "html") {
+      setActiveFileStable(currentPreview);
+      setPreviewSyncedFile((prev) =>
+        prev === currentPreview ? prev : currentPreview,
+      );
+      setPreviewNavigationFile((prev) =>
+        prev === currentPreview ? prev : currentPreview,
+      );
+    }
+    setIsDetachedEditorOpen(true);
+  }, [setActiveFileStable]);
+  const closeCodePanel = useCallback(() => {
+    setIsDetachedEditorOpen(false);
+    setIsCodePanelOpen(false);
   }, []);
   const toggleThemeWithTransition = useCallback(() => {
     if (themeTransitionInFlightRef.current) return;
@@ -5587,146 +3231,14 @@ const App: React.FC = () => {
     }
   };
 
-  const loadFileContent = useCallback(
-    async (
-      relativePath: string,
-      options?: {
-        persistToState?: boolean;
-      },
-    ) => {
-      const persistToState = options?.persistToState ?? true;
-      const target = filesRef.current[relativePath];
-      if (!target) return;
-
-      if (typeof target.content === "string" && target.content.length > 0) {
-        if (target.type === "image" || target.type === "font") {
-          binaryAssetUrlCacheRef.current[relativePath] = target.content;
-          return target.content;
-        }
-        textFileCacheRef.current[relativePath] = target.content;
-        if (persistToState) {
-          persistLoadedContentToState(relativePath, target.content);
-        }
-        return target.content;
-      }
-
-      const cachedText = textFileCacheRef.current[relativePath];
-      if (typeof cachedText === "string" && cachedText.length > 0) {
-        if (persistToState) {
-          persistLoadedContentToState(relativePath, cachedText);
-        }
-        return cachedText;
-      }
-
-      const cachedBinary = binaryAssetUrlCacheRef.current[relativePath];
-      if (
-        (target.type === "image" || target.type === "font") &&
-        typeof cachedBinary === "string" &&
-        cachedBinary.length > 0
-      ) {
-        return cachedBinary;
-      }
-
-      const existingPending = loadingFilePromisesRef.current[relativePath];
-      if (existingPending) {
-        if (
-          !persistToState ||
-          target.type === "image" ||
-          target.type === "font"
-        ) {
-          return existingPending;
-        }
-        return existingPending.then((content) => {
-          if (typeof content === "string" && content.length > 0) {
-            persistLoadedContentToState(relativePath, content);
-          }
-          return content;
-        });
-      }
-
-      const absolutePath = filePathIndexRef.current[relativePath];
-      if (!absolutePath) return;
-
-      const pending = (async (): Promise<string | undefined> => {
-        loadingFilesRef.current.add(relativePath);
-        try {
-          let content = "";
-          if (target.type === "image" || target.type === "font") {
-            const binaryData = await (
-              Neutralino as any
-            ).filesystem.readBinaryFile(absolutePath);
-            const bytes = toByteArray(binaryData);
-            if (bytes.length === 0) return;
-            const mime = mimeFromType(target.type, target.name);
-            const sourceBuffer = bytes.buffer;
-            const binaryBuffer: ArrayBuffer =
-              sourceBuffer instanceof ArrayBuffer
-                ? sourceBuffer.slice(
-                    bytes.byteOffset,
-                    bytes.byteOffset + bytes.byteLength,
-                  )
-                : (() => {
-                    const copy = new Uint8Array(bytes.byteLength);
-                    copy.set(bytes);
-                    return copy.buffer;
-                  })();
-            const blob = new Blob([binaryBuffer], { type: mime });
-            const previousUrl = binaryAssetUrlCacheRef.current[relativePath];
-            if (previousUrl && previousUrl.startsWith("blob:")) {
-              try {
-                URL.revokeObjectURL(previousUrl);
-              } catch {
-                // Ignore stale blob revocation errors.
-              }
-            }
-            content = URL.createObjectURL(blob);
-            binaryAssetUrlCacheRef.current[relativePath] = content;
-          } else {
-            const loaded = await (Neutralino as any).filesystem.readFile(
-              absolutePath,
-            );
-            content = typeof loaded === "string" ? loaded : String(loaded || "");
-            if (content.length > 0) {
-              textFileCacheRef.current[relativePath] = content;
-            }
-          }
-
-          const existingRefEntry = filesRef.current[relativePath];
-          if (existingRefEntry) {
-            filesRef.current = {
-              ...filesRef.current,
-              [relativePath]: {
-                ...existingRefEntry,
-                content,
-              },
-            };
-          }
-
-          if (persistToState && content.length > 0) {
-            persistLoadedContentToState(relativePath, content);
-          }
-
-          return content;
-        } catch (error) {
-          console.warn(`Failed loading file content for ${relativePath}:`, error);
-        } finally {
-          loadingFilesRef.current.delete(relativePath);
-          delete loadingFilePromisesRef.current[relativePath];
-        }
-      })();
-
-      loadingFilePromisesRef.current[relativePath] = pending;
-      return pending;
-    },
-    [persistLoadedContentToState],
-  );
-
   // --- Neutralino File System Integration ---
-  const handleOpenFolder = async () => {
+  const handleOpenFolder = async (preselectedFolder?: string | null) => {
     try {
-      const selectedFolder = await (Neutralino as any).os.showFolderDialog(
-        "Select project folder",
-      );
+      const selectedFolder =
+        preselectedFolder ||
+        (await (Neutralino as any).os.showFolderDialog(
+          "Select project folder",
+        ));
       if (!selectedFolder) return;
 
       setIsLeftPanelOpen(true);
@@ -5812,6 +3324,7 @@ const App: React.FC = () => {
         };
         await walkShared(sharedBase);
       };
+
       const patchMtVeevaCheck = async (sharedRoot: string): Promise<void> => {
         const mtPath = joinPath(sharedRoot, "js/mt.js");
         let raw = "";
@@ -5824,80 +3337,91 @@ const App: React.FC = () => {
           );
           return;
         }
-
         if (typeof raw !== "string" || raw.length === 0) return;
 
         const markerStart = "// nocode-x-veeva-bypass:start";
         const markerEnd = "// nocode-x-veeva-bypass:end";
+        const markerVersion = "// nocode-x-veeva-bypass:v4";
+
         const markerBlock = `
-        ${markerStart}
-        try {
-            var host = (window.location && window.location.hostname) ? window.location.hostname : "";
-            var isLocalPreviewHost = (host === "127.0.0.1" || host === "localhost");
-            var isInIframe = window.parent && window.parent !== window;
-            if (isLocalPreviewHost && isInIframe) {
-                try {
-                    if (!window.__nocodeXPreviewConsoleBridge) {
-                        window.__nocodeXPreviewConsoleBridge = true;
-                        var toText = function(v) {
-                            if (typeof v === "string") return v;
-                            try { return JSON.stringify(v); } catch (_e) { return String(v); }
-                        };
-                        var postToHost = function(level, args, source) {
-                            if (typeof window.parent.postMessage !== "function") return;
-                            var msg = Array.prototype.map.call(args || [], toText).join(" ");
-                            window.parent.postMessage({
-                                type: "PREVIEW_CONSOLE",
-                                level: level,
-                                source: source || "preview",
-                                message: msg
-                            }, "*");
-                        };
-                        ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-                            if (!window.console || typeof window.console[level] !== "function") return;
-                            var original = window.console[level].bind(window.console);
-                            window.console[level] = function() {
-                                try { postToHost(level, arguments, "console"); } catch (_e) {}
-                                return original.apply(window.console, arguments);
-                            };
-                        });
-                        window.addEventListener("error", function(ev) {
-                            try {
-                                postToHost("error", [ev.message, ev.filename + ":" + ev.lineno + ":" + ev.colno], "window.onerror");
-                            } catch (_e) {}
-                        });
-                        window.addEventListener("unhandledrejection", function(ev) {
-                            try {
-                                var reason = ev && ev.reason ? ev.reason : "Unhandled promise rejection";
-                                postToHost("error", [reason], "unhandledrejection");
-                            } catch (_e) {}
-                        });
-                    }
-                } catch (e) {}
-                try {
-                    if (window.com && com.veeva && com.veeva.clm && typeof com.veeva.clm.isEngage === "function") {
-                        com.veeva.clm.isEngage = function() { return false; };
-                    }
-                } catch (e) {}
-                if (typeof window.parent.postMessage === "function") {
-                    window.parent.postMessage({
-                        type: "PREVIEW_PATH_CHANGED",
-                        path: window.location.pathname || ""
-                    }, "*");
-                }
-                try { console.log("[NoCodeX] Preview Veeva bypass active"); } catch (e) {}
-                return false;
-            }
-        } catch (e) {}
-        ${markerEnd}
+  ${markerStart}
+  ${markerVersion}
+  try {
+    var host = (window.location && window.location.hostname) ? window.location.hostname : "";
+    var isLocalPreviewHost = (host === "127.0.0.1" || host === "localhost");
+    var isInIframe = window.parent && window.parent !== window;
+    if (isLocalPreviewHost && isInIframe) {
+      try {
+        if (!window.__nocodeXPreviewConsoleBridge) {
+          window.__nocodeXPreviewConsoleBridge = true;
+          var toText = function(v) {
+            if (typeof v === "string") return v;
+            try { return JSON.stringify(v); } catch (_e) { return String(v); }
+          };
+          var postToHost = function(level, args, source) {
+            if (typeof window.parent.postMessage !== "function") return;
+            var msg = Array.prototype.map.call(args || [], toText).join(" ");
+            window.parent.postMessage({
+              type: "PREVIEW_CONSOLE",
+              level: level,
+              source: source || "preview",
+              message: msg
+            }, "*");
+          };
+          ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+            if (!window.console || typeof window.console[level] !== "function") return;
+            var original = window.console[level].bind(window.console);
+            window.console[level] = function() {
+              try { postToHost(level, arguments, "console"); } catch (_e) {}
+              return original.apply(window.console, arguments);
+            };
+          });
+          window.addEventListener("error", function(ev) {
+            try {
+              postToHost("error", [ev.message, ev.filename + ":" + ev.lineno + ":" + ev.colno], "window.onerror");
+            } catch (_e) {}
+          });
+          window.addEventListener("unhandledrejection", function(ev) {
+            try {
+              var reason = ev && ev.reason ? ev.reason : "Unhandled promise rejection";
+              postToHost("error", [reason], "unhandledrejection");
+            } catch (_e) {}
+          });
+        }
+      } catch (e) {}
+      try {
+        if (window.com && com.veeva && com.veeva.clm && typeof com.veeva.clm.isEngage === "function") {
+          com.veeva.clm.isEngage = function() { return false; };
+        }
+      } catch (e) {}
+      if (typeof window.parent.postMessage === "function") {
+        window.parent.postMessage({
+          type: "PREVIEW_PATH_CHANGED",
+          path: window.location.pathname || ""
+        }, "*");
+      }
+      try { console.log("[NoCodeX] Preview Veeva bypass active"); } catch (e) {}
+      return false;
+    }
+  } catch (e) {}
+  ${markerEnd}
 `;
+
         const patchTargetRegex = /isVeevaEnvironment:\s*function\s*\(\)\s*\{/;
         let patched = raw;
 
         if (raw.includes(markerStart) && raw.includes(markerEnd)) {
           const startIndex = raw.indexOf(markerStart);
-          const endMarkerIndex = raw.indexOf(markerEnd, startIndex);
-          const endLineIndex = raw.indexOf("\n", endMarkerIndex);
+          const endIndex = raw.indexOf(markerEnd, startIndex);
+          const existingBlock =
+            startIndex >= 0 && endIndex > startIndex
+              ? raw.slice(startIndex, endIndex + markerEnd.length)
+              : "";
+          const isCurrent = existingBlock.includes(markerVersion);
+          if (isCurrent) {
+            return;
+          }
+          const endLineIndex = raw.indexOf("\n", endIndex);
           const afterEnd = endLineIndex >= 0 ? endLineIndex + 1 : raw.length;
           patched = `${raw.slice(0, startIndex)}${markerBlock}${raw.slice(afterEnd)}`;
         } else if (patchTargetRegex.test(raw)) {
@@ -5913,6 +3437,7 @@ const App: React.FC = () => {
         }
 
         if (patched === raw) return;
+
         try {
           await (Neutralino as any).filesystem.writeFile(mtPath, patched);
           console.log("[Preview] Applied mt.js Veeva bypass patch:", mtPath);
@@ -6153,6 +3678,12 @@ const App: React.FC = () => {
       setDirtyPathKeysByFile({});
       setFiles(fsFiles);
       setProjectPath(rootPath);
+      setRecentProjects((prev) =>
+        [
+          rootPath,
+          ...prev.filter((entry) => normalizePath(entry) !== rootPath),
+        ].slice(0, 5),
+      );
       setPreviewMountBasePath(mountBasePath);
       setIsPreviewMountReady(mountReady);
 
@@ -6165,7 +3696,9 @@ const App: React.FC = () => {
       setPreviewSyncedFile(initialFile);
       setPreviewNavigationFile(initialFile);
       selectedPreviewHtmlRef.current =
-        initialFile && fsFiles[initialFile]?.type === "html" ? initialFile : null;
+        initialFile && fsFiles[initialFile]?.type === "html"
+          ? initialFile
+          : null;
       setSidebarToolMode("edit");
       setPreviewMode("preview");
       setInteractionMode("preview");
@@ -6174,6 +3707,63 @@ const App: React.FC = () => {
       alert("Could not open folder. Please try again.");
     }
   };
+  useEffect(() => {
+    if (!projectPath) {
+      dispatch(setRecords([]));
+      dispatch(setFileName(""));
+      dispatch(setSourcePath(null));
+      dispatch(setClassifierMetrics(null));
+      dispatch(setError(null));
+      dispatch(setIsOpen(false));
+      dispatch(setIsLoading(false));
+      dispatch(setFocusedAnnotation(null));
+      return;
+    }
+    const cache = readPdfAnnotationCache();
+    const normalizedProject = normalizePath(projectPath);
+    const cachedProject = cache?.projects?.[normalizedProject];
+    const cachedPath = cachedProject?.lastPdfPath || null;
+    if (cachedPath && cachedProject?.entries?.[cachedPath]) {
+      const cachedEntry = cachedProject.entries[cachedPath];
+      const cachedRecords = cachedEntry.records || [];
+      dispatch(setRecords(cachedRecords));
+      const metrics = evaluateAnnotationTypeClassifier(cachedRecords).micro;
+      dispatch(setClassifierMetrics(metrics as any));
+      dispatch(setFileName(cachedEntry.fileName || ""));
+      dispatch(setSourcePath(cachedPath));
+      dispatch(setIsOpen(false));
+    } else {
+      dispatch(setRecords([]));
+      dispatch(setFileName(""));
+      dispatch(setSourcePath(null));
+      dispatch(setClassifierMetrics(null));
+    }
+    dispatch(setError(null));
+    dispatch(setIsLoading(false));
+    dispatch(setFocusedAnnotation(null));
+  }, [projectPath, readPdfAnnotationCache, dispatch]);
+  useEffect(() => {
+    if (!focusedPdfAnnotation) return;
+    const timer = window.setTimeout(() => {
+      dispatch(setFocusedAnnotation(null));
+    }, 4500);
+    return () => window.clearTimeout(timer);
+  }, [focusedPdfAnnotation]);
+  useEffect(() => {
+    const handlePointer = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        quickTextEditRef.current &&
+        target &&
+        quickTextEditRef.current.contains(target)
+      ) {
+        return;
+      }
+      hideQuickTextEdit();
+    };
+    window.addEventListener("mousedown", handlePointer);
+    return () => window.removeEventListener("mousedown", handlePointer);
+  }, [hideQuickTextEdit]);
   const ensureDirectoryTree = useCallback(async (absolutePath: string) => {
     const normalized = normalizePath(absolutePath).replace(/[\\/]$/, "");
     if (!normalized) return;
@@ -6203,6 +3793,449 @@ const App: React.FC = () => {
       }
     }
   }, []);
+  const ensureDirectoryForFile = useCallback(
+    async (absoluteFilePath: string) => {
+      const parent = getParentPath(normalizePath(absoluteFilePath));
+      if (!parent) return;
+      await ensureDirectoryTree(parent);
+    },
+    [ensureDirectoryTree],
+  );
+  const dataUrlToBytes = useCallback((dataUrl: string): Uint8Array => {
+    const base64 = dataUrl.split(",")[1] || "";
+    const binary = window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }, []);
+  const resolveScreenshotIndexPath = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${SCREENSHOT_INDEX_FILE}`;
+  }, [projectPath]);
+  const resolveScreenshotDir = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${SCREENSHOT_DIR}`;
+  }, [projectPath]);
+  const resolvePdfExportDir = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${PDF_EXPORT_DIR}`;
+  }, [projectPath]);
+  const resolvePreviewAssetUrl = useCallback(
+    (rawUrl: string | null | undefined) => {
+      if (!rawUrl) return rawUrl || null;
+      if (isExternalUrl(rawUrl)) return rawUrl;
+      if (!projectPath || !previewMountBasePath) return rawUrl;
+      const cleaned = rawUrl.split("#")[0].split("?")[0];
+      const basePath = selectedPreviewHtmlRef.current || "";
+      const normalizedRelative = cleaned.startsWith("/")
+        ? normalizeProjectRelative(cleaned.slice(1))
+        : resolveProjectRelativePath(basePath, cleaned) || cleaned;
+      const absolutePath =
+        filePathIndexRef.current[normalizedRelative] ||
+        normalizePath(joinPath(projectPath, normalizedRelative));
+      const relativePath = toMountRelativePath(
+        previewMountBasePath,
+        absolutePath,
+      );
+      if (!relativePath) return rawUrl;
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
+      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
+      return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
+    },
+    [projectPath, previewMountBasePath],
+  );
+  const loadScreenshotIndex = useCallback(async () => {
+    const indexPath = resolveScreenshotIndexPath();
+    if (!indexPath) return [];
+    try {
+      const raw = await (Neutralino as any).filesystem.readFile(indexPath);
+      const parsed = JSON.parse(String(raw || "[]"));
+      if (Array.isArray(parsed)) {
+        return parsed as ScreenshotMetadata[];
+      }
+    } catch {
+      // Ignore missing or malformed index.
+    }
+    return [];
+  }, [resolveScreenshotIndexPath]);
+  const writeScreenshotIndex = useCallback(
+    async (items: ScreenshotMetadata[]) => {
+      const indexPath = resolveScreenshotIndexPath();
+      if (!indexPath) return;
+      await ensureDirectoryForFile(indexPath);
+      await (Neutralino as any).filesystem.writeFile(
+        indexPath,
+        JSON.stringify(items, null, 2),
+      );
+    },
+    [ensureDirectoryForFile, resolveScreenshotIndexPath],
+  );
+  const findVisiblePopupInDoc = useCallback((doc: Document | null) => {
+    if (!doc) return null;
+    const selectors = [
+      "[data-popup-id]",
+      ".modal",
+      ".dialog",
+      "[role='dialog']",
+      ".popup",
+    ];
+    const candidates = selectors
+      .flatMap((selector) =>
+        Array.from(doc.querySelectorAll(selector)) as HTMLElement[],
+      )
+      .filter(Boolean);
+    for (const el of candidates) {
+      const style = doc.defaultView?.getComputedStyle(el);
+      if (!style) continue;
+      if (style.display === "none" || style.visibility === "hidden") continue;
+      if (Number.parseFloat(style.opacity || "1") <= 0.05) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      const popupId = el.getAttribute("data-popup-id") || el.id || null;
+      const popupSelector = el.getAttribute("data-popup-id")
+        ? `[data-popup-id="${el.getAttribute("data-popup-id")}"]`
+        : el.id
+          ? `#${el.id}`
+          : null;
+      return { popupId, popupSelector };
+    }
+    return null;
+  }, []);
+  const openPopupInPreview = useCallback(
+    (selector: string | null, popupId: string | null) => {
+      const doc =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!doc) return false;
+      let target: HTMLElement | null = null;
+      if (selector) {
+        target = doc.querySelector(selector) as HTMLElement | null;
+      }
+      if (!target && popupId) {
+        target = doc.querySelector(
+          `[data-popup-id="${popupId}"], #${popupId}`,
+        ) as HTMLElement | null;
+      }
+      if (!target) return false;
+      target.style.display = target.style.display || "block";
+      target.style.visibility = "visible";
+      target.style.opacity = target.style.opacity || "1";
+      target.classList.add("open", "active", "show");
+      target.classList.remove("hidden", "is-hidden", "closed");
+      target.removeAttribute("hidden");
+      target.setAttribute("aria-hidden", "false");
+      target.style.pointerEvents = "auto";
+      target.scrollIntoView({ block: "center", inline: "center" });
+      return true;
+    },
+    [],
+  );
+  const handleScreenshotCapture = useCallback(async () => {
+    if (!projectPath || screenshotCaptureBusy) return;
+    const doc =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!doc?.body) return;
+    setScreenshotCaptureBusy(true);
+    try {
+      const popupInfo = findVisiblePopupInDoc(doc);
+      const createdAt = new Date();
+      const slidePath = selectedPreviewHtmlRef.current || null;
+      const slideId = slidePath
+        ? normalizePath(slidePath).split("/").filter(Boolean).slice(-2)[0] ||
+          null
+        : null;
+      const timestamp = createdAt.getTime();
+      const randTag = Math.random().toString(36).slice(2, 8);
+      // Keep filenames short to avoid Windows path length limits.
+      const baseName = `screenshot-${timestamp}-${randTag}`;
+      const imageRelPath = `${SCREENSHOT_DIR}/${baseName}.png`;
+      const jsonRelPath = `${SCREENSHOT_DIR}/${baseName}.json`;
+      const absImagePath = `${normalizePath(projectPath)}/${imageRelPath}`;
+      const absJsonPath = `${normalizePath(projectPath)}/${jsonRelPath}`;
+      await ensureDirectoryForFile(absImagePath);
+      const canvas = await html2canvas(doc.body, {
+        backgroundColor: null,
+        useCORS: true,
+        scale: Math.max(1, window.devicePixelRatio || 1),
+        onclone: (clonedDoc) => {
+          const images = clonedDoc.querySelectorAll("img");
+          images.forEach((img) => {
+            const next = resolvePreviewAssetUrl(img.getAttribute("src"));
+            if (next) img.setAttribute("src", next);
+          });
+          const sources = clonedDoc.querySelectorAll("source");
+          sources.forEach((source) => {
+            const next = resolvePreviewAssetUrl(source.getAttribute("src"));
+            if (next) source.setAttribute("src", next);
+          });
+          const links = clonedDoc.querySelectorAll("link[rel='stylesheet']");
+          links.forEach((link) => {
+            const next = resolvePreviewAssetUrl(link.getAttribute("href"));
+            if (next) link.setAttribute("href", next);
+          });
+        },
+      });
+      const dataUrl = canvas.toDataURL("image/png");
+      const bytes = dataUrlToBytes(dataUrl);
+      await (Neutralino as any).filesystem.writeBinaryFile(
+        absImagePath,
+        bytes,
+      );
+      const metadata: ScreenshotMetadata = {
+        id: `${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: createdAt.toISOString(),
+        projectPath: normalizePath(projectPath),
+        slidePath,
+        slideId,
+        popupId: popupInfo?.popupId || null,
+        popupSelector: popupInfo?.popupSelector || null,
+        deviceMode,
+        tabletModel,
+        tabletOrientation,
+        frameZoom,
+        viewportWidth: doc.body.scrollWidth,
+        viewportHeight: doc.body.scrollHeight,
+        previewMode,
+        interactionMode,
+        imagePath: imageRelPath,
+        imageFileName: `${baseName}.png`,
+      };
+      await ensureDirectoryForFile(absJsonPath);
+      await (Neutralino as any).filesystem.writeFile(
+        absJsonPath,
+        JSON.stringify(metadata, null, 2),
+      );
+      const existing = await loadScreenshotIndex();
+      const nextIndex = [metadata, ...existing];
+      await writeScreenshotIndex(nextIndex);
+      setScreenshotItems(nextIndex);
+    } catch (error) {
+      console.error("Screenshot capture failed:", error);
+      window.alert("Screenshot capture failed. Check console for details.");
+    } finally {
+      setScreenshotCaptureBusy(false);
+    }
+  }, [
+    projectPath,
+    screenshotCaptureBusy,
+    deviceMode,
+    tabletModel,
+    tabletOrientation,
+    frameZoom,
+    previewMode,
+    interactionMode,
+    dataUrlToBytes,
+    ensureDirectoryForFile,
+    findVisiblePopupInDoc,
+    loadScreenshotIndex,
+    resolvePreviewAssetUrl,
+    writeScreenshotIndex,
+  ]);
+  const loadGalleryItems = useCallback(async () => {
+    const items = await loadScreenshotIndex();
+    setScreenshotItems(items);
+    if (!projectPath) return items;
+    const nextUrls: Record<string, string> = {};
+    await Promise.all(
+      items.map(async (item) => {
+        const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
+        try {
+          const binary = await (Neutralino as any).filesystem.readBinaryFile(
+            absImage,
+          );
+          const bytes = toByteArray(binary);
+          const arrayBuffer = bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+          ) as ArrayBuffer;
+          const blob = new Blob([arrayBuffer], { type: "image/png" });
+          nextUrls[item.id] = URL.createObjectURL(blob);
+        } catch (error) {
+          console.warn("Failed to read screenshot image:", error);
+        }
+      }),
+    );
+    setScreenshotPreviewUrls((prev) => {
+      Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
+      return nextUrls;
+    });
+    return items;
+  }, [loadScreenshotIndex, projectPath]);
+  const openScreenshotGallery = useCallback(
+    async (captureNow: boolean) => {
+      if (!SHOW_SCREENSHOT_FEATURES) return;
+      if (!projectPath) return;
+      if (!screenshotSessionRestore) {
+        setScreenshotSessionRestore({
+          leftOpen: isLeftPanelOpen,
+          rightOpen: isRightPanelOpen,
+          rightMode: rightPanelMode,
+        });
+      }
+      setIsLeftPanelOpen(false);
+      setIsRightPanelOpen(true);
+      setRightPanelMode("gallery");
+      setIsScreenshotGalleryOpen(true);
+      await loadGalleryItems();
+      if (captureNow) {
+        void handleScreenshotCapture();
+      }
+    },
+    [
+      projectPath,
+      screenshotSessionRestore,
+      isLeftPanelOpen,
+      isRightPanelOpen,
+      rightPanelMode,
+      loadGalleryItems,
+      handleScreenshotCapture,
+      SHOW_SCREENSHOT_FEATURES,
+    ],
+  );
+  const closeScreenshotGallery = useCallback(() => {
+    setIsScreenshotGalleryOpen(false);
+    if (screenshotSessionRestore) {
+      setIsLeftPanelOpen(screenshotSessionRestore.leftOpen);
+      setIsRightPanelOpen(screenshotSessionRestore.rightOpen);
+      setRightPanelMode(screenshotSessionRestore.rightMode);
+      setScreenshotSessionRestore(null);
+      return;
+    }
+    setRightPanelMode("inspector");
+  }, [screenshotSessionRestore]);
+  useEffect(() => {
+    if (rightPanelMode === "gallery" && !isRightPanelOpen) {
+      closeScreenshotGallery();
+    }
+  }, [rightPanelMode, isRightPanelOpen, closeScreenshotGallery]);
+  useEffect(() => {
+    if (isScreenshotGalleryOpen) {
+      void loadGalleryItems();
+    }
+  }, [isScreenshotGalleryOpen, loadGalleryItems]);
+  useEffect(() => {
+    if (!isScreenshotGalleryOpen && rightPanelMode === "gallery") {
+      setRightPanelMode("inspector");
+    }
+  }, [isScreenshotGalleryOpen, rightPanelMode, SHOW_SCREENSHOT_FEATURES]);
+  useEffect(() => {
+    if (!SHOW_SCREENSHOT_FEATURES) {
+      if (isScreenshotGalleryOpen) {
+        setIsScreenshotGalleryOpen(false);
+      }
+      if (rightPanelMode === "gallery") {
+        setRightPanelMode("inspector");
+      }
+    }
+  }, [isScreenshotGalleryOpen, rightPanelMode]);
+  const handleOpenScreenshotItem = useCallback(
+    async (item: ScreenshotMetadata) => {
+      if (!item.slidePath) return;
+      setPreviewMode("preview");
+      setInteractionMode("preview");
+      setSelectedId(null);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+      setPreviewNavigationFile(item.slidePath);
+      pendingPopupOpenRef.current = {
+        selector: item.popupSelector,
+        popupId: item.popupId,
+      };
+      window.setTimeout(() => {
+        if (!pendingPopupOpenRef.current) return;
+        const success = openPopupInPreview(
+          pendingPopupOpenRef.current.selector,
+          pendingPopupOpenRef.current.popupId,
+        );
+        if (success) {
+          pendingPopupOpenRef.current = null;
+        }
+      }, 700);
+    },
+    [openPopupInPreview],
+  );
+  const handleDeleteScreenshotItem = useCallback(
+    async (item: ScreenshotMetadata) => {
+      if (!projectPath) return;
+      const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
+      const absJson = absImage.replace(/\.png$/i, ".json");
+      try {
+        await (Neutralino as any).filesystem.remove(absImage);
+      } catch {}
+      try {
+        await (Neutralino as any).filesystem.remove(absJson);
+      } catch {}
+      const nextItems = screenshotItems.filter((entry) => entry.id !== item.id);
+      setScreenshotItems(nextItems);
+      setScreenshotPreviewUrls((prev) => {
+        const next = { ...prev };
+        if (next[item.id]) {
+          URL.revokeObjectURL(next[item.id]);
+          delete next[item.id];
+        }
+        return next;
+      });
+      await writeScreenshotIndex(nextItems);
+    },
+    [projectPath, screenshotItems, writeScreenshotIndex],
+  );
+  const handleRevealScreenshotsFolder = useCallback(async () => {
+    const folderPath = resolveScreenshotDir();
+    if (!folderPath) return;
+    try {
+      await (Neutralino as any).os.open({ url: folderPath });
+    } catch (error) {
+      console.warn("Failed to open screenshots folder:", error);
+    }
+  }, [resolveScreenshotDir]);
+  const handleExportEditablePdf = useCallback(async () => {
+    if (!projectPath || isPdfExporting) return;
+    const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+    const scriptPath = appRoot
+      ? `${appRoot}/scripts/export_slides_pdf.mjs`
+      : "";
+    if (!scriptPath) return;
+    const exportDir = resolvePdfExportDir();
+    if (!exportDir) return;
+    setIsPdfExporting(true);
+    setPdfExportLogs(["Starting editable PDF export..."]);
+    try {
+      await ensureDirectoryTree(exportDir);
+      const command = `node "${scriptPath}" "${normalizePath(
+        projectPath,
+      )}" "${exportDir}"`;
+      const execResult = await (Neutralino as any).os.execCommand(command);
+      const output = String(execResult?.stdOut || "").trim();
+      const errorOutput = String(execResult?.stdErr || "").trim();
+      const nextLogs: string[] = [];
+      if (output) nextLogs.push(...output.split(/\r?\n/));
+      if (errorOutput) nextLogs.push(...errorOutput.split(/\r?\n/));
+      if ((execResult?.exitCode ?? 1) !== 0) {
+        nextLogs.push("Export failed. See logs above.");
+      } else if (nextLogs.length === 0) {
+        nextLogs.push("Export finished.");
+      }
+      setPdfExportLogs((prev) => [...prev, ...nextLogs]);
+    } catch (error) {
+      console.error("Editable PDF export failed:", error);
+      setPdfExportLogs((prev) => [
+        ...prev,
+        "Export failed. Check console for details.",
+      ]);
+    } finally {
+      setIsPdfExporting(false);
+    }
+  }, [projectPath, isPdfExporting, ensureDirectoryTree, resolvePdfExportDir]);
+  const clearPdfExportLogs = useCallback(() => {
+    setPdfExportLogs([]);
+  }, []);
   const refreshProjectFiles = useCallback(async () => {
     if (!projectPath) return;
     if (isRefreshingFilesRef.current) return;
@@ -6223,11 +4256,18 @@ const App: React.FC = () => {
         const cachedText = textFileCacheRef.current[normalizedVirtual];
         const cachedBinary = binaryAssetUrlCacheRef.current[normalizedVirtual];
         let content: string | Blob = "";
-        if (oldEntry && typeof oldEntry.content === "string" && oldEntry.content.length > 0) {
+        if (
+          oldEntry &&
+          typeof oldEntry.content === "string" &&
+          oldEntry.content.length > 0
+        ) {
           content = oldEntry.content;
         } else if (typeof cachedText === "string" && cachedText.length > 0) {
           content = cachedText;
-        } else if (typeof cachedBinary === "string" && cachedBinary.length > 0) {
+        } else if (
+          typeof cachedBinary === "string" &&
+          cachedBinary.length > 0
+        ) {
           content = cachedBinary;
         }
         nextFiles[normalizedVirtual] = {
@@ -6240,9 +4280,12 @@ const App: React.FC = () => {
       };
 
       const walkDirectory = async (directoryPath: string): Promise<void> => {
-        const entries = await (Neutralino as any).filesystem.readDirectory(directoryPath);
+        const entries = await (Neutralino as any).filesystem.readDirectory(
+          directoryPath,
+        );
         for (const entry of entries as Array<{ entry: string; type: string }>) {
-          if (!entry?.entry || entry.entry === "." || entry.entry === "..") continue;
+          if (!entry?.entry || entry.entry === "." || entry.entry === "..")
+            continue;
           const absolutePath = joinPath(directoryPath, entry.entry);
           if (entry.type === "DIRECTORY") {
             if (IGNORED_FOLDERS.has(entry.entry.toLowerCase())) continue;
@@ -6262,7 +4305,9 @@ const App: React.FC = () => {
 
       await walkDirectory(rootPath);
 
-      for (const [virtualPath, absolutePath] of Object.entries(filePathIndexRef.current)) {
+      for (const [virtualPath, absolutePath] of Object.entries(
+        filePathIndexRef.current,
+      )) {
         if (!virtualPath.toLowerCase().startsWith("shared/")) continue;
         if (absolutePathIndex[virtualPath]) continue;
         try {
@@ -6282,20 +4327,28 @@ const App: React.FC = () => {
           ),
         ),
       );
-      setCodeDirtyPathSet((prev) =>
-        Object.fromEntries(
-          Object.entries(prev).filter(
-            ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
-          ),
-        ) as Record<string, true>,
+      setCodeDirtyPathSet(
+        (prev) =>
+          Object.fromEntries(
+            Object.entries(prev).filter(
+              ([path]) =>
+                nextFiles[path] && isTextFileType(nextFiles[path].type),
+            ),
+          ) as Record<string, true>,
       );
       setDirtyFiles((prev) => prev.filter((path) => Boolean(nextFiles[path])));
 
       const existingActive = activeFileRef.current;
+      const preferredPreview = selectedPreviewHtmlRef.current;
       if (!existingActive || !nextFiles[existingActive]) {
         const fallback =
+          (preferredPreview && nextFiles[preferredPreview]
+            ? preferredPreview
+            : null) ??
           pickDefaultHtmlFile(nextFiles) ??
-          Object.keys(nextFiles).find((path) => isTextFileType(nextFiles[path].type)) ??
+          Object.keys(nextFiles).find((path) =>
+            isTextFileType(nextFiles[path].type),
+          ) ??
           null;
         setActiveFileStable(fallback);
         setPreviewSyncedFile(fallback);
@@ -6340,15 +4393,28 @@ const App: React.FC = () => {
       }
       await refreshProjectFiles();
       setActiveFileStable(nextVirtual);
-      setPreviewSyncedFile((prev) => (prev === nextVirtual ? prev : nextVirtual));
-      setPreviewNavigationFile((prev) => (prev === nextVirtual ? prev : nextVirtual));
+      setPreviewSyncedFile((prev) =>
+        prev === nextVirtual ? prev : nextVirtual,
+      );
+      setPreviewNavigationFile((prev) =>
+        prev === nextVirtual ? prev : nextVirtual,
+      );
       setIsLeftPanelOpen(true);
     },
-    [ensureDirectoryTree, projectPath, refreshProjectFiles, setActiveFileStable],
+    [
+      ensureDirectoryTree,
+      projectPath,
+      refreshProjectFiles,
+      setActiveFileStable,
+    ],
   );
   const handleCreateFolderAtPath = useCallback(
     async (parentPath: string) => {
       if (!projectPath) return;
+      if (!selectedFolderCloneSource) {
+        setIsConfigModalOpen(true);
+        return;
+      }
       const nextName = window.prompt("New folder name", "new-folder");
       if (!nextName) return;
       const cleanedName = normalizeProjectRelative(nextName);
@@ -6358,24 +4424,37 @@ const App: React.FC = () => {
         baseVirtual ? `${baseVirtual}/${cleanedName}` : cleanedName,
       );
       if (!nextVirtual) return;
+      const absoluteSource = normalizePath(
+        joinPath(projectPath, selectedFolderCloneSource),
+      );
       const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
       try {
-        await ensureDirectoryTree(absolutePath);
+        await (Neutralino as any).filesystem.copy(
+          absoluteSource,
+          absolutePath,
+          {
+            recursive: true,
+            overwrite: false,
+            skip: false,
+          },
+        );
       } catch (error) {
-        console.warn("Failed to create directory:", error);
-        window.alert("Could not create folder.");
+        console.warn("Failed to clone directory:", error);
+        window.alert("Could not clone folder.");
         return;
       }
       await refreshProjectFiles();
       setIsLeftPanelOpen(true);
     },
-    [ensureDirectoryTree, projectPath, refreshProjectFiles],
+    [projectPath, refreshProjectFiles, selectedFolderCloneSource],
   );
   const handleRenamePath = useCallback(
     async (path: string) => {
       if (!projectPath) return;
       if (!path) return;
-      const currentName = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+      const currentName = path.includes("/")
+        ? path.slice(path.lastIndexOf("/") + 1)
+        : path;
       const nextName = window.prompt("Rename to", currentName);
       if (!nextName) return;
       const normalizedName = normalizeProjectRelative(nextName);
@@ -6390,12 +4469,18 @@ const App: React.FC = () => {
         return;
       }
       const absoluteSource =
-        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
       const absoluteParent = getParentPath(absoluteSource);
       if (!absoluteParent) return;
-      const absoluteDestination = normalizePath(joinPath(absoluteParent, normalizedName));
+      const absoluteDestination = normalizePath(
+        joinPath(absoluteParent, normalizedName),
+      );
       try {
-        await (Neutralino as any).filesystem.move(absoluteSource, absoluteDestination);
+        await (Neutralino as any).filesystem.move(
+          absoluteSource,
+          absoluteDestination,
+        );
       } catch (error) {
         console.warn("Rename failed:", error);
         window.alert("Could not rename item.");
@@ -6416,7 +4501,8 @@ const App: React.FC = () => {
       const ok = window.confirm(`Delete ${label} "${path}"?`);
       if (!ok) return;
       const absoluteTarget =
-        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
       try {
         await (Neutralino as any).filesystem.remove(absoluteTarget);
       } catch (error) {
@@ -6424,7 +4510,11 @@ const App: React.FC = () => {
         window.alert("Could not delete item.");
         return;
       }
-      if (activeFileRef.current && (activeFileRef.current === path || activeFileRef.current.startsWith(`${path}/`))) {
+      if (
+        activeFileRef.current &&
+        (activeFileRef.current === path ||
+          activeFileRef.current.startsWith(`${path}/`))
+      ) {
         setActiveFileStable(null);
       }
       await refreshProjectFiles();
@@ -6436,8 +4526,11 @@ const App: React.FC = () => {
     async (path: string) => {
       if (!projectPath || !path) return;
       const absoluteSource =
-        filePathIndexRef.current[path] || normalizePath(joinPath(projectPath, path));
-      const currentName = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
+      const currentName = path.includes("/")
+        ? path.slice(path.lastIndexOf("/") + 1)
+        : path;
       const dotIndex = currentName.lastIndexOf(".");
       const stem = dotIndex > 0 ? currentName.slice(0, dotIndex) : currentName;
       const ext = dotIndex > 0 ? currentName.slice(dotIndex) : "";
@@ -6457,13 +4550,19 @@ const App: React.FC = () => {
       }
       const absoluteParent = getParentPath(absoluteSource);
       if (!absoluteParent) return;
-      const absoluteDestination = normalizePath(joinPath(absoluteParent, normalizedName));
+      const absoluteDestination = normalizePath(
+        joinPath(absoluteParent, normalizedName),
+      );
       try {
-        await (Neutralino as any).filesystem.copy(absoluteSource, absoluteDestination, {
-          recursive: false,
-          overwrite: false,
-          skip: false,
-        });
+        await (Neutralino as any).filesystem.copy(
+          absoluteSource,
+          absoluteDestination,
+          {
+            recursive: false,
+            overwrite: false,
+            skip: false,
+          },
+        );
       } catch (error) {
         console.warn("Duplicate failed:", error);
         window.alert("Could not duplicate file.");
@@ -6482,43 +4581,134 @@ const App: React.FC = () => {
     }, 8000);
     return () => window.clearInterval(timer);
   }, [projectPath, refreshProjectFiles]);
+  const resolveAdjacentSlidePath = useCallback(
+    (fromPath: string, dir: "next" | "prev"): string | null => {
+      const normalizedFrom = normalizeProjectRelative(String(fromPath || ""));
+      const fromMatch = normalizePath(normalizedFrom).match(
+        /^(.*_)([0-9]{3,})\/index\.html$/i,
+      );
+      if (!fromMatch) return null;
+      const familyPrefix = fromMatch[1].toLowerCase();
+      const currentNorm = normalizedFrom.toLowerCase();
+      const slides = Object.keys(filesRef.current)
+        .filter((path) => filesRef.current[path]?.type === "html")
+        .map((path) => {
+          const match = normalizePath(path).match(
+            /^(.*_)([0-9]{3,})\/index\.html$/i,
+          );
+          if (!match || match[1].toLowerCase() !== familyPrefix) {
+            return null;
+          }
+          return {
+            path,
+            normalized: normalizeProjectRelative(path).toLowerCase(),
+            num: Number.parseInt(match[2], 10),
+          };
+        })
+        .filter(
+          (entry): entry is { path: string; normalized: string; num: number } =>
+            Boolean(entry),
+        )
+        .sort((a, b) =>
+          a.num !== b.num ? a.num - b.num : a.path.localeCompare(b.path),
+        );
+      if (slides.length === 0) return null;
+      const index = slides.findIndex((item) => item.normalized === currentNorm);
+      if (index < 0) return null;
+      const nextIndex = dir === "next" ? index + 1 : index - 1;
+      if (nextIndex < 0 || nextIndex >= slides.length) return null;
+      return slides[nextIndex].path;
+    },
+    [],
+  );
+  const resolveExplorerHtmlPath = useCallback(
+    (rawPath: string): string | null => {
+      const normalized = normalizeProjectRelative(String(rawPath || ""));
+      if (!normalized) return null;
+
+      const direct =
+        findFilePathCaseInsensitive(filesRef.current, normalized) || normalized;
+      const directFile = filesRef.current[direct];
+      if (directFile?.type === "html") return direct;
+
+      const baseFolder = direct.replace(/\/+$/, "");
+      const directIndex = findFilePathCaseInsensitive(
+        filesRef.current,
+        `${baseFolder}/index.html`,
+      );
+      if (directIndex && filesRef.current[directIndex]?.type === "html") {
+        return directIndex;
+      }
+
+      const htmlUnderFolder = Object.keys(filesRef.current)
+        .filter((path) => {
+          const normalizedPath = normalizeProjectRelative(path);
+          if (!normalizedPath.startsWith(`${baseFolder}/`)) return false;
+          return filesRef.current[path]?.type === "html";
+        })
+        .sort((a, b) => a.localeCompare(b));
+      if (htmlUnderFolder.length === 0) return null;
+      return htmlUnderFolder[0];
+    },
+    [],
+  );
   const handleSelectFile = useCallback(
     (path: string) => {
-      console.log("[Preview] Current page:", path);
+      const resolvedPath = resolveExplorerHtmlPath(path) || path;
+      console.log("[Preview] Current page:", resolvedPath);
+
       const currentPath = selectedPreviewHtmlRef.current;
-      const targetIsHtml = files[path]?.type === "html";
+      const targetIsHtml = filesRef.current[resolvedPath]?.type === "html";
+
+      if (targetIsHtml) {
+        // THE FIX: Tag the exact time of the user's manual click
+        (window as any).__explorerNavTime = Date.now();
+      }
+
       if (
         interactionModeRef.current === "preview" &&
         previewModeRef.current === "edit" &&
         targetIsHtml &&
         currentPath &&
-        currentPath !== path &&
+        currentPath !== resolvedPath &&
         hasUnsavedChangesForFile(currentPath)
       ) {
         setPendingPageSwitch({
           mode: "switch",
           fromPath: currentPath,
-          nextPath: path,
+          nextPath: resolvedPath,
           source: "explorer",
         });
         setIsPageSwitchPromptOpen(true);
         setIsLeftPanelOpen(true);
         return;
       }
-      if (activeFileRef.current === path) {
+
+      if (activeFileRef.current === resolvedPath) {
         setIsLeftPanelOpen(true);
         if (
-          files[path]?.type === "html" &&
+          filesRef.current[resolvedPath]?.type === "html" &&
           interactionModeRef.current !== "preview"
         ) {
           setInteractionMode("preview");
         }
         return;
       }
-      syncPreviewActiveFile(path, "explorer");
+
+      if (targetIsHtml) {
+        explorerSelectionLockRef.current = resolvedPath;
+        explorerSelectionLockUntilRef.current =
+          Date.now() + EXPLORER_LOCK_TTL_MS;
+      }
+      syncPreviewActiveFile(resolvedPath, "explorer");
       setIsLeftPanelOpen(true);
     },
-    [files, hasUnsavedChangesForFile, syncPreviewActiveFile],
+    [
+      EXPLORER_LOCK_TTL_MS,
+      hasUnsavedChangesForFile,
+      resolveExplorerHtmlPath,
+      syncPreviewActiveFile,
+    ],
   );
   const selectedElement = selectedId ? findElementById(root, selectedId) : null;
   const selectedPathIds = useMemo(
@@ -6566,15 +4756,14 @@ const App: React.FC = () => {
     }
     const activeHtmlPath = selectedPreviewHtmlRef.current;
     const activeHtmlFile =
-      activeHtmlPath && files[activeHtmlPath]
-        ? files[activeHtmlPath]
-        : null;
+      activeHtmlPath && files[activeHtmlPath] ? files[activeHtmlPath] : null;
     const activeHtmlContent =
       activeHtmlFile && typeof activeHtmlFile.content === "string"
         ? activeHtmlFile.content
         : "";
     const fallbackHtml =
-      activeHtmlPath && typeof textFileCacheRef.current[activeHtmlPath] === "string"
+      activeHtmlPath &&
+      typeof textFileCacheRef.current[activeHtmlPath] === "string"
         ? textFileCacheRef.current[activeHtmlPath]
         : "";
     const sourceHtml =
@@ -6604,13 +4793,7 @@ const App: React.FC = () => {
     } catch {
       return emptyPreviewRoot;
     }
-  }, [
-    files,
-    interactionMode,
-    previewRefreshNonce,
-    root,
-    selectedPreviewDoc,
-  ]);
+  }, [files, interactionMode, previewRefreshNonce, root, selectedPreviewDoc]);
   const selectPreviewElementAtPath = useCallback((path: number[]) => {
     if (
       interactionModeRef.current !== "preview" ||
@@ -6688,6 +4871,743 @@ const App: React.FC = () => {
     if (activeFile && files[activeFile]?.type === "html") return activeFile;
     return pickDefaultHtmlFile(files);
   }, [activeFile, files, previewSyncedFile, projectPath]);
+  const currentPreviewSlideId = useMemo(() => {
+    if (!selectedPreviewHtml) return null;
+    const parts = normalizePath(selectedPreviewHtml).split("/").filter(Boolean);
+    return parts.length >= 2 ? parts[parts.length - 2] : null;
+  }, [selectedPreviewHtml]);
+  const unmappedPdfAnnotationCount = useMemo(
+    () =>
+      pdfAnnotationRecords.filter((record) => !record.mappedFilePath).length,
+    [pdfAnnotationRecords],
+  );
+
+  // Sync ref with reactive state for use in callbacks
+  useEffect(() => {
+    selectedPreviewHtmlRef.current = selectedPreviewHtml;
+  }, [selectedPreviewHtml]);
+
+  const resolveMappedLabelShort = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      const raw =
+        annotation.mappedSlideId ||
+        (annotation.mappedFilePath
+          ? annotation.mappedFilePath.split("/").filter(Boolean).slice(-2)[0]
+          : null);
+      if (!raw) return null;
+      const normalized = String(raw);
+      const match = normalized.match(/1\.\d/);
+      if (match) {
+        const index = normalized.lastIndexOf(match[0]);
+        if (index >= 0) {
+          const suffix = normalized.slice(index + match[0].length);
+          const cleaned = suffix
+            .replace(/^[\s._-]+/, "")
+            .replace(/[\s._-]+$/, "");
+          if (cleaned) {
+            const parts = cleaned.split(/[\s._-]+/).filter(Boolean);
+            if (parts.length > 0) return parts[parts.length - 1];
+          }
+        }
+      }
+      const parts = normalized.split(/[\s._-]+/).filter(Boolean);
+      return parts.length > 0 ? parts[parts.length - 1] : normalized;
+    },
+    [],
+  );
+  const visiblePdfAnnotations = useMemo(() => {
+    if (pdfAnnotationViewMode === "perSlide") {
+      if (!selectedPreviewHtml) return [];
+      return pdfAnnotationRecords.filter(
+        (record) => record.mappedFilePath === selectedPreviewHtml,
+      );
+    }
+    return pdfAnnotationRecords;
+  }, [pdfAnnotationRecords, pdfAnnotationViewMode, selectedPreviewHtml]);
+  const annotationsForCurrentSlide = useMemo(() => {
+    if (!selectedPreviewHtml) return [];
+    const normalizedCurrent = normalizePath(selectedPreviewHtml);
+    return pdfAnnotationRecords.filter((record) =>
+      record.mappedFilePath
+        ? normalizePath(record.mappedFilePath) === normalizedCurrent
+        : false,
+    );
+  }, [pdfAnnotationRecords, selectedPreviewHtml]);
+  const isPopupAnnotation = useCallback((annotation: PdfAnnotationUiRecord) => {
+    if (annotation.annotationStatus) {
+      return annotation.annotationStatus === "Popup";
+    }
+    if (annotation.detectedPageType === "Main") return false;
+    if (
+      annotation.subtype === "Popup" ||
+      annotation.detectedSubtype === "Popup"
+    ) {
+      return true;
+    }
+    if (annotation.detectedPageType === "Child/Popup") return true;
+    if (annotation.popupInvocation?.popupId) return true;
+    if (annotation.mappedFilePath?.includes("/shared/")) return true;
+    return false;
+  }, []);
+  const filteredAnnotationsForCurrentSlide = useMemo(() => {
+    if (pdfAnnotationTypeFilter === "all") return annotationsForCurrentSlide;
+    return annotationsForCurrentSlide.filter((annotation) => {
+      const isPopup = isPopupAnnotation(annotation);
+      return pdfAnnotationTypeFilter === "popup" ? isPopup : !isPopup;
+    });
+  }, [annotationsForCurrentSlide, pdfAnnotationTypeFilter, isPopupAnnotation]);
+  const focusedAnnotationForCurrentSlide = useMemo(() => {
+    if (!focusedPdfAnnotation || !selectedPreviewHtml) return null;
+    return focusedPdfAnnotation.mappedFilePath === selectedPreviewHtml
+      ? focusedPdfAnnotation
+      : null;
+  }, [focusedPdfAnnotation, selectedPreviewHtml]);
+  useEffect(() => {
+    const frame = previewFrameRef.current;
+    const doc = frame?.contentDocument;
+
+    const previous = previewFocusedPdfElementRef.current;
+    if (previous) {
+      previous.style.outline = "";
+      previous.style.boxShadow = "";
+      previous.style.transition = "";
+      previous.removeAttribute("data-nx-pdf-focus");
+      previewFocusedPdfElementRef.current = null;
+    }
+
+    if (!doc) return;
+
+    const previousHighlights = [
+      ...doc.querySelectorAll("[data-nx-pdf-anno]"),
+    ] as HTMLElement[];
+    for (const el of previousHighlights) {
+      el.style.outline = "";
+      el.style.boxShadow = "";
+      el.style.transition = "";
+      el.removeAttribute("data-nx-pdf-anno");
+    }
+
+    const normalizedCurrentPath = selectedPreviewHtml
+      ? normalizePath(selectedPreviewHtml)
+      : null;
+    const annotationsForCurrentSlide = normalizedCurrentPath
+      ? pdfAnnotationRecords.filter((record) =>
+          record.mappedFilePath
+            ? normalizePath(record.mappedFilePath) === normalizedCurrentPath
+            : false,
+        )
+      : [];
+
+    const resolveAnnotationTarget = (annotation: PdfAnnotationUiRecord) => {
+      const selectors = [
+        annotation.foundSelector,
+        annotation.popupInvocation?.triggerSelector,
+        annotation.popupInvocation?.containerSelector,
+      ].filter((entry): entry is string => Boolean(entry));
+      for (const selector of selectors) {
+        const node = doc.querySelector(selector) as HTMLElement | null;
+        if (node) return node;
+      }
+      return null;
+    };
+
+    const filteredAnnotations =
+      pdfAnnotationTypeFilter === "all"
+        ? annotationsForCurrentSlide
+        : annotationsForCurrentSlide.filter((annotation) => {
+            const isPopup = isPopupAnnotation(annotation);
+            return pdfAnnotationTypeFilter === "popup" ? isPopup : !isPopup;
+          });
+
+    for (const annotation of filteredAnnotations) {
+      const target = resolveAnnotationTarget(annotation);
+      if (!target) continue;
+      const isPopup = isPopupAnnotation(annotation);
+      target.setAttribute("data-nx-pdf-anno", "true");
+      target.style.transition = "outline 0.2s ease, box-shadow 0.2s ease";
+      target.style.outline = isPopup
+        ? "2px solid rgba(56,189,248,0.55)"
+        : "2px solid rgba(34,197,94,0.65)";
+      target.style.boxShadow = isPopup
+        ? "0 0 0 4px rgba(56,189,248,0.16)"
+        : "0 0 0 4px rgba(34,197,94,0.18)";
+    }
+
+    if (!focusedAnnotationForCurrentSlide) return;
+    const focusedIsPopup = isPopupAnnotation(focusedAnnotationForCurrentSlide);
+    if (
+      pdfAnnotationTypeFilter !== "all" &&
+      ((pdfAnnotationTypeFilter === "popup" && !focusedIsPopup) ||
+        (pdfAnnotationTypeFilter === "slide" && focusedIsPopup))
+    ) {
+      return;
+    }
+
+    // --- NEW: Close all existing dialogs first to ensure clean transition ---
+    try {
+      // 1. Click all obvious close buttons
+      const closeButtons = [
+        ...doc.querySelectorAll(
+          ".closeDialog, .close-dialog, .close, [data-dialog-close], .nx-close-overlay, .closePopup",
+        ),
+      ] as HTMLElement[];
+      for (const btn of closeButtons) {
+        try {
+          btn.click();
+        } catch {}
+      }
+
+      // 2. Force hide all common dialog containers
+      const containers = [
+        ...doc.querySelectorAll(
+          ".popup, .dialog, .modal, [role='dialog'], [data-popup-id], .nx-popup-overlay",
+        ),
+      ] as HTMLElement[];
+      for (const container of containers) {
+        container.style.display = "none";
+        container.style.visibility = "hidden";
+        container.classList.remove("open", "active", "show", "is-visible");
+        container.setAttribute("aria-hidden", "true");
+      }
+
+      // 3. Presentation Runtime Cleanup (GSK/Veeva specific)
+      const frameWindow = frame?.contentWindow as any;
+      if (frameWindow) {
+        if (frameWindow.com?.gsk?.mt?.closeDialog) {
+          try {
+            frameWindow.com.gsk.mt.closeDialog();
+          } catch {}
+        }
+        if (typeof frameWindow.$ === "function") {
+          try {
+            frameWindow
+              .$(".popup, .dialog, .modal")
+              .hide()
+              .removeClass("open active show");
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn("[NX] Failed to cleanup existing dialogs:", e);
+    }
+    // --------------------------------------------------------------------------
+
+    const focusedTarget = resolveAnnotationTarget(
+      focusedAnnotationForCurrentSlide,
+    );
+    if (focusedTarget) {
+      focusedTarget.setAttribute("data-nx-pdf-focus", "true");
+      focusedTarget.style.transition =
+        "outline 0.2s ease, box-shadow 0.2s ease";
+      focusedTarget.style.outline = "3px solid rgba(239,68,68,0.98)";
+      focusedTarget.style.boxShadow = "0 0 0 6px rgba(239,68,68,0.35)";
+      focusedTarget.scrollIntoView({ block: "center", inline: "center" });
+      previewFocusedPdfElementRef.current = focusedTarget;
+    }
+
+    return;
+
+    try {
+      const popupInvocation =
+        focusedAnnotationForCurrentSlide.popupInvocation || null;
+      const normalizePopupId = (value: string | null | undefined) => {
+        if (!value) return null;
+        const cleaned = String(value).trim();
+        if (!cleaned) return null;
+        return cleaned.replace(/^#/, "");
+      };
+      const extractPopupIdFromNode = (node: Element | null): string | null => {
+        if (!node) return null;
+        const direct =
+          normalizePopupId(node.getAttribute("data-dialog")) ||
+          normalizePopupId(node.getAttribute("data-target")) ||
+          normalizePopupId(node.getAttribute("href")) ||
+          normalizePopupId(node.getAttribute("data-popup-id")) ||
+          normalizePopupId((node as HTMLElement).id);
+        if (direct) return direct;
+        const onclick = node.getAttribute("onclick") || "";
+        const match = onclick.match(/dialog[\w-]*/i);
+        return normalizePopupId(match ? match[0] : null);
+      };
+      const getContainerSelectorFromElement = (
+        node: Element | null,
+      ): string | null => {
+        if (!node) return null;
+        const element = node as HTMLElement;
+        if (element.id) return `#${element.id}`;
+        const popupDataId = element.getAttribute("data-popup-id");
+        if (popupDataId) return `[data-popup-id="${popupDataId}"]`;
+        const role = element.getAttribute("role");
+        if (role === "dialog") return `[role="dialog"]`;
+        return null;
+      };
+      const overlapScore = (candidate: string, target: string) => {
+        const normalizedCandidate = candidate
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+        const normalizedTarget = target
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!normalizedCandidate || !normalizedTarget) return 0;
+        if (normalizedCandidate.includes(normalizedTarget)) return 120;
+        const candidateWords = normalizedCandidate
+          .split(/[^a-z0-9]+/i)
+          .filter((word) => word.length > 2);
+        const targetWords = new Set(
+          normalizedTarget
+            .split(/[^a-z0-9]+/i)
+            .filter((word) => word.length > 2),
+        );
+        if (!candidateWords.length || !targetWords.size) return 0;
+        let overlap = 0;
+        for (const word of candidateWords) {
+          if (targetWords.has(word)) overlap += 1;
+        }
+        if (overlap < 1) return 0;
+        return overlap * 14 + Math.min(candidateWords.length, 8);
+      };
+      const textHints = [
+        focusedAnnotationForCurrentSlide.annotationText,
+        focusedAnnotationForCurrentSlide.pdfContextText || "",
+        ...focusedAnnotationForCurrentSlide.threadEntries.map(
+          (entry) => entry.text,
+        ),
+      ]
+        .map((entry) => String(entry || "").trim())
+        .filter((entry) => entry.length > 0)
+        .slice(0, 8);
+      const triggerNodes = [
+        ...doc.querySelectorAll(
+          "[data-dialog], .openDialog[data-dialog], [data-target], [href^='#dialog'], [onclick*='dialog']",
+        ),
+      ] as HTMLElement[];
+      const containerNodes = [
+        ...doc.querySelectorAll(
+          ".popup, [data-popup-id], [role='dialog'], .modal, .dialog, [id*='dialog']",
+        ),
+      ] as HTMLElement[];
+      const containerById = new Map<string, HTMLElement>();
+      for (const containerNode of containerNodes) {
+        const popupId = extractPopupIdFromNode(containerNode);
+        if (!popupId || containerById.has(popupId)) continue;
+        containerById.set(popupId, containerNode);
+      }
+      const genericPopupContainers = [
+        ...doc.querySelectorAll(
+          "[id*='popup'], [id*='modal'], [id*='dialog'], [class*='popup'], [class*='modal'], [class*='dialog'], [data-popup], [data-modal], [aria-haspopup='dialog']",
+        ),
+      ] as HTMLElement[];
+      let runtimeResolvedPopup: {
+        popupId: string;
+        trigger: HTMLElement | null;
+        container: HTMLElement | null;
+      } | null = null;
+      let bestScore = 0;
+      for (const triggerNode of triggerNodes) {
+        const popupId = extractPopupIdFromNode(triggerNode);
+        if (!popupId) continue;
+        const containerNode = containerById.get(popupId) || null;
+        const candidateText = [
+          triggerNode.textContent || "",
+          containerNode?.textContent || "",
+          popupId,
+        ]
+          .join(" ")
+          .trim();
+        let score = 0;
+        for (const hint of textHints) {
+          score = Math.max(score, overlapScore(candidateText, hint));
+        }
+        if (popupInvocation?.popupId && popupInvocation.popupId === popupId)
+          score += 45;
+        if (
+          popupInvocation?.triggerSelector &&
+          popupInvocation.triggerSelector ===
+            (triggerNode.id
+              ? `#${triggerNode.id}`
+              : popupInvocation.triggerSelector)
+        ) {
+          score += 20;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          runtimeResolvedPopup = {
+            popupId,
+            trigger: triggerNode,
+            container: containerNode,
+          };
+        }
+      }
+      const isExplicitPopup =
+        focusedAnnotationForCurrentSlide.subtype === "Popup" ||
+        focusedAnnotationForCurrentSlide.detectedSubtype === "Popup";
+
+      const minRequiredScore = isExplicitPopup ? 20 : 65; // Non-popups need MUCH higher proof to trigger a dialog
+
+      if (bestScore < minRequiredScore) {
+        for (const [popupId, containerNode] of containerById.entries()) {
+          const candidateText = [containerNode.textContent || "", popupId]
+            .join(" ")
+            .trim();
+          let score = 0;
+          for (const hint of textHints) {
+            score = Math.max(score, overlapScore(candidateText, hint));
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            runtimeResolvedPopup = {
+              popupId,
+              trigger: null,
+              container: containerNode,
+            };
+          }
+        }
+      }
+      if (bestScore < minRequiredScore) {
+        for (const containerNode of genericPopupContainers) {
+          const popupId =
+            extractPopupIdFromNode(containerNode) ||
+            normalizePopupId(containerNode.id) ||
+            `runtime-${Math.random().toString(36).slice(2, 8)}`;
+          const candidateText = [
+            containerNode.textContent || "",
+            popupId,
+            containerNode.className || "",
+          ]
+            .join(" ")
+            .trim();
+          let score = 0;
+          for (const hint of textHints) {
+            score = Math.max(score, overlapScore(candidateText, hint));
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            runtimeResolvedPopup = {
+              popupId,
+              trigger: null,
+              container: containerNode,
+            };
+          }
+        }
+      }
+
+      // If after all scans the score is still below threshold, discard the runtime result
+      if (bestScore < minRequiredScore) {
+        runtimeResolvedPopup = null;
+      }
+
+      if (!runtimeResolvedPopup && popupInvocation?.popupId) {
+        const fallbackContainer =
+          containerById.get(popupInvocation.popupId) || null;
+        runtimeResolvedPopup = {
+          popupId: popupInvocation.popupId,
+          trigger: null,
+          container: fallbackContainer,
+        };
+      }
+      const primarySelector = focusedAnnotationForCurrentSlide.foundSelector;
+      const fallbackPopupTriggerSelector =
+        popupInvocation?.triggerSelector || null;
+      const target = ((primarySelector
+        ? doc.querySelector(primarySelector)
+        : null) ||
+        (fallbackPopupTriggerSelector
+          ? doc.querySelector(fallbackPopupTriggerSelector)
+          : null) ||
+        runtimeResolvedPopup?.trigger ||
+        runtimeResolvedPopup?.container) as HTMLElement | null;
+      if (target) {
+        target.setAttribute("data-nx-pdf-focus", "true");
+        target.style.transition = "outline 0.2s ease, box-shadow 0.2s ease";
+        target.style.outline = "3px solid rgba(34,211,238,0.95)";
+        target.style.boxShadow =
+          "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
+        target.scrollIntoView({ block: "center", inline: "center" });
+        previewFocusedPdfElementRef.current = target;
+      }
+
+      const isNavBottomSpecial = !!(
+        target &&
+        (target.id === "pi" ||
+          target.id === "si" ||
+          target.id === "references" ||
+          target.id === "objection" ||
+          target.id === "quickres" ||
+          target.classList.contains("gotoSlide") ||
+          target
+            .getAttribute("data-description")
+            ?.toLowerCase()
+            .includes("pi") ||
+          target
+            .getAttribute("data-description")
+            ?.toLowerCase()
+            .includes("reference"))
+      );
+
+      const intent = focusedAnnotationForCurrentSlide.annotationIntent;
+      const subtype = focusedAnnotationForCurrentSlide.annotationType;
+      const isExcludedIntent = intent === "flowChange" || intent === "notFound";
+
+      const shouldOpenSlidePopup = Boolean(
+        !isExcludedIntent &&
+        (isNavBottomSpecial ||
+          popupInvocation?.triggerSelector ||
+          popupInvocation?.containerSelector ||
+          popupInvocation?.popupId ||
+          runtimeResolvedPopup?.trigger ||
+          runtimeResolvedPopup?.container ||
+          runtimeResolvedPopup?.popupId ||
+          (target &&
+            (target.classList.contains("openDialog") ||
+              Boolean(target.getAttribute("data-dialog"))))),
+      );
+      if (shouldOpenSlidePopup && ALLOW_POPUP_OPEN_FROM_PDF) {
+        const popupTriggerCandidates: Array<HTMLElement | null> = [
+          primarySelector
+            ? (doc.querySelector(primarySelector) as HTMLElement | null)
+            : null, // HIGHEST PRIORITY
+          runtimeResolvedPopup?.trigger || null,
+          popupInvocation?.triggerSelector
+            ? (doc.querySelector(
+                popupInvocation.triggerSelector,
+              ) as HTMLElement | null)
+            : null,
+          popupInvocation?.popupId
+            ? (doc.querySelector(
+                `[data-dialog="#${popupInvocation.popupId}"], [data-dialog="${popupInvocation.popupId}"], .openDialog[data-dialog="#${popupInvocation.popupId}"], .openDialog[data-dialog="${popupInvocation.popupId}"]`,
+              ) as HTMLElement | null)
+            : null,
+          target,
+        ];
+        const popupTrigger =
+          popupTriggerCandidates.find((entry) => Boolean(entry)) || null;
+        if (popupTrigger) {
+          try {
+            popupTrigger.click();
+          } catch {
+            // ignore
+          }
+          popupTrigger.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true }),
+          );
+        }
+        const popupIdForOpen =
+          runtimeResolvedPopup?.popupId || popupInvocation?.popupId || null;
+        if (popupIdForOpen) {
+          const normalizedPopupId = popupIdForOpen.replace(/^#/, "");
+          const directDialogSelector = `#${normalizedPopupId}`;
+          const openViaMtRuntime = () => {
+            const nextFrameWindow = frame?.contentWindow as any;
+            const nextFrameJquery = nextFrameWindow?.$;
+            const nextFrameMt = nextFrameWindow?.com?.gsk?.mt;
+            if (
+              !nextFrameMt ||
+              typeof nextFrameMt.openDialog !== "function" ||
+              typeof nextFrameJquery !== "function"
+            ) {
+              return false;
+            }
+            try {
+              const directDialogNode = nextFrameJquery(directDialogSelector);
+              if (directDialogNode && directDialogNode.length > 0) {
+                nextFrameMt.openDialog(directDialogNode);
+                return true;
+              }
+            } catch {}
+            return false;
+          };
+          const frameWindow = frame?.contentWindow as any;
+          const frameJquery = frameWindow?.$;
+          const frameMt = frameWindow?.com?.gsk?.mt;
+          const frameReleaseEvent =
+            typeof frameMt?.releaseEvent === "string" && frameMt.releaseEvent
+              ? frameMt.releaseEvent
+              : "mouseup";
+          const mtOpenedImmediately = openViaMtRuntime();
+          if (!mtOpenedImmediately) {
+            window.setTimeout(openViaMtRuntime, 80);
+            window.setTimeout(openViaMtRuntime, 180);
+            window.setTimeout(openViaMtRuntime, 320);
+            window.setTimeout(openViaMtRuntime, 560);
+            window.setTimeout(openViaMtRuntime, 900);
+          }
+          const popupFunctionCandidates = [
+            "openDialog",
+            "showDialog",
+            "openPopup",
+            "showPopup",
+            "toggleDialog",
+            "togglePopup",
+          ];
+          for (const functionName of popupFunctionCandidates) {
+            const fn = frameWindow?.[functionName];
+            if (typeof fn !== "function") continue;
+            try {
+              fn(`#${popupIdForOpen}`);
+            } catch {}
+            try {
+              fn(popupIdForOpen);
+            } catch {}
+          }
+          const allPopupTriggers = [
+            ...doc.querySelectorAll(
+              `[data-dialog="#${popupIdForOpen}"], [data-dialog="${popupIdForOpen}"], .openDialog[data-dialog="#${popupIdForOpen}"], .openDialog[data-dialog="${popupIdForOpen}"], [data-target="#${popupIdForOpen}"], [href="#${popupIdForOpen}"]`,
+            ),
+          ] as HTMLElement[];
+          for (const triggerNode of allPopupTriggers) {
+            try {
+              triggerNode.click();
+            } catch {
+              // ignore
+            }
+            try {
+              if (typeof frameJquery === "function") {
+                frameJquery(triggerNode).trigger(frameReleaseEvent);
+              }
+            } catch {}
+            triggerNode.dispatchEvent(
+              new MouseEvent("click", { bubbles: true, cancelable: true }),
+            );
+            triggerNode.dispatchEvent(
+              new MouseEvent(frameReleaseEvent, {
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+          }
+        }
+        const resolvedContainerSelector = runtimeResolvedPopup?.container
+          ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
+          : null;
+        const dialogSelector =
+          resolvedContainerSelector ||
+          popupInvocation?.containerSelector ||
+          popupTrigger?.getAttribute("data-dialog") ||
+          (runtimeResolvedPopup?.popupId
+            ? `#${runtimeResolvedPopup.popupId}`
+            : popupInvocation?.popupId
+              ? `#${popupInvocation.popupId}`
+              : null);
+        const popupOpenSelectors = [
+          dialogSelector,
+          popupInvocation?.popupId
+            ? `[data-popup-id="${popupInvocation.popupId}"], #${popupInvocation.popupId}`
+            : null,
+          runtimeResolvedPopup?.popupId
+            ? `[data-popup-id="${runtimeResolvedPopup.popupId}"], #${runtimeResolvedPopup.popupId}`
+            : null,
+          runtimeResolvedPopup?.container
+            ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
+            : null,
+        ].filter((entry): entry is string => Boolean(entry));
+        if (popupOpenSelectors.length > 0 || runtimeResolvedPopup?.container) {
+          const applyPopupFocus = () => {
+            try {
+              let popupTarget: HTMLElement | null = null;
+              for (const selector of popupOpenSelectors) {
+                popupTarget = doc.querySelector(selector) as HTMLElement | null;
+                if (popupTarget) break;
+              }
+              if (!popupTarget) {
+                popupTarget = (runtimeResolvedPopup?.container ||
+                  null) as HTMLElement | null;
+              }
+              if (!popupTarget) return;
+              popupTarget.style.display = popupTarget.style.display || "block";
+              popupTarget.style.visibility = "visible";
+              popupTarget.style.opacity = popupTarget.style.opacity || "1";
+              popupTarget.classList.add("open");
+              popupTarget.classList.add("active");
+              popupTarget.classList.add("show");
+              popupTarget.classList.remove("hidden");
+              popupTarget.classList.remove("is-hidden");
+              popupTarget.classList.remove("closed");
+              popupTarget.setAttribute("aria-hidden", "false");
+              popupTarget.removeAttribute("hidden");
+              popupTarget.style.pointerEvents = "auto";
+              if (
+                previewFocusedPdfElementRef.current &&
+                previewFocusedPdfElementRef.current !== popupTarget
+              ) {
+                previewFocusedPdfElementRef.current.style.outline = "";
+                previewFocusedPdfElementRef.current.style.boxShadow = "";
+                previewFocusedPdfElementRef.current.style.transition = "";
+                previewFocusedPdfElementRef.current.removeAttribute(
+                  "data-nx-pdf-focus",
+                );
+              }
+              popupTarget.setAttribute("data-nx-pdf-focus", "true");
+              popupTarget.style.transition =
+                "outline 0.2s ease, box-shadow 0.2s ease";
+              popupTarget.style.outline = "3px solid rgba(34,211,238,0.95)";
+              popupTarget.style.boxShadow =
+                "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
+              popupTarget.scrollIntoView({ block: "center", inline: "center" });
+              previewFocusedPdfElementRef.current = popupTarget;
+            } catch (error) {
+              console.warn("Failed to focus popup container:", error);
+            }
+          };
+          window.setTimeout(applyPopupFocus, 40);
+          window.setTimeout(applyPopupFocus, 140);
+          window.setTimeout(applyPopupFocus, 280);
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to focus PDF annotation target:", error);
+    }
+  }, [
+    focusedAnnotationForCurrentSlide,
+    isPopupAnnotation,
+    pdfAnnotationRecords,
+    pdfAnnotationTypeFilter,
+    previewRefreshNonce,
+    previewFrameLoadNonce,
+    selectedPreviewHtml,
+  ]);
+
+  // --- NEW: Automatic Tablet Orientation Switching ---
+  useEffect(() => {
+    if (!selectedPreviewHtml) return;
+
+    const index = resourceScanner.getFullIndex();
+    // 1. Try to find the slide in the slides index
+    const slideId = currentPreviewSlideId;
+    if (!slideId) return;
+
+    const slideEntry = index.slides[slideId] || index.popups[slideId];
+    if (slideEntry?.orientation) {
+      if (slideEntry.orientation !== tabletOrientation) {
+        console.log(
+          `[NX] Auto-switching tablet orientation to ${slideEntry.orientation} for slide ${slideId}`,
+        );
+        setTabletOrientation(slideEntry.orientation);
+      }
+    } else {
+      // Fallback: If path contains "Vertical", force portrait
+      // Only check the last few segments of the path to avoid picking up parent folders
+      const pathParts = selectedPreviewHtml.toLowerCase().split(/[\\/]/);
+      const relevantSegments = pathParts.slice(-2).join("/"); // Just the file and its folder
+
+      if (
+        relevantSegments.includes("vertical") ||
+        relevantSegments.includes("portrait")
+      ) {
+        if (tabletOrientation !== "portrait") {
+          setTabletOrientation("portrait");
+        }
+      } else {
+        // Explicitly switch back to landscape for anything else if no entry found
+        if (tabletOrientation !== "landscape") {
+          setTabletOrientation("landscape");
+        }
+      }
+    }
+  }, [selectedPreviewHtml, currentPreviewSlideId, tabletOrientation]);
+  // ----------------------------------------------------
+
   const selectedMountedPreviewHtml = useMemo(() => {
     if (!projectPath) return null;
     if (
@@ -6742,6 +5662,51 @@ const App: React.FC = () => {
   const hasPreviewContent = Boolean(
     projectPath && (selectedPreviewSrc || selectedPreviewDoc),
   );
+  const shouldShowFrameWelcome = !projectPath;
+  useEffect(() => {
+    const setActive = (active: boolean) => setIsToolboxDragging(active);
+    const onToolboxDragState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean; type?: string }>)
+        .detail;
+      const isActive = Boolean(detail?.active);
+      const nextType = String(detail?.type || "").trim();
+      setActive(isActive);
+      if (isActive && nextType) {
+        toolboxDragTypeRef.current = nextType;
+      } else if (!isActive) {
+        toolboxDragTypeRef.current = "";
+      }
+    };
+    const onWindowDrop = () => {
+      setActive(false);
+      toolboxDragTypeRef.current = "";
+    };
+    const onWindowDragEnd = () => {
+      setActive(false);
+      toolboxDragTypeRef.current = "";
+    };
+    const onWindowDragOver = (event: DragEvent) => {
+      if (hasToolboxDragType(event.dataTransfer)) {
+        setActive(true);
+      }
+    };
+    window.addEventListener(
+      "nocodex-toolbox-drag-state",
+      onToolboxDragState as EventListener,
+    );
+    window.addEventListener("drop", onWindowDrop);
+    window.addEventListener("dragend", onWindowDragEnd);
+    window.addEventListener("dragover", onWindowDragOver);
+    return () => {
+      window.removeEventListener(
+        "nocodex-toolbox-drag-state",
+        onToolboxDragState as EventListener,
+      );
+      window.removeEventListener("drop", onWindowDrop);
+      window.removeEventListener("dragend", onWindowDragEnd);
+      window.removeEventListener("dragover", onWindowDragOver);
+    };
+  }, []);
   useEffect(() => {
     selectedPreviewHtmlRef.current = selectedPreviewHtml;
     setPreviewSelectedPath(null);
@@ -6750,10 +5715,12 @@ const App: React.FC = () => {
   }, [selectedPreviewHtml]);
   const handlePreviewStageDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      const payload =
-        event.dataTransfer.getData(TOOLBOX_DRAG_MIME) ||
-        event.dataTransfer.getData("text/plain");
-      if (!payload || !selectedPreviewHtml) return;
+      if (
+        !selectedPreviewHtml ||
+        (!hasToolboxDragType(event.dataTransfer) && !toolboxDragTypeRef.current)
+      ) {
+        return;
+      }
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     },
@@ -6764,7 +5731,7 @@ const App: React.FC = () => {
     (mountRelativePath: string): string | null => {
       if (!previewMountBasePath || !mountRelativePath) return null;
       const normalizedTarget = normalizeProjectRelative(
-        decodeURIComponent(mountRelativePath).replace(/^\/+/, ""),
+        decodeURIComponent(mountRelativePath).replace(/^\/+|\/+$/g, ""),
       ).toLowerCase();
       if (!normalizedTarget) return null;
 
@@ -6775,7 +5742,10 @@ const App: React.FC = () => {
           absolutePath,
         );
         if (!relative) continue;
-        if (relative.toLowerCase() === normalizedTarget) {
+        if (
+          relative.toLowerCase() === normalizedTarget ||
+          relative.toLowerCase() === `${normalizedTarget}/index.html`
+        ) {
           return virtualPath;
         }
       }
@@ -6946,7 +5916,12 @@ const App: React.FC = () => {
       }
       setInteractionMode(nextMode);
     },
-    [drawElementTag, postPreviewModeToFrame, projectPath, setPreviewModeWithSync],
+    [
+      drawElementTag,
+      postPreviewModeToFrame,
+      projectPath,
+      setPreviewModeWithSync,
+    ],
   );
   const sidebarInteractionMode = useMemo<
     "edit" | "preview" | "inspect" | "draw" | "move"
@@ -6956,6 +5931,19 @@ const App: React.FC = () => {
     }
     return interactionMode;
   }, [interactionMode, previewMode, sidebarToolMode]);
+  const resolvedConfigVirtualPath = useMemo(
+    () => resolveConfigPathFromFiles(files, "config.json") || CONFIG_JSON_PATH,
+    [files],
+  );
+  const resolvedPortfolioConfigVirtualPath = useMemo(
+    () =>
+      resolveConfigPathFromFiles(files, "portfolioconfig.json") ||
+      PORTFOLIO_CONFIG_PATH,
+    [files],
+  );
+  const configPathForModal = configModalConfigPath || resolvedConfigVirtualPath;
+  const portfolioPathForModal =
+    configModalPortfolioPath || resolvedPortfolioConfigVirtualPath;
   const isActivePreviewMessageSource = useCallback(
     (source: MessageEventSource | null): boolean => {
       const activeWindow = previewFrameRef.current?.contentWindow ?? null;
@@ -6988,7 +5976,6 @@ const App: React.FC = () => {
         previewFrameRef.current?.contentDocument?.defaultView ??
         null;
       if (!frameWindow) return;
-      if (interactionModeRef.current !== "preview") return;
       try {
         frameWindow.postMessage(JSON.stringify(payload), "*");
       } catch {
@@ -7001,15 +5988,19 @@ const App: React.FC = () => {
   const handlePreviewFrameLoad = useCallback(
     (event: React.SyntheticEvent<HTMLIFrameElement>) => {
       const frame = event.currentTarget;
+      setPreviewFrameLoadNonce((prev) => prev + 1);
+
       if (selectedPreviewSrc) {
         injectMountedPreviewBridge(frame);
       }
+
       postPreviewModeToFrame();
       window.setTimeout(postPreviewModeToFrame, 0);
       window.setTimeout(postPreviewModeToFrame, 120);
       window.setTimeout(postPreviewModeToFrame, 360);
 
       if (!isPreviewMountReady) return;
+
       const frameSrc = frame.getAttribute("src") || frame.src || "";
       if (!frameSrc) return;
 
@@ -7019,20 +6010,65 @@ const App: React.FC = () => {
       } catch {
         return;
       }
-
       if (!locationPath) return;
+
       const mountRelativePath = extractMountRelativePath(locationPath);
       if (!mountRelativePath) return;
+
       const resolvedVirtualPath =
         resolveVirtualPathFromMountRelative(mountRelativePath);
       if (!resolvedVirtualPath) return;
+
+      const lockPath = explorerSelectionLockRef.current;
+      const lockActive =
+        Boolean(lockPath) &&
+        Date.now() <= explorerSelectionLockUntilRef.current;
+      if (lockPath && !lockActive) {
+        explorerSelectionLockRef.current = null;
+        explorerSelectionLockUntilRef.current = 0;
+      }
+      if (lockPath && lockActive) {
+        const resolvedNorm =
+          normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
+        const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
+        if (resolvedNorm !== lockNorm) {
+          return;
+        }
+        explorerSelectionLockRef.current = null;
+        explorerSelectionLockUntilRef.current = 0;
+      }
+
       const resolvedFile = filesRef.current[resolvedVirtualPath];
       if (!resolvedFile || resolvedFile.type !== "html") return;
-      if (resolvedVirtualPath === activeFileRef.current) return;
 
+      // THE FIX: Block rogue automated script redirects after manual click
+      const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
+      if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
+        return;
+      }
+
+      if (resolvedVirtualPath === activeFileRef.current) return;
       if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
+
       console.log("[Preview] Current page:", resolvedVirtualPath);
-      syncPreviewActiveFile(resolvedVirtualPath, "load");
+
+      syncPreviewActiveFile(resolvedVirtualPath, "load", {
+        skipUnsavedPrompt: true,
+      });
+
+      if (pendingPopupOpenRef.current) {
+        const pending = pendingPopupOpenRef.current;
+        window.setTimeout(() => {
+          if (!pendingPopupOpenRef.current) return;
+          const opened = openPopupInPreview(
+            pending.selector,
+            pending.popupId,
+          );
+          if (opened) {
+            pendingPopupOpenRef.current = null;
+          }
+        }, 180);
+      }
     },
     [
       extractMountRelativePath,
@@ -7043,8 +6079,61 @@ const App: React.FC = () => {
       selectedPreviewSrc,
       shouldProcessPreviewPageSignal,
       syncPreviewActiveFile,
+      openPopupInPreview,
     ],
   );
+  useEffect(() => {
+    const frame = previewFrameRef.current;
+    const doc = frame?.contentDocument;
+    const win = frame?.contentWindow;
+    if (!doc || !win) return;
+
+    const handleContextMenu = (event: MouseEvent) => {
+      if (interactionModeRef.current !== "preview") return;
+      const selection = win.getSelection?.();
+      if (!selection || selection.isCollapsed) {
+        hideQuickTextEdit();
+        return;
+      }
+      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      if (!range) {
+        hideQuickTextEdit();
+        return;
+      }
+      quickTextRangeRef.current = range.cloneRange();
+      event.preventDefault();
+      event.stopPropagation();
+      positionQuickTextEditAtRange(range);
+    };
+
+    const handleSelectionChange = () => {
+      const selection = win.getSelection?.();
+      if (!selection || selection.rangeCount === 0) {
+        hideQuickTextEdit();
+        return;
+      }
+      if (selection.isCollapsed) {
+        hideQuickTextEdit();
+        return;
+      }
+      try {
+        const range = selection.getRangeAt(0);
+        quickTextRangeRef.current = range.cloneRange();
+        positionQuickTextEditAtRange(range);
+      } catch {}
+    };
+
+    doc.addEventListener("contextmenu", handleContextMenu);
+    doc.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      doc.removeEventListener("contextmenu", handleContextMenu);
+      doc.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [
+    previewFrameLoadNonce,
+    hideQuickTextEdit,
+    positionQuickTextEditAtRange,
+  ]);
   useEffect(() => {
     if (selectedPreviewSrc) {
       injectMountedPreviewBridge(previewFrameRef.current);
@@ -7072,12 +6161,14 @@ const App: React.FC = () => {
       options?: {
         refreshPreviewDoc?: boolean;
         saveNow?: boolean;
+        skipAutoSave?: boolean;
         elementPath?: number[];
         pushToHistory?: boolean;
       },
     ) => {
       const shouldRefreshPreviewDoc = options?.refreshPreviewDoc ?? false;
       const shouldSaveNow = options?.saveNow ?? false;
+      const shouldSkipAutoSave = options?.skipAutoSave ?? false;
       const shouldPushToHistory = options?.pushToHistory ?? true;
       const previousSerialized =
         typeof filesRef.current[updatedPath]?.content === "string"
@@ -7085,6 +6176,34 @@ const App: React.FC = () => {
           : typeof textFileCacheRef.current[updatedPath] === "string"
             ? textFileCacheRef.current[updatedPath]
             : "";
+
+      // CRITICAL SAFETY GUARD: Prevent accidental wiping of files
+      if (!serialized || serialized.trim().length === 0) {
+        console.error(
+          `[CRITICAL] Safety Guard: Blocked attempt to write empty content to ${updatedPath}`,
+        );
+        return;
+      }
+
+      if (
+        previousSerialized &&
+        previousSerialized.length > 500 &&
+        serialized.length < 100
+      ) {
+        console.error(
+          `[CRITICAL] Safety Guard: Blocked suspicious downsizing of ${updatedPath} (from ${previousSerialized.length} to ${serialized.length} bytes)`,
+        );
+        return;
+      }
+
+      // --- FIX: Scrub the bridge attribute and transient editor classes before saving ---
+      serialized = serialized
+        .replace(/\s*data-nx-mounted-preview-bridge=(["']?)1\1/gi, "")
+        .replace(/\s*__nx-preview-selected/g, "")
+        .replace(/\s*__nx-preview-dirty/g, "")
+        .replace(/\s*__nx-preview-editing/g, "")
+        .replace(/\s+class=(["'])\s*\1/g, ""); // Cleans up empty class attributes left behind
+
       textFileCacheRef.current[updatedPath] = serialized;
       setFiles((prev) => {
         const current = prev[updatedPath];
@@ -7097,6 +6216,7 @@ const App: React.FC = () => {
           },
         };
       });
+
       // Also synchronously update the ref so any code that reads filesRef.current
       // in the same tick (e.g. applyPreviewContentUpdate called right after draw)
       // immediately sees the new HTML with the just-created element.
@@ -7120,28 +6240,37 @@ const App: React.FC = () => {
       }
 
       const currentEntry = filesRef.current[updatedPath];
-      if (shouldRefreshPreviewDoc && !isMountedPreview && currentEntry) {
-        const previewSnapshot: FileMap = {
-          ...filesRef.current,
-          [updatedPath]: {
-            ...currentEntry,
-            content: serialized,
-          },
-        };
-        setSelectedPreviewDoc(
-          createPreviewDocument(
-            previewSnapshot,
-            updatedPath,
-            previewDependencyIndexRef.current[updatedPath],
-          ),
-        );
+      if (shouldRefreshPreviewDoc && currentEntry) {
+        if (!isMountedPreview) {
+          const previewSnapshot: FileMap = {
+            ...filesRef.current,
+            [updatedPath]: {
+              ...currentEntry,
+              content: serialized,
+            },
+          };
+          setSelectedPreviewDoc(
+            createPreviewDocument(
+              previewSnapshot,
+              updatedPath,
+              previewDependencyIndexRef.current[updatedPath],
+            ),
+          );
+        } else if (!shouldSaveNow) {
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
       }
 
       if (shouldSaveNow) {
         await flushPendingPreviewSaves();
+        if (shouldRefreshPreviewDoc && isMountedPreview) {
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
         return;
       }
-      schedulePreviewAutoSave();
+      if (!shouldSkipAutoSave) {
+        schedulePreviewAutoSave();
+      }
     },
     [
       flushPendingPreviewSaves,
@@ -7154,7 +6283,11 @@ const App: React.FC = () => {
   );
   const applyPreviewInlineEditDraft = useCallback(
     async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
-      if (!filePath || !Array.isArray(elementPath) || elementPath.length === 0) {
+      if (
+        !filePath ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
         return;
       }
       const sourceHtml =
@@ -7232,7 +6365,8 @@ const App: React.FC = () => {
           : snapshotNode.getAttribute("style") || "";
       const snapshotInlineStyles = parseInlineStyleText(snapshotInlineStyle);
       const snapshotComputedStyles =
-        extractComputedStylesFromElement(snapshotElement || snapshotNode) || null;
+        extractComputedStylesFromElement(snapshotElement || snapshotNode) ||
+        null;
       const snapshotText = normalizeEditorMultilineText(
         extractTextWithBreaks(snapshotNode),
       );
@@ -7378,6 +6512,18 @@ const App: React.FC = () => {
           );
         }
       }
+      if (
+        target instanceof HTMLElement &&
+        !target.getAttribute("style")?.trim()
+      ) {
+        target.removeAttribute("style");
+      }
+      if (
+        liveTarget instanceof HTMLElement &&
+        !liveTarget.getAttribute("style")?.trim()
+      ) {
+        liveTarget.removeAttribute("style");
+      }
       postPreviewPatchToFrame({
         type: "PREVIEW_APPLY_STYLE",
         path: elementPath,
@@ -7449,7 +6595,12 @@ const App: React.FC = () => {
     [applyPreviewStyleUpdateAtPath, previewSelectedPath],
   );
   const applyPreviewContentUpdate = useCallback(
-    async (data: { content?: string; html?: string; src?: string; href?: string }) => {
+    async (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
       if (
         !selectedPreviewHtml ||
         !previewSelectedPath ||
@@ -7506,8 +6657,12 @@ const App: React.FC = () => {
               ? baselineElement.innerHTML
               : nextHtml;
           nextResolvedContent = baselineElement
-            ? normalizeEditorMultilineText(extractTextWithBreaks(baselineElement))
-            : normalizeEditorMultilineText(extractTextFromHtmlFragment(nextHtml));
+            ? normalizeEditorMultilineText(
+                extractTextWithBreaks(baselineElement),
+              )
+            : normalizeEditorMultilineText(
+                extractTextFromHtmlFragment(nextHtml),
+              );
         }
       } else if (typeof data.content === "string") {
         const normalizedText = data.content.replace(/\r\n?/g, "\n");
@@ -7572,7 +6727,8 @@ const App: React.FC = () => {
                 : `url("${sourceValue}")`;
           if (nextBackground) {
             if (target instanceof HTMLElement) {
-              const previous = target.style.getPropertyValue("background-image");
+              const previous =
+                target.style.getPropertyValue("background-image");
               if (previous !== nextBackground) {
                 target.style.setProperty("background-image", nextBackground);
                 didChangeSrc = true;
@@ -7582,13 +6738,17 @@ const App: React.FC = () => {
               const previous =
                 liveTarget.style.getPropertyValue("background-image");
               if (previous !== nextBackground) {
-                liveTarget.style.setProperty("background-image", nextBackground);
+                liveTarget.style.setProperty(
+                  "background-image",
+                  nextBackground,
+                );
                 didChangeSrc = true;
               }
             }
           } else {
             if (target instanceof HTMLElement) {
-              const previous = target.style.getPropertyValue("background-image");
+              const previous =
+                target.style.getPropertyValue("background-image");
               if (previous) {
                 target.style.removeProperty("background-image");
                 didChangeSrc = true;
@@ -7653,6 +6813,252 @@ const App: React.FC = () => {
                 ...(didChangeHref && typeof data.href === "string"
                   ? { href: data.href }
                   : {}),
+              }
+            : prev,
+        );
+      }
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const sanitizeQuickEditDocument = useCallback((doc: Document) => {
+    const editables = doc.querySelectorAll<HTMLElement>("[contenteditable]");
+    editables.forEach((el) => el.removeAttribute("contenteditable"));
+    if (
+      doc.documentElement?.getAttribute("data-nx-mounted-preview-bridge") ===
+      "1"
+    ) {
+      doc.documentElement.removeAttribute("data-nx-mounted-preview-bridge");
+    }
+    const previewClasses = doc.querySelectorAll<HTMLElement>(
+      ".__nx-preview-editing, .__nx-preview-selected, .__nx-preview-dirty",
+    );
+    previewClasses.forEach((el) => {
+      el.classList.remove("__nx-preview-editing");
+      el.classList.remove("__nx-preview-selected");
+      el.classList.remove("__nx-preview-dirty");
+    });
+    const overlays = doc.querySelectorAll<HTMLElement>(
+      "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft]",
+    );
+    overlays.forEach((el) => el.remove());
+  }, []);
+  const applyQuickTextWrapTag = useCallback(
+    async (tagName: "sup" | "sub") => {
+      const frame = previewFrameRef.current;
+      const win = frame?.contentWindow;
+      const doc = frame?.contentDocument;
+      if (!win || !doc) return;
+      if (!selectedPreviewHtml) return;
+      const selection = win.getSelection?.();
+      const activeRange =
+        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      const range =
+        activeRange && !activeRange.collapsed
+          ? activeRange
+          : quickTextRangeRef.current;
+      if (!range || range.collapsed) return;
+
+      const workingRange = range.cloneRange();
+      const ancestor =
+        workingRange.commonAncestorContainer instanceof Element
+          ? workingRange.commonAncestorContainer
+          : workingRange.commonAncestorContainer?.parentElement;
+      const existing = ancestor?.closest?.(tagName) || null;
+      let updatedNode: Element | null = null;
+
+      if (existing && existing.parentElement) {
+        const parent = existing.parentElement;
+        while (existing.firstChild) {
+          parent.insertBefore(existing.firstChild, existing);
+        }
+        parent.removeChild(existing);
+        updatedNode = parent;
+      } else {
+        const wrapper = doc.createElement(tagName);
+        try {
+          workingRange.surroundContents(wrapper);
+        } catch {
+          const frag = workingRange.extractContents();
+          wrapper.appendChild(frag);
+          workingRange.insertNode(wrapper);
+        }
+        updatedNode = wrapper;
+      }
+
+      const liveTarget =
+        previewSelectedPath && Array.isArray(previewSelectedPath)
+          ? getLivePreviewSelectedElement(previewSelectedPath)
+          : null;
+      if (liveTarget instanceof HTMLElement) {
+        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+      } else if (doc.documentElement) {
+        sanitizeQuickEditDocument(doc);
+        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+        });
+      }
+
+      if (selection) {
+        selection.removeAllRanges();
+        const nextRange = doc.createRange();
+        if (updatedNode) {
+          nextRange.selectNodeContents(updatedNode);
+        } else {
+          nextRange.selectNodeContents(doc.body);
+        }
+        selection.addRange(nextRange);
+        quickTextRangeRef.current = nextRange.cloneRange();
+      }
+    },
+    [
+      applyPreviewContentUpdate,
+      getLivePreviewSelectedElement,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      sanitizeQuickEditDocument,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyQuickTextStyle = useCallback(
+    async (styles: Record<string, string>) => {
+      const frame = previewFrameRef.current;
+      const win = frame?.contentWindow;
+      const doc = frame?.contentDocument;
+      if (!win || !doc) return;
+      if (!selectedPreviewHtml) return;
+      const selection = win.getSelection?.();
+      const activeRange =
+        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      const range =
+        activeRange && !activeRange.collapsed
+          ? activeRange
+          : quickTextRangeRef.current;
+      if (!range || range.collapsed) return;
+      if (selection && range) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      const toCssKey = (value: string) =>
+        value.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+      const span = doc.createElement("span");
+      for (const [key, value] of Object.entries(styles)) {
+        if (!value) continue;
+        span.style.setProperty(toCssKey(key), value);
+      }
+      const workingRange = range.cloneRange();
+      try {
+        workingRange.surroundContents(span);
+      } catch {
+        const frag = workingRange.extractContents();
+        span.appendChild(frag);
+        workingRange.insertNode(span);
+      }
+
+      const liveTarget =
+        previewSelectedPath && Array.isArray(previewSelectedPath)
+          ? getLivePreviewSelectedElement(previewSelectedPath)
+          : null;
+      if (liveTarget instanceof HTMLElement) {
+        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+      } else if (doc.documentElement) {
+        sanitizeQuickEditDocument(doc);
+        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+        });
+      }
+      if (selection) {
+        selection.removeAllRanges();
+        const nextRange = doc.createRange();
+        nextRange.selectNodeContents(span);
+        selection.addRange(nextRange);
+        quickTextRangeRef.current = nextRange.cloneRange();
+      }
+    },
+    [
+      applyPreviewContentUpdate,
+      getLivePreviewSelectedElement,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewTagUpdate = useCallback(
+    async (nextTag: string) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const safeTag = String(nextTag || "").toLowerCase();
+      if (!safeTag) return;
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+
+      const replaceTag = (node: Element, tagName: string) => {
+        if (!node || !node.ownerDocument) return null;
+        const doc = node.ownerDocument;
+        const next = doc.createElement(tagName);
+        for (const attr of Array.from(node.attributes)) {
+          next.setAttribute(attr.name, attr.value);
+        }
+        while (node.firstChild) {
+          next.appendChild(node.firstChild);
+        }
+        node.replaceWith(next);
+        return next;
+      };
+
+      let didChange = false;
+      if (target instanceof HTMLElement) {
+        const currentTag = target.tagName.toLowerCase();
+        if (currentTag !== safeTag) {
+          replaceTag(target, safeTag);
+          didChange = true;
+        }
+      }
+      if (liveTarget instanceof HTMLElement) {
+        const currentTag = liveTarget.tagName.toLowerCase();
+        if (currentTag !== safeTag) {
+          replaceTag(liveTarget, safeTag);
+        }
+      }
+
+      if (didChange) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                type: safeTag,
+                name: safeTag.toUpperCase(),
               }
             : prev,
         );
@@ -7793,11 +7199,599 @@ const App: React.FC = () => {
     previewSelectedPath,
     selectedPreviewHtml,
   ]);
+  const handlePreviewDuplicateSelected = useCallback(async () => {
+    if (
+      !selectedPreviewHtml ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return;
+    }
+
+    const loaded = await loadFileContent(selectedPreviewHtml);
+    const sourceHtml =
+      typeof loaded === "string" && loaded.length > 0
+        ? loaded
+        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+          ? (filesRef.current[selectedPreviewHtml]?.content as string)
+          : "";
+    if (!sourceHtml) return;
+
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(sourceHtml, "text/html");
+    const target = readElementByPath(parsed.body, previewSelectedPath);
+    if (!(target instanceof HTMLElement) || !target.parentElement) return;
+
+    const duplicate = target.cloneNode(true) as HTMLElement;
+    if (duplicate.id) {
+      duplicate.id = `${duplicate.id}-copy-${Date.now()}`;
+    }
+    target.parentElement.insertBefore(duplicate, target.nextSibling);
+    const newPath = [...previewSelectedPath];
+    newPath[newPath.length - 1] = newPath[newPath.length - 1] + 1;
+
+    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+    if (liveTarget instanceof HTMLElement && liveTarget.parentElement) {
+      const liveDuplicate = liveTarget.cloneNode(true) as HTMLElement;
+      if (liveDuplicate.id) {
+        liveDuplicate.id = `${liveDuplicate.id}-copy-${Date.now()}`;
+      }
+      liveTarget.parentElement.insertBefore(
+        liveDuplicate,
+        liveTarget.nextSibling,
+      );
+    }
+
+    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+      refreshPreviewDoc: false,
+      saveNow: false,
+      skipAutoSave: true,
+      elementPath: newPath,
+    });
+    if (selectedPreviewSrc && parsed.body) {
+      postPreviewPatchToFrame({
+        type: "PREVIEW_APPLY_HTML",
+        html: parsed.body.innerHTML,
+      });
+    }
+    selectPreviewElementAtPath(newPath);
+    setIsCodePanelOpen(false);
+    setIsRightPanelOpen(true);
+    setSidebarToolMode("edit");
+    setPreviewMode("edit");
+    setInteractionMode("preview");
+  }, [
+    getLivePreviewSelectedElement,
+    loadFileContent,
+    persistPreviewHtmlContent,
+    postPreviewPatchToFrame,
+    previewSelectedPath,
+    selectPreviewElementAtPath,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+  ]);
+  const handlePreviewNudgeZIndex = useCallback(
+    (delta: number) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      const styleValue =
+        previewSelectedElement?.styles?.zIndex ??
+        previewSelectedComputedStyles?.zIndex ??
+        (liveTarget instanceof HTMLElement
+          ? liveTarget.style.zIndex ||
+            liveTarget.ownerDocument.defaultView
+              ?.getComputedStyle(liveTarget)
+              .getPropertyValue("z-index")
+          : "");
+      const current = parseNumericCssValue(styleValue) ?? 0;
+      const next = Math.max(0, Math.round(current + delta));
+      void applyPreviewStyleUpdateAtPath(
+        previewSelectedPath,
+        { zIndex: String(next) },
+        { syncSelectedElement: true },
+      );
+    },
+    [
+      applyPreviewStyleUpdateAtPath,
+      getLivePreviewSelectedElement,
+      previewSelectedComputedStyles?.zIndex,
+      previewSelectedElement?.styles?.zIndex,
+      previewSelectedPath,
+    ],
+  );
+  const handlePreviewResizeNudge = useCallback(
+    (axis: "width" | "height", delta: number) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      const liveRect =
+        liveTarget instanceof HTMLElement
+          ? liveTarget.getBoundingClientRect()
+          : null;
+      const fallbackBase = axis === "width" ? 120 : 48;
+      const styleValue =
+        axis === "width"
+          ? (previewSelectedElement?.styles?.width ??
+            previewSelectedComputedStyles?.width)
+          : (previewSelectedElement?.styles?.height ??
+            previewSelectedComputedStyles?.height);
+      const parsedStyle = parseNumericCssValue(styleValue);
+      const liveValue =
+        axis === "width"
+          ? (liveRect?.width ?? null)
+          : (liveRect?.height ?? null);
+      const base = parsedStyle ?? liveValue ?? fallbackBase;
+      const next = Math.max(16, Math.round(base + delta));
+      const stylePatch: Partial<React.CSSProperties> =
+        axis === "width" ? { width: `${next}px` } : { height: `${next}px` };
+      void applyPreviewStyleUpdateAtPath(previewSelectedPath, stylePatch, {
+        syncSelectedElement: true,
+      });
+    },
+    [
+      applyPreviewStyleUpdateAtPath,
+      getLivePreviewSelectedElement,
+      previewSelectedComputedStyles?.height,
+      previewSelectedComputedStyles?.width,
+      previewSelectedElement?.styles?.height,
+      previewSelectedElement?.styles?.width,
+      previewSelectedPath,
+    ],
+  );
+  const updatePreviewSelectionBox = useCallback(() => {
+    if (
+      interactionMode !== "preview" ||
+      previewMode !== "edit" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const stage = previewStageRef.current;
+    const frame = previewFrameRef.current;
+    const frameDocument =
+      frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
+    if (!stage || !frame || !frameDocument?.body) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const target = readElementByPath(frameDocument.body, previewSelectedPath);
+    if (!(target instanceof HTMLElement)) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const stageRect = stage.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const left = targetRect.left - stageRect.left;
+    const top = targetRect.top - stageRect.top;
+    const width = targetRect.width;
+    const height = targetRect.height;
+    if (
+      !Number.isFinite(left) ||
+      !Number.isFinite(top) ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    setPreviewSelectionBox({
+      left: Math.round(left),
+      top: Math.round(top),
+      width: Math.round(width),
+      height: Math.round(height),
+    });
+  }, [interactionMode, previewMode, previewSelectedPath]);
+  const handlePreviewResizeHandleMouseDown = useCallback(
+    (
+      direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
+      event: React.MouseEvent<HTMLButtonElement>,
+    ) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const frame = previewFrameRef.current;
+      const frameDocument =
+        frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
+      if (!frame || !frameDocument?.body) return;
+      const target = readElementByPath(frameDocument.body, previewSelectedPath);
+      if (!(target instanceof HTMLElement)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const frameRect = frame.getBoundingClientRect();
+      const frameClientWidth = Math.max(1, frame.clientWidth || 0);
+      const frameClientHeight = Math.max(1, frame.clientHeight || 0);
+      const scaleX = frameRect.width / frameClientWidth;
+      const scaleY = frameRect.height / frameClientHeight;
+      const targetRect = target.getBoundingClientRect();
+      const startWidth = Math.max(16, Math.round(targetRect.width));
+      const startHeight = Math.max(16, Math.round(targetRect.height));
+      const computedStyle =
+        target.ownerDocument.defaultView?.getComputedStyle(target);
+      const startLeft =
+        parseNumericCssValue(target.style.left) ??
+        parseNumericCssValue(computedStyle?.left) ??
+        0;
+      const startTop =
+        parseNumericCssValue(target.style.top) ??
+        parseNumericCssValue(computedStyle?.top) ??
+        0;
+      const positionMode = String(computedStyle?.position || "")
+        .trim()
+        .toLowerCase();
+      const canMoveLeft =
+        positionMode === "absolute" ||
+        positionMode === "fixed" ||
+        positionMode === "relative" ||
+        positionMode === "sticky";
+      const canMoveTop = canMoveLeft;
+
+      previewResizeDragRef.current = {
+        path: [...previewSelectedPath],
+        target,
+        direction,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft,
+        startTop,
+        startWidth,
+        startHeight,
+        scaleX: Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1,
+        scaleY: Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1,
+        canMoveLeft,
+        canMoveTop,
+      };
+      setIsPreviewResizing(true);
+
+      const onMove = (moveEvent: MouseEvent) => {
+        const drag = previewResizeDragRef.current;
+        if (!drag) return;
+        const deltaX = (moveEvent.clientX - drag.startX) / drag.scaleX;
+        const deltaY = (moveEvent.clientY - drag.startY) / drag.scaleY;
+        const affectsEast = drag.direction.includes("e");
+        const affectsWest = drag.direction.includes("w");
+        const affectsSouth = drag.direction.includes("s");
+        const affectsNorth = drag.direction.includes("n");
+        const widthDelta = affectsWest ? -deltaX : affectsEast ? deltaX : 0;
+        const heightDelta = affectsNorth ? -deltaY : affectsSouth ? deltaY : 0;
+        const width = Math.max(16, Math.round(drag.startWidth + widthDelta));
+        const height = Math.max(16, Math.round(drag.startHeight + heightDelta));
+        const consumedLeftDelta = affectsWest ? drag.startWidth - width : 0;
+        const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
+        const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
+        const nextTop = Math.round(drag.startTop + consumedTopDelta);
+        drag.target.style.setProperty("width", `${width}px`);
+        drag.target.style.setProperty("height", `${height}px`);
+        if (affectsWest && drag.canMoveLeft) {
+          drag.target.style.setProperty("left", `${nextLeft}px`);
+        }
+        if (affectsNorth && drag.canMoveTop) {
+          drag.target.style.setProperty("top", `${nextTop}px`);
+        }
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                styles: {
+                  ...prev.styles,
+                  width: `${width}px`,
+                  height: `${height}px`,
+                  ...(affectsWest && drag.canMoveLeft
+                    ? { left: `${nextLeft}px` }
+                    : {}),
+                  ...(affectsNorth && drag.canMoveTop
+                    ? { top: `${nextTop}px` }
+                    : {}),
+                },
+              }
+            : prev,
+        );
+        updatePreviewSelectionBox();
+      };
+      const onUp = () => {
+        const drag = previewResizeDragRef.current;
+        previewResizeDragRef.current = null;
+        setIsPreviewResizing(false);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (!drag) return;
+        const stylePatch: Partial<React.CSSProperties> = {
+          width: drag.target.style.getPropertyValue("width"),
+          height: drag.target.style.getPropertyValue("height"),
+        };
+        if (drag.direction.includes("w") && drag.canMoveLeft) {
+          stylePatch.left = drag.target.style.getPropertyValue("left");
+        }
+        if (drag.direction.includes("n") && drag.canMoveTop) {
+          stylePatch.top = drag.target.style.getPropertyValue("top");
+        }
+        void applyPreviewLocalCssPatchAtPath(drag.path, stylePatch, {
+          syncSelectedElement: true,
+        });
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [previewSelectedPath, updatePreviewSelectionBox],
+  );
+  useEffect(() => {
+    if (
+      interactionMode !== "preview" ||
+      previewMode !== "edit" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    let rafId = 0;
+    const tick = () => {
+      updatePreviewSelectionBox();
+      rafId = window.requestAnimationFrame(tick);
+    };
+    tick();
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [
+    interactionMode,
+    previewMode,
+    previewRefreshNonce,
+    previewSelectedPath,
+    updatePreviewSelectionBox,
+  ]);
   const applyPreviewAnimationUpdate = useCallback(
     async (animation: string) => {
+      if (!selectedPreviewHtml || !Array.isArray(previewSelectedPath)) return;
       const nextAnimation =
         typeof animation === "string" ? animation.trim() : "";
-      await applyPreviewStyleUpdate({ animation: nextAnimation });
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      if (!(target instanceof HTMLElement)) return;
+
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const jsLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        }
+        return head;
+      };
+      const ensureAssetLinkInHead = (
+        doc: Document,
+        htmlPath: string,
+        assetVirtualPath: string,
+        tag: "link" | "script",
+      ) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLElement>(
+            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
+          ),
+        ).some((node) => {
+          const refValue =
+            tag === "link"
+              ? (node.getAttribute("href") ?? "")
+              : (node.getAttribute("src") ?? "");
+          const resolved = resolveProjectRelativePath(htmlPath, refValue);
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(assetVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          assetVirtualPath,
+        );
+        if (!refPath) return;
+        if (tag === "link") {
+          const link = doc.createElement("link");
+          link.setAttribute("rel", "stylesheet");
+          link.setAttribute("href", refPath);
+          head.appendChild(link);
+        } else {
+          const script = doc.createElement("script");
+          script.setAttribute("src", refPath);
+          head.appendChild(script);
+        }
+      };
+      const replaceMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const start = safeSource.indexOf(markerStart);
+        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
+        const prefix =
+          start >= 0 ? safeSource.slice(0, start) : safeSource.trimEnd();
+        const suffix =
+          start >= 0 && endStart >= 0
+            ? safeSource.slice(endStart + markerEnd.length).trimStart()
+            : "";
+        if (!blockContent) {
+          return [prefix.trimEnd(), suffix].filter(Boolean).join("\n\n");
+        }
+        const block = `${markerStart}\n${blockContent}\n${markerEnd}`;
+        return [prefix.trimEnd(), block, suffix].filter(Boolean).join("\n\n");
+      };
+
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        cssLocalVirtualPath,
+        "link",
+      );
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        jsLocalVirtualPath,
+        "script",
+      );
+
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const assetDefs = [
+        {
+          path: cssLocalVirtualPath,
+          relativePath: "css/local.css",
+          defaultContent: "",
+        },
+        {
+          path: jsLocalVirtualPath,
+          relativePath: "js/local.js",
+          defaultContent: "// local page interactions\n",
+        },
+      ] as const;
+
+      const upsertedAssets: Record<string, ProjectFile> = {};
+      for (const asset of assetDefs) {
+        const absoluteAssetPath = absoluteHtmlDir
+          ? normalizePath(joinPath(absoluteHtmlDir, asset.relativePath))
+          : null;
+        if (absoluteAssetPath) {
+          const absoluteParent = getParentPath(absoluteAssetPath);
+          if (absoluteParent) {
+            await ensureDirectoryTree(absoluteParent);
+          }
+          filePathIndexRef.current[asset.path] = absoluteAssetPath;
+        }
+        let content =
+          typeof filesRef.current[asset.path]?.content === "string"
+            ? (filesRef.current[asset.path].content as string)
+            : asset.defaultContent;
+        if (!content && absoluteAssetPath) {
+          try {
+            content = await (Neutralino as any).filesystem.readFile(
+              absoluteAssetPath,
+            );
+          } catch {
+            content = asset.defaultContent;
+          }
+        }
+        if (absoluteAssetPath) {
+          await (Neutralino as any).filesystem.writeFile(
+            absoluteAssetPath,
+            content,
+          );
+        }
+        upsertedAssets[asset.path] = {
+          path: asset.path,
+          name: asset.path.split("/").slice(-1)[0],
+          type: asset.path.endsWith(".js") ? "js" : "css",
+          content,
+        } as ProjectFile;
+      }
+
+      const animationClassBase =
+        target.id ||
+        previewSelectedElement?.id ||
+        previewSelectedPath.join("-");
+      const animationClassName = `nx-local-anim-${String(animationClassBase)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const classTokens = new Set(
+        String(target.getAttribute("class") || "")
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      if (nextAnimation) {
+        classTokens.add(animationClassName);
+      } else {
+        classTokens.delete(animationClassName);
+      }
+      if (classTokens.size > 0) {
+        target.setAttribute("class", Array.from(classTokens).join(" "));
+      } else {
+        target.removeAttribute("class");
+      }
+      target.style.removeProperty("animation");
+      if (!target.getAttribute("style")?.trim()) {
+        target.removeAttribute("style");
+      }
+
+      const cssMarkerStart = `/* nocodex-local-animation:${animationClassName}:start */`;
+      const cssMarkerEnd = `/* nocodex-local-animation:${animationClassName}:end */`;
+      const cssRule = nextAnimation
+        ? `.${animationClassName} {\n  animation: ${nextAnimation};\n}`
+        : "";
+      const currentCss =
+        typeof upsertedAssets[cssLocalVirtualPath]?.content === "string"
+          ? (upsertedAssets[cssLocalVirtualPath].content as string)
+          : "";
+      const nextCss = replaceMarkerBlock(
+        currentCss,
+        cssMarkerStart,
+        cssMarkerEnd,
+        cssRule,
+      );
+      upsertedAssets[cssLocalVirtualPath] = {
+        ...upsertedAssets[cssLocalVirtualPath],
+        content: nextCss,
+      } as ProjectFile;
+      const absoluteCssPath = filePathIndexRef.current[cssLocalVirtualPath];
+      if (absoluteCssPath) {
+        await (Neutralino as any).filesystem.writeFile(
+          absoluteCssPath,
+          nextCss,
+        );
+      }
+
+      setFiles((prev) => ({
+        ...prev,
+        ...upsertedAssets,
+      }));
+
+      const serialized = parsed.documentElement.outerHTML;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: true,
+      });
       setPreviewSelectedElement((prev) =>
         prev
           ? {
@@ -7805,13 +7799,334 @@ const App: React.FC = () => {
               animation: nextAnimation,
               styles: {
                 ...prev.styles,
-                animation: nextAnimation,
+                ...Object.fromEntries(
+                  Object.entries(prev.styles || {}).filter(
+                    ([key]) => key !== "animation",
+                  ),
+                ),
+              },
+              className: nextAnimation
+                ? Array.from(
+                    new Set(
+                      `${prev.className || ""} ${animationClassName}`
+                        .trim()
+                        .split(/\s+/)
+                        .filter(Boolean),
+                    ),
+                  ).join(" ")
+                : String(prev.className || "")
+                    .split(/\s+/)
+                    .filter((token) => token && token !== animationClassName)
+                    .join(" "),
+            }
+          : prev,
+      );
+    },
+    [
+      ensureDirectoryTree,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedElement?.id,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewLocalCssPatchAtPath = useCallback(
+    async (
+      elementPath: number[],
+      styles: Partial<React.CSSProperties>,
+      options?: { syncSelectedElement?: boolean },
+    ) => {
+      if (
+        !selectedPreviewHtml ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return;
+      }
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      const liveTarget = getLivePreviewSelectedElement(elementPath);
+      if (
+        !(target instanceof HTMLElement) &&
+        !(liveTarget instanceof HTMLElement)
+      ) {
+        return;
+      }
+
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        }
+        return head;
+      };
+      const ensureCssLinkInHead = (doc: Document, htmlPath: string) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]'),
+        ).some((node) => {
+          const resolved = resolveProjectRelativePath(
+            htmlPath,
+            node.getAttribute("href") ?? "",
+          );
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(cssLocalVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          cssLocalVirtualPath,
+        );
+        if (!refPath) return;
+        const link = doc.createElement("link");
+        link.setAttribute("rel", "stylesheet");
+        link.setAttribute("href", refPath);
+        head.appendChild(link);
+      };
+      const replaceMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const start = safeSource.indexOf(markerStart);
+        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
+        const prefix =
+          start >= 0
+            ? safeSource.slice(0, start).trimEnd()
+            : safeSource.trimEnd();
+        const suffix =
+          start >= 0 && endStart >= 0
+            ? safeSource.slice(endStart + markerEnd.length).trimStart()
+            : "";
+        const block = blockContent
+          ? `${markerStart}\n${blockContent}\n${markerEnd}`
+          : "";
+        return [prefix, block, suffix].filter(Boolean).join("\n\n");
+      };
+      const parseRuleBlock = (source: string): Record<string, string> => {
+        const match = source.match(/\{([\s\S]*)\}/);
+        if (!match) return {};
+        return match[1]
+          .split(";")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .reduce<Record<string, string>>((acc, entry) => {
+            const colonIndex = entry.indexOf(":");
+            if (colonIndex <= 0) return acc;
+            const key = entry.slice(0, colonIndex).trim();
+            const value = entry.slice(colonIndex + 1).trim();
+            if (key) acc[key] = value;
+            return acc;
+          }, {});
+      };
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const absoluteCssPath = absoluteHtmlDir
+        ? normalizePath(joinPath(absoluteHtmlDir, "css/local.css"))
+        : null;
+      if (absoluteCssPath) {
+        const absoluteParent = getParentPath(absoluteCssPath);
+        if (absoluteParent) {
+          await ensureDirectoryTree(absoluteParent);
+        }
+        filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
+      }
+
+      let cssContent =
+        typeof filesRef.current[cssLocalVirtualPath]?.content === "string"
+          ? (filesRef.current[cssLocalVirtualPath].content as string)
+          : "";
+      if (!cssContent && absoluteCssPath) {
+        try {
+          cssContent = await (Neutralino as any).filesystem.readFile(
+            absoluteCssPath,
+          );
+        } catch {
+          cssContent = "";
+        }
+      }
+
+      ensureCssLinkInHead(parsed, selectedPreviewHtml);
+      const classBase =
+        (target instanceof HTMLElement && target.id) ||
+        (liveTarget instanceof HTMLElement && liveTarget.id) ||
+        previewSelectedElement?.id ||
+        elementPath.join("-");
+      const className = `nx-local-style-${String(classBase)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const markerStart = `/* nocodex-local-style:${className}:start */`;
+      const markerEnd = `/* nocodex-local-style:${className}:end */`;
+      const existingStart = cssContent.indexOf(markerStart);
+      const existingEnd =
+        existingStart >= 0 ? cssContent.indexOf(markerEnd, existingStart) : -1;
+      const existingBlock =
+        existingStart >= 0 && existingEnd >= 0
+          ? cssContent.slice(existingStart + markerStart.length, existingEnd)
+          : "";
+      const mergedRules = parseRuleBlock(existingBlock);
+      for (const [key, rawValue] of Object.entries(styles)) {
+        const cssKey = toCssPropertyName(key);
+        const valueRaw =
+          rawValue === undefined || rawValue === null ? "" : String(rawValue);
+        const value =
+          cssKey === "font-family"
+            ? normalizeFontFamilyCssValue(valueRaw)
+            : valueRaw;
+        if (value) {
+          mergedRules[cssKey] = value;
+        } else {
+          delete mergedRules[cssKey];
+        }
+        if (target instanceof HTMLElement) {
+          target.style.removeProperty(cssKey);
+        }
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.style.removeProperty(cssKey);
+        }
+      }
+      const classTokens = new Set(
+        String(
+          (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
+            (liveTarget instanceof HTMLElement
+              ? liveTarget.getAttribute("class")
+              : "") ||
+            "",
+        )
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      classTokens.add(className);
+      const nextClassName = Array.from(classTokens).join(" ");
+      if (target instanceof HTMLElement) {
+        target.setAttribute("class", nextClassName);
+        if (!target.getAttribute("style")?.trim())
+          target.removeAttribute("style");
+      }
+      if (liveTarget instanceof HTMLElement) {
+        liveTarget.setAttribute("class", nextClassName);
+        if (!liveTarget.getAttribute("style")?.trim()) {
+          liveTarget.removeAttribute("style");
+        }
+      }
+      const cssRuleEntries = Object.entries(mergedRules);
+      const cssRuleBlock =
+        cssRuleEntries.length > 0
+          ? `.${className} {\n  ${cssRuleEntries
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(";\n  ")};\n}`
+          : "";
+      const nextCssContent = replaceMarkerBlock(
+        cssContent,
+        markerStart,
+        markerEnd,
+        cssRuleBlock,
+      );
+      textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
+      const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
+        ? {
+            ...filesRef.current[cssLocalVirtualPath],
+            content: nextCssContent,
+            type: "css",
+          }
+        : {
+            path: cssLocalVirtualPath,
+            name: "local.css",
+            type: "css",
+            content: nextCssContent,
+          };
+      filesRef.current = {
+        ...filesRef.current,
+        [cssLocalVirtualPath]: cssFile,
+      };
+      setFiles((prev) => ({
+        ...prev,
+        [cssLocalVirtualPath]: cssFile,
+      }));
+      if (absoluteCssPath) {
+        await (Neutralino as any).filesystem.writeFile(
+          absoluteCssPath,
+          nextCssContent,
+        );
+        delete pendingPreviewWritesRef.current[cssLocalVirtualPath];
+      } else {
+        pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+      }
+      if (liveTarget instanceof HTMLElement) {
+        const liveDoc = liveTarget.ownerDocument;
+        const liveHead = ensureHeadElement(liveDoc);
+        let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
+          `style[data-nx-local-style="${className}"]`,
+        );
+        if (!runtimeStyle) {
+          runtimeStyle = liveDoc.createElement("style");
+          runtimeStyle.setAttribute("data-nx-local-style", className);
+          liveHead.appendChild(runtimeStyle);
+        }
+        runtimeStyle.textContent = cssRuleBlock;
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath,
+      });
+
+      const pathMatchesSelection =
+        Array.isArray(previewSelectedPath) &&
+        previewSelectedPath.length === elementPath.length &&
+        previewSelectedPath.every(
+          (segment, idx) => segment === elementPath[idx],
+        );
+      const shouldSyncSelected =
+        options?.syncSelectedElement ?? pathMatchesSelection;
+      if (!shouldSyncSelected) return;
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              className: nextClassName,
+              styles: {
+                ...prev.styles,
+                ...styles,
               },
             }
           : prev,
       );
     },
-    [applyPreviewStyleUpdate],
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedElement?.id,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
   );
   const applyPreviewDrawCreate = useCallback(
     async (
@@ -7837,10 +8152,23 @@ const App: React.FC = () => {
 
       const parser = new DOMParser();
       const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const parsedParent =
-        normalizedParentPath.length > 0
-          ? readElementByPath(parsed.body, normalizedParentPath)
+      let effectiveParentPath = normalizedParentPath;
+      let parsedParent =
+        effectiveParentPath.length > 0
+          ? readElementByPath(parsed.body, effectiveParentPath)
           : parsed.body;
+      while (
+        parsedParent instanceof HTMLElement &&
+        parsedParent !== parsed.body &&
+        VOID_HTML_TAGS.has(String(parsedParent.tagName || "").toLowerCase()) &&
+        effectiveParentPath.length > 0
+      ) {
+        effectiveParentPath = effectiveParentPath.slice(0, -1);
+        parsedParent =
+          effectiveParentPath.length > 0
+            ? readElementByPath(parsed.body, effectiveParentPath)
+            : parsed.body;
+      }
       if (
         !(parsedParent instanceof HTMLElement) &&
         !(parsedParent instanceof HTMLBodyElement)
@@ -7849,9 +8177,14 @@ const App: React.FC = () => {
       }
 
       const drawTag = normalizePreviewDrawTag(tag);
-      const normalizedStyles = Object.fromEntries(
-        Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
-      ) as Record<string, string>;
+      const normalizedStyles = {
+        ...Object.fromEntries(
+          Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+        ),
+        // Ensure drawn elements appear on top of existing content
+        zIndex:
+          (rawStyles?.zIndex ?? rawStyles?.["z-index"]) ? undefined : "100",
+      } as Record<string, string>;
 
       const applyStyleMap = (
         el: HTMLElement,
@@ -7902,7 +8235,7 @@ const App: React.FC = () => {
       const parsedNewElement = buildDrawElement(parsed);
       parsedParent.appendChild(parsedNewElement);
       const newIndex = Math.max(0, parsedParent.children.length - 1);
-      const newPath = [...normalizedParentPath, newIndex];
+      const newPath = [...effectiveParentPath, newIndex];
 
       // Send PREVIEW_INJECT_ELEMENT into the iframe via postMessage.
       // This is the correct architecture — the iframe inserts the element itself,
@@ -7910,14 +8243,14 @@ const App: React.FC = () => {
       // can fail in sandboxed/mounted-preview contexts and causes index mismatches.
       postPreviewPatchToFrame({
         type: "PREVIEW_INJECT_ELEMENT",
-        parentPath: normalizedParentPath,
+        parentPath: effectiveParentPath,
         tag: drawTag,
         styles: normalizedStyles,
         index: newIndex,
       });
 
       // Also update parsedParent positioning in the serialized HTML
-      if (normalizedParentPath.length > 0) {
+      if (effectiveParentPath.length > 0) {
         const computedStyleStr = parsedParent.getAttribute("style") || "";
         if (
           !computedStyleStr.includes("position") ||
@@ -7984,10 +8317,11 @@ const App: React.FC = () => {
     async (rawType: string, clientX: number, clientY: number) => {
       const dropType = String(rawType || "").trim();
       if (!dropType || !selectedPreviewHtml) return;
+      const isMountedPreviewDrop = Boolean(selectedPreviewSrc);
 
       const idFor = createPresetIdFactory(dropType);
       const nextElement =
-        buildPresetElement(dropType, idFor) ??
+        buildPresetElementV2(dropType, idFor) ??
         buildStandardElement(dropType, idFor("element"));
 
       const loaded = await loadFileContent(selectedPreviewHtml);
@@ -8003,93 +8337,536 @@ const App: React.FC = () => {
       const parsed = parser.parseFromString(sourceHtml, "text/html");
       const parsedNode = materializeVirtualElement(parsed, nextElement);
       if (!(parsedNode instanceof HTMLElement)) return;
+      const requiresAddToolAssets = ADD_TOOL_COMPONENT_PRESETS.has(dropType);
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const jsLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        } else {
+          const html = doc.createElement("html");
+          html.appendChild(head);
+          if (doc.body) {
+            html.appendChild(doc.body);
+          }
+          doc.appendChild(html);
+        }
+        return head;
+      };
+      const ensureAssetLinkInHead = (
+        doc: Document,
+        htmlPath: string,
+        assetVirtualPath: string,
+        tag: "link" | "script",
+      ) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLElement>(
+            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
+          ),
+        ).some((node) => {
+          const refValue =
+            tag === "link"
+              ? (node.getAttribute("href") ?? "")
+              : (node.getAttribute("src") ?? "");
+          const resolved = resolveProjectRelativePath(htmlPath, refValue);
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(assetVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          assetVirtualPath,
+        );
+        if (!refPath) return;
+        if (tag === "link") {
+          const link = doc.createElement("link");
+          link.setAttribute("rel", "stylesheet");
+          link.setAttribute("href", refPath);
+          head.appendChild(link);
+        } else {
+          const script = doc.createElement("script");
+          script.setAttribute("src", refPath);
+          head.appendChild(script);
+        }
+      };
+      const mergeMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const block = blockContent
+          ? `${markerStart}\n${blockContent}\n${markerEnd}`
+          : "";
+        if (
+          safeSource.includes(markerStart) &&
+          safeSource.includes(markerEnd)
+        ) {
+          const start = safeSource.indexOf(markerStart);
+          const endStart = safeSource.indexOf(markerEnd, start);
+          const end = endStart >= 0 ? endStart + markerEnd.length : start;
+          const prefix = safeSource.slice(0, start).trimEnd();
+          const suffix = safeSource.slice(end).trimStart();
+          return [prefix, block, suffix].filter(Boolean).join("\n\n");
+        }
+        if (!block) return safeSource;
+        const needsGap = safeSource.length > 0 && !safeSource.endsWith("\n");
+        return `${safeSource}${needsGap ? "\n\n" : ""}${block}\n`;
+      };
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const upsertLocalAsset = async (
+        assetVirtualPath: string,
+        relativePath: string,
+        nextContentBuilder: (current: string) => string,
+        defaultContent = "",
+      ): Promise<string> => {
+        const absoluteAssetPath = absoluteHtmlDir
+          ? normalizePath(joinPath(absoluteHtmlDir, relativePath))
+          : null;
+        if (absoluteAssetPath) {
+          const absoluteParent = getParentPath(absoluteAssetPath);
+          if (absoluteParent) {
+            await ensureDirectoryTree(absoluteParent);
+          }
+          filePathIndexRef.current[assetVirtualPath] = absoluteAssetPath;
+        }
+        let existingContent =
+          typeof filesRef.current[assetVirtualPath]?.content === "string"
+            ? (filesRef.current[assetVirtualPath].content as string)
+            : "";
+        if (!existingContent && absoluteAssetPath) {
+          try {
+            existingContent = await (Neutralino as any).filesystem.readFile(
+              absoluteAssetPath,
+            );
+          } catch {
+            existingContent = defaultContent;
+          }
+        }
+        if (!existingContent) existingContent = defaultContent;
+        const nextContent = nextContentBuilder(existingContent);
+        textFileCacheRef.current[assetVirtualPath] = nextContent;
+        const name = assetVirtualPath.includes("/")
+          ? assetVirtualPath.slice(assetVirtualPath.lastIndexOf("/") + 1)
+          : assetVirtualPath;
+        const nextFile: ProjectFile = filesRef.current[assetVirtualPath]
+          ? {
+              ...filesRef.current[assetVirtualPath],
+              content: nextContent,
+              type: inferFileType(name),
+            }
+          : {
+              path: assetVirtualPath,
+              name,
+              type: inferFileType(name),
+              content: nextContent,
+            };
+        filesRef.current = {
+          ...filesRef.current,
+          [assetVirtualPath]: nextFile,
+        };
+        setFiles((prev) => ({
+          ...prev,
+          [assetVirtualPath]: nextFile,
+        }));
+        if (absoluteAssetPath) {
+          await (Neutralino as any).filesystem.writeFile(
+            absoluteAssetPath,
+            nextContent,
+          );
+          delete pendingPreviewWritesRef.current[assetVirtualPath];
+        } else {
+          pendingPreviewWritesRef.current[assetVirtualPath] = nextContent;
+        }
+        return nextContent;
+      };
+
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        cssLocalVirtualPath,
+        "link",
+      );
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        jsLocalVirtualPath,
+        "script",
+      );
+
+      if (requiresAddToolAssets) {
+        const removeLegacySharedAssetRefs = (
+          doc: Document,
+          htmlPath: string,
+        ) => {
+          const legacyPaths = new Set([
+            "shared/css/nx-add-tool-components.css",
+            "shared/js/nx-add-tool-components.js",
+            "__nx_add_tool.css",
+            "__nx_add_tool.js",
+          ]);
+          const nodes = Array.from(
+            doc.querySelectorAll<HTMLElement>(
+              'link[rel="stylesheet"][href],script[src]',
+            ),
+          );
+          for (const node of nodes) {
+            const refValue =
+              node.tagName.toLowerCase() === "link"
+                ? (node.getAttribute("href") ?? "")
+                : (node.getAttribute("src") ?? "");
+            const resolved = normalizeProjectRelative(
+              resolveProjectRelativePath(htmlPath, refValue) || "",
+            );
+            if (legacyPaths.has(resolved)) {
+              node.parentElement?.removeChild(node);
+            }
+          }
+          Array.from(
+            doc.querySelectorAll<HTMLElement>(
+              'style[data-nx-add-tool="css"],script[data-nx-add-tool="js"]',
+            ),
+          ).forEach((node) => node.parentElement?.removeChild(node));
+        };
+        removeLegacySharedAssetRefs(parsed, selectedPreviewHtml);
+        const assetDefs = [
+          {
+            path: cssLocalVirtualPath,
+            relativePath: "css/local.css",
+            markerStart: ADD_TOOL_CSS_MARKER_START,
+            markerEnd: ADD_TOOL_CSS_MARKER_END,
+            block: ADD_TOOL_COMPONENTS_CSS_CONTENT,
+          },
+          {
+            path: jsLocalVirtualPath,
+            relativePath: "js/local.js",
+            markerStart: ADD_TOOL_JS_MARKER_START,
+            markerEnd: ADD_TOOL_JS_MARKER_END,
+            block: ADD_TOOL_COMPONENTS_JS_CONTENT,
+          },
+        ] as const;
+        for (const asset of assetDefs) {
+          try {
+            await upsertLocalAsset(
+              asset.path,
+              asset.relativePath,
+              (existingContent) =>
+                mergeMarkerBlock(
+                  existingContent,
+                  asset.markerStart,
+                  asset.markerEnd,
+                  asset.block,
+                ),
+            );
+          } catch (error) {
+            console.warn("Failed writing slide local asset file:", error);
+          }
+        }
+      }
+
+      const pickDropHost = (doc: Document): HTMLElement => {
+        const candidates = [
+          ".maincontainer",
+          ".mainContainer",
+          "#maincontainer",
+          "#mainContainer",
+          "#contentFrame",
+          ".contentFrame",
+          ".mainContent",
+          "#container",
+        ];
+        for (const selector of candidates) {
+          const found = doc.querySelector(selector);
+          if (found instanceof HTMLElement) return found;
+        }
+        return doc.body;
+      };
+      const computePathFromBody = (element: Element | null): number[] => {
+        if (!element) return [];
+        const path: number[] = [];
+        let cursor: Element | null = element;
+        while (cursor && cursor.parentElement) {
+          const parentEl: HTMLElement = cursor.parentElement;
+          const index = Array.from(parentEl.children).indexOf(cursor);
+          if (index < 0) break;
+          path.unshift(index);
+          if (parentEl === element.ownerDocument.body) break;
+          cursor = parentEl;
+        }
+        return path;
+      };
+      const ensurePositionableHost = (host: HTMLElement) => {
+        const computed = host.ownerDocument.defaultView?.getComputedStyle(host);
+        if (!computed) return;
+        if (!computed.position || computed.position === "static") {
+          host.style.setProperty("position", "relative");
+        }
+      };
 
       const liveDocument =
         previewFrameRef.current?.contentDocument ??
         previewFrameRef.current?.contentWindow?.document ??
         null;
-      const frameRect = previewFrameRef.current?.getBoundingClientRect();
       const liveWindow = liveDocument?.defaultView ?? null;
-      if (frameRect) {
-        const nextLeft = Math.max(
-          0,
-          Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
-        );
-        const nextTop = Math.max(
-          0,
-          Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
-        );
-        parsedNode.style.setProperty("position", "absolute");
-        parsedNode.style.setProperty("left", `${nextLeft}px`);
-        parsedNode.style.setProperty("top", `${nextTop}px`);
+      const frameRect = previewFrameRef.current?.getBoundingClientRect();
+      const parsedDropHost = pickDropHost(parsed);
+      const liveDropHost = liveDocument ? pickDropHost(liveDocument) : null;
+      ensurePositionableHost(parsedDropHost);
+      if (liveDropHost) {
+        ensurePositionableHost(liveDropHost);
       }
-      parsed.body.appendChild(parsedNode);
-      const newPath = [Math.max(0, parsed.body.children.length - 1)];
+      const getDocumentOffset = (
+        element: HTMLElement,
+      ): { left: number; top: number } => {
+        let left = 0;
+        let top = 0;
+        let cursor: HTMLElement | null = element;
+        while (cursor) {
+          left += cursor.offsetLeft || 0;
+          top += cursor.offsetTop || 0;
+          cursor = cursor.offsetParent as HTMLElement | null;
+        }
+        return { left, top };
+      };
+
+      let nextLeft = 0;
+      let nextTop = 0;
+      let normalizedDropX: number | null = null;
+      let normalizedDropY: number | null = null;
+      if (frameRect && liveDropHost) {
+        const liveViewportWidth = Math.max(
+          1,
+          previewFrameRef.current?.clientWidth ||
+            liveDocument?.documentElement?.clientWidth ||
+            0,
+        );
+        const liveViewportHeight = Math.max(
+          1,
+          previewFrameRef.current?.clientHeight ||
+            liveDocument?.documentElement?.clientHeight ||
+            0,
+        );
+        const scaleX =
+          liveViewportWidth > 0 ? frameRect.width / liveViewportWidth : 1;
+        const scaleY =
+          liveViewportHeight > 0 ? frameRect.height / liveViewportHeight : 1;
+        normalizedDropX =
+          frameRect.width > 0
+            ? Math.max(
+                0,
+                Math.min(1, (clientX - frameRect.left) / frameRect.width),
+              )
+            : null;
+        normalizedDropY =
+          frameRect.height > 0
+            ? Math.max(
+                0,
+                Math.min(1, (clientY - frameRect.top) / frameRect.height),
+              )
+            : null;
+        const innerClientX = (clientX - frameRect.left) / (scaleX || 1);
+        const innerClientY = (clientY - frameRect.top) / (scaleY || 1);
+        const innerDocX = innerClientX + (liveWindow?.scrollX || 0);
+        const innerDocY = innerClientY + (liveWindow?.scrollY || 0);
+        const hostOffset = getDocumentOffset(liveDropHost);
+        nextLeft = Math.max(0, Math.round(innerDocX - hostOffset.left));
+        nextTop = Math.max(0, Math.round(innerDocY - hostOffset.top));
+      }
+      const hostWidth = Math.max(
+        0,
+        liveDropHost?.scrollWidth ||
+          liveDropHost?.clientWidth ||
+          parsedDropHost.clientWidth ||
+          0,
+      );
+      const hostHeight = Math.max(
+        0,
+        liveDropHost?.scrollHeight ||
+          liveDropHost?.clientHeight ||
+          parsedDropHost.clientHeight ||
+          0,
+      );
+      if (hostWidth > 0) {
+        if (
+          normalizedDropX !== null &&
+          nextLeft === 0 &&
+          normalizedDropX > 0.04
+        ) {
+          nextLeft = Math.round(normalizedDropX * hostWidth);
+        }
+        nextLeft = Math.max(0, Math.min(nextLeft, Math.max(0, hostWidth - 24)));
+      }
+      if (hostHeight > 0) {
+        if (
+          normalizedDropY !== null &&
+          nextTop === 0 &&
+          normalizedDropY > 0.04
+        ) {
+          nextTop = Math.round(normalizedDropY * hostHeight);
+        }
+        nextTop = Math.max(0, Math.min(nextTop, Math.max(0, hostHeight - 24)));
+      }
+      const instanceClassName = `nx-local-drop-${String(
+        nextElement.id || `drop-${Date.now()}`,
+      )
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const styleRules: string[] = [
+        "position: absolute",
+        `left: ${nextLeft}px`,
+        `top: ${nextTop}px`,
+      ];
+      for (const [key, value] of Object.entries(nextElement.styles || {})) {
+        if (value === undefined || value === null || value === "") continue;
+        styleRules.push(`${toCssPropertyName(key)}: ${String(value)}`);
+      }
+      if (requiresAddToolAssets) {
+        styleRules.push("max-width: 100%");
+        styleRules.push("box-sizing: border-box");
+      }
+      const dropMarkerStart = `/* nocodex-local-drop:${instanceClassName}:start */`;
+      const dropMarkerEnd = `/* nocodex-local-drop:${instanceClassName}:end */`;
+      const dropCssBlock = `.${instanceClassName} {\n  ${styleRules.join(";\n  ")};\n}`;
+      try {
+        await upsertLocalAsset(
+          cssLocalVirtualPath,
+          "css/local.css",
+          (existingContent) =>
+            mergeMarkerBlock(
+              existingContent,
+              dropMarkerStart,
+              dropMarkerEnd,
+              dropCssBlock,
+            ),
+        );
+        await upsertLocalAsset(
+          jsLocalVirtualPath,
+          "js/local.js",
+          (existingContent) =>
+            existingContent || "// local page interactions\n",
+          "// local page interactions\n",
+        );
+      } catch (error) {
+        console.warn("Failed wiring local drop assets:", error);
+      }
+      const currentClassTokens = new Set(
+        String(parsedNode.getAttribute("class") || "")
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      currentClassTokens.add(instanceClassName);
+      parsedNode.setAttribute(
+        "class",
+        Array.from(currentClassTokens).join(" "),
+      );
+      parsedNode.removeAttribute("style");
+      parsedDropHost.appendChild(parsedNode);
+      const newPath = computePathFromBody(parsedNode);
       const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
 
+      let appliedLive = false;
       if (liveDocument?.body) {
+        const liveHead = liveDocument.head || liveDocument.documentElement;
+        if (liveHead) {
+          let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
+            `style[data-nx-local-drop="${instanceClassName}"]`,
+          );
+          if (!runtimeStyle) {
+            runtimeStyle = liveDocument.createElement("style");
+            runtimeStyle.setAttribute("data-nx-local-drop", instanceClassName);
+            liveHead.appendChild(runtimeStyle);
+          }
+          runtimeStyle.textContent = dropCssBlock;
+        }
         const liveNode = materializeVirtualElement(liveDocument, nextElement);
-        if (liveNode instanceof HTMLElement && frameRect) {
-          const nextLeft = Math.max(
-            0,
-            Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
-          );
-          const nextTop = Math.max(
-            0,
-            Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
-          );
+        if (liveNode instanceof HTMLElement) {
+          const liveDropHost = pickDropHost(liveDocument);
+          ensurePositionableHost(liveDropHost);
+          liveNode.classList.add(instanceClassName);
           liveNode.style.setProperty("position", "absolute");
           liveNode.style.setProperty("left", `${nextLeft}px`);
           liveNode.style.setProperty("top", `${nextTop}px`);
+          if (requiresAddToolAssets) {
+            liveNode.style.setProperty("max-width", "100%");
+            liveNode.style.setProperty("box-sizing", "border-box");
+          }
+          liveDropHost.appendChild(liveNode);
+          appliedLive = true;
         }
-        liveDocument.body.appendChild(liveNode);
       }
 
+      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
       await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
+        refreshPreviewDoc:
+          needsAssetReload || (!appliedLive && !isMountedPreviewDrop),
+        saveNow: isMountedPreviewDrop,
+        skipAutoSave: !isMountedPreviewDrop,
         elementPath: newPath,
       });
+      if (isMountedPreviewDrop && parsed.body && !needsAssetReload) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_APPLY_HTML",
+          html: parsed.body.innerHTML,
+        });
+      }
 
       setPreviewSelectedPath(newPath);
       setPreviewSelectedElement({
         ...nextElement,
+        className: instanceClassName,
         styles: {
           ...nextElement.styles,
-          ...(frameRect
-            ? {
-                position: "absolute",
-                left: `${Math.max(
-                  0,
-                  Math.round(clientX - frameRect.left + (liveWindow?.scrollX || 0) - 32),
-                )}px`,
-                top: `${Math.max(
-                  0,
-                  Math.round(clientY - frameRect.top + (liveWindow?.scrollY || 0) - 20),
-                )}px`,
-              }
-            : {}),
         },
       });
       setPreviewSelectedComputedStyles(null);
       setSelectedId(null);
       setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
-      if (interactionModeRef.current !== "preview") {
-        setInteractionMode("preview");
-      }
+      requestPropertiesPanelTab("content");
+      setSidebarToolMode("edit");
+      setPreviewMode("edit");
+      setInteractionMode("preview");
     },
-    [loadFileContent, persistPreviewHtmlContent, selectedPreviewHtml],
+    [
+      loadFileContent,
+      postPreviewPatchToFrame,
+      persistPreviewHtmlContent,
+      requestPropertiesPanelTab,
+      selectedPreviewHtml,
+      selectedPreviewSrc,
+    ],
   );
   useEffect(() => {
     applyPreviewDropCreateRef.current = applyPreviewDropCreate;
   }, [applyPreviewDropCreate]);
   const handlePreviewStageDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      const payload =
-        event.dataTransfer.getData(TOOLBOX_DRAG_MIME) ||
-        event.dataTransfer.getData("text/plain");
-      if (!payload || !selectedPreviewHtml) return;
+      if (!selectedPreviewHtml) return;
+      const payload = (
+        getToolboxDragPayload(event.dataTransfer).trim() ||
+        toolboxDragTypeRef.current
+      ).trim();
+      if (!payload) return;
       event.preventDefault();
+      setIsToolboxDragging(false);
+      toolboxDragTypeRef.current = "";
       void applyPreviewDropCreate(payload, event.clientX, event.clientY);
     },
     [applyPreviewDropCreate, selectedPreviewHtml],
@@ -8101,7 +8878,12 @@ const App: React.FC = () => {
     [applyPreviewStyleUpdate],
   );
   const handlePreviewContentUpdateStable = useCallback(
-    (data: { content?: string; html?: string; src?: string; href?: string }) => {
+    (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
       void applyPreviewContentUpdate(data);
     },
     [applyPreviewContentUpdate],
@@ -8143,6 +8925,7 @@ const App: React.FC = () => {
             inlineStyle?: string;
             src?: string;
             href?: string;
+            dir?: string;
             key?: string;
             code?: string;
             ctrlKey?: boolean;
@@ -8299,26 +9082,73 @@ const App: React.FC = () => {
           !payload.path
         )
           return;
+
         const target = resolvePreviewNavigationPath(
           selectedPreviewHtml,
           payload.path,
           filesRef.current,
         );
         if (!target) return;
+
         if (!shouldProcessPreviewPageSignal(target)) return;
-        console.log("[Preview] Current page:", target);
         if (target === activeFileRef.current) return;
+
         syncPreviewActiveFile(target, "navigate");
         return;
       }
 
+      if (payload.type === "PREVIEW_SWIPE_DIR") {
+        const currentPath =
+          selectedPreviewHtmlRef.current || activeFileRef.current;
+        if (!currentPath) return;
+        const dir = payload.dir === "prev" ? "prev" : "next";
+        const nextPath = resolveAdjacentSlidePath(currentPath, dir);
+        if (!nextPath || nextPath === currentPath) return;
+        (window as any).__explorerNavTime = Date.now();
+        explorerSelectionLockRef.current = nextPath;
+        explorerSelectionLockUntilRef.current =
+          Date.now() + EXPLORER_LOCK_TTL_MS;
+        syncPreviewActiveFile(nextPath, "explorer", {
+          skipUnsavedPrompt: true,
+        });
+        return;
+      }
+
       if (payload.type === "PREVIEW_PATH_CHANGED") {
+        console.log("[DEBUG] Frame reported PATH_CHANGED:", payload.path);
         if (typeof payload.path !== "string" || !payload.path) return;
         const mountRelativePath = extractMountRelativePath(payload.path);
         if (!mountRelativePath) return;
         const resolvedVirtualPath =
           resolveVirtualPathFromMountRelative(mountRelativePath);
         if (!resolvedVirtualPath) return;
+
+        const lockPath = explorerSelectionLockRef.current;
+        const lockActive =
+          Boolean(lockPath) &&
+          Date.now() <= explorerSelectionLockUntilRef.current;
+        if (lockPath && !lockActive) {
+          explorerSelectionLockRef.current = null;
+          explorerSelectionLockUntilRef.current = 0;
+        }
+        if (lockPath && lockActive) {
+          const resolvedNorm =
+            normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
+          const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
+          if (resolvedNorm !== lockNorm) {
+            // Frame changed to wrong page — redirect back.
+            // Clear lock first to prevent infinite redirect.
+            return;
+          }
+          // Path matches lock — clear so future changes propagate freely.
+          explorerSelectionLockRef.current = null;
+          explorerSelectionLockUntilRef.current = 0;
+        }
+        // THE FIX: Block rogue automated path changes during manual navigation transition
+        const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
+        if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
+          return;
+        }
         const resolvedFile = filesRef.current[resolvedVirtualPath];
         if (!resolvedFile || resolvedFile.type !== "html") return;
         if (resolvedVirtualPath === activeFileRef.current) return;
@@ -8340,8 +9170,7 @@ const App: React.FC = () => {
       if (payload.type === "PREVIEW_INLINE_EDIT_DRAFT") {
         const nextPath = normalizePreviewPath(payload.path);
         if (!nextPath) return;
-        const draftHtml =
-          typeof payload.html === "string" ? payload.html : "";
+        const draftHtml = typeof payload.html === "string" ? payload.html : "";
         const draftFile = selectedPreviewHtmlRef.current;
         if (draftFile) {
           setDirtyFiles((prev) =>
@@ -8423,7 +9252,9 @@ const App: React.FC = () => {
           html: draftHtml || liveElement.innerHTML || prev?.html || "",
           ...(liveSrc ? { src: liveSrc } : {}),
           ...(liveHref ? { href: liveHref } : {}),
-          ...(liveElement.className ? { className: liveElement.className } : {}),
+          ...(liveElement.className
+            ? { className: liveElement.className }
+            : {}),
           ...(liveAttributes ? { attributes: liveAttributes } : {}),
           ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
           styles: mergedStyles,
@@ -8442,7 +9273,7 @@ const App: React.FC = () => {
             value == null ? "" : String(value),
           ]),
         ) as Partial<React.CSSProperties>;
-        void applyPreviewStyleUpdateAtPath(nextPath, stylePatch, {
+        void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
         });
         return;
@@ -8620,6 +9451,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [
     applyPreviewDrawCreate,
+    applyPreviewLocalCssPatchAtPath,
     applyPreviewStyleUpdateAtPath,
     appendPreviewConsole,
     closePendingPageSwitchPrompt,
@@ -8633,6 +9465,7 @@ const App: React.FC = () => {
     extractMountRelativePath,
     requestPreviewRefreshWithUnsavedGuard,
     requestSwitchToPreviewMode,
+    resolveAdjacentSlidePath,
     previewSyncedFile,
     resolveVirtualPathFromMountRelative,
     runRedo,
@@ -8643,6 +9476,7 @@ const App: React.FC = () => {
     toggleZenMode,
     applyPreviewInlineEditDraft,
     applyPreviewInlineEdit,
+    EXPLORER_LOCK_TTL_MS,
   ]);
   useEffect(() => {
     if (!activeFile) return;
@@ -8847,7 +9681,7 @@ const App: React.FC = () => {
     return firstText ?? null;
   }, [activeFile, files, selectedPreviewHtml]);
   const activeCodeFileType: ProjectFile["type"] | null = activeCodeFilePath
-    ? files[activeCodeFilePath]?.type ?? null
+    ? (files[activeCodeFilePath]?.type ?? null)
     : null;
   const activeCodeContent = useMemo(() => {
     if (!activeCodeFilePath) return "";
@@ -8860,44 +9694,81 @@ const App: React.FC = () => {
   const activeCodeIsDirty = activeCodeFilePath
     ? Boolean(codeDirtyPathSet[activeCodeFilePath])
     : false;
-  const codeEditorFiles = useMemo(
-    () =>
-      Object.keys(files)
-        .filter((path) => isCodeEditableFile(path, files[path].type))
-        .sort((a, b) => a.localeCompare(b)),
+  const activeDetachedEditorFilePath = useMemo(() => {
+    if (activeFile && files[activeFile]) return activeFile;
+    if (selectedPreviewHtml && files[selectedPreviewHtml])
+      return selectedPreviewHtml;
+    return Object.keys(files).sort((a, b) => a.localeCompare(b))[0] ?? null;
+  }, [activeFile, files, selectedPreviewHtml]);
+  const activeDetachedEditorFileType: ProjectFile["type"] | null =
+    activeDetachedEditorFilePath
+      ? (files[activeDetachedEditorFilePath]?.type ?? null)
+      : null;
+  const activeDetachedEditorContent = useMemo(() => {
+    if (!activeDetachedEditorFilePath) return "";
+    if (
+      typeof codeDraftByPath[activeDetachedEditorFilePath] === "string" &&
+      files[activeDetachedEditorFilePath] &&
+      isCodeEditableFile(
+        activeDetachedEditorFilePath,
+        files[activeDetachedEditorFilePath].type,
+      )
+    ) {
+      return codeDraftByPath[activeDetachedEditorFilePath];
+    }
+    const raw = files[activeDetachedEditorFilePath]?.content;
+    return typeof raw === "string" ? raw : "";
+  }, [activeDetachedEditorFilePath, codeDraftByPath, files]);
+  const activeDetachedEditorIsDirty = activeDetachedEditorFilePath
+    ? Boolean(codeDirtyPathSet[activeDetachedEditorFilePath])
+    : false;
+  const detachedEditorIsTextEditable = Boolean(
+    activeDetachedEditorFilePath &&
+    activeDetachedEditorFileType &&
+    isCodeEditableFile(
+      activeDetachedEditorFilePath,
+      activeDetachedEditorFileType,
+    ),
+  );
+  const detachedEditorFiles = useMemo(
+    () => Object.keys(files).sort((a, b) => a.localeCompare(b)),
     [files],
   );
-  const handleCodeSelectFile = useCallback(
+  const handleDetachedEditorSelectFile = useCallback(
     (path: string) => {
-      if (!path || !files[path] || !isCodeEditableFile(path, files[path].type)) {
-        return;
-      }
+      if (!path || !files[path]) return;
       setActiveFileStable(path);
-      if (!isSvgPath(path)) {
-        void loadFileContent(path, { persistToState: true });
+      if (files[path]?.type === "html") {
+        setPreviewSyncedFile((prev) => (prev === path ? prev : path));
+        setPreviewNavigationFile((prev) => (prev === path ? prev : path));
+      }
+      if (isSvgPath(path)) {
+        const absolutePath = filePathIndexRef.current[path];
+        if (!absolutePath) return;
+        void (async () => {
+          try {
+            const raw = await (Neutralino as any).filesystem.readFile(
+              absolutePath,
+            );
+            textFileCacheRef.current[path] = raw;
+            setFiles((prev) => {
+              const existing = prev[path];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [path]: {
+                  ...existing,
+                  content: raw,
+                },
+              };
+            });
+          } catch (error) {
+            console.warn(`Failed reading SVG source ${path}:`, error);
+          }
+        })();
         return;
       }
-      const absolutePath = filePathIndexRef.current[path];
-      if (!absolutePath) return;
-      void (async () => {
-        try {
-          const raw = await (Neutralino as any).filesystem.readFile(absolutePath);
-          textFileCacheRef.current[path] = raw;
-          setFiles((prev) => {
-            const existing = prev[path];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [path]: {
-                ...existing,
-                content: raw,
-              },
-            };
-          });
-        } catch (error) {
-          console.warn(`Failed reading SVG source ${path}:`, error);
-        }
-      })();
+      void loadFileContent(path, { persistToState: true });
     },
     [files, loadFileContent, setActiveFileStable],
   );
@@ -8915,6 +9786,7 @@ const App: React.FC = () => {
             pushToHistory: true,
           });
           if (path === selectedPreviewHtmlRef.current) {
+            setPreviewNavigationFile((prev) => (prev === path ? prev : path));
             setPreviewRefreshNonce((prev) => prev + 1);
           }
         } else {
@@ -8933,6 +9805,12 @@ const App: React.FC = () => {
               },
             };
           });
+          const currentPreview = selectedPreviewHtmlRef.current;
+          if (currentPreview) {
+            setPreviewNavigationFile((prev) =>
+              prev === currentPreview ? prev : currentPreview,
+            );
+          }
           setPreviewRefreshNonce((prev) => prev + 1);
         }
         delete codeDraftByPathRef.current[path];
@@ -8972,11 +9850,12 @@ const App: React.FC = () => {
     };
   }, [saveAllCodeDrafts]);
   const handleCodeDraftChange = useCallback(
-    (nextValue: string) => {
+    (nextValue: string | undefined) => {
       if (!activeCodeFilePath) return;
+      const value = nextValue ?? "";
       codeDraftByPathRef.current = {
         ...codeDraftByPathRef.current,
-        [activeCodeFilePath]: nextValue,
+        [activeCodeFilePath]: value,
       };
       codeDirtyPathSetRef.current = {
         ...codeDirtyPathSetRef.current,
@@ -8987,62 +9866,62 @@ const App: React.FC = () => {
       }
       setCodeDraftByPath((prev) => ({
         ...prev,
-        [activeCodeFilePath]: nextValue,
+        [activeCodeFilePath]: value,
       }));
       setCodeDirtyPathSet((prev) => ({
         ...prev,
         [activeCodeFilePath]: true,
       }));
       setDirtyFiles((prev) =>
-        prev.includes(activeCodeFilePath) ? prev : [...prev, activeCodeFilePath],
+        prev.includes(activeCodeFilePath)
+          ? prev
+          : [...prev, activeCodeFilePath],
       );
     },
     [activeCodeFilePath],
   );
-  const handleCodeReload = useCallback(() => {
-    if (!activeCodeFilePath) return;
-    if (isSvgPath(activeCodeFilePath)) {
-      const absolutePath = filePathIndexRef.current[activeCodeFilePath];
-      if (absolutePath) {
-        void (async () => {
-          try {
-            const raw =
-              await (Neutralino as any).filesystem.readFile(absolutePath);
-            textFileCacheRef.current[activeCodeFilePath] = raw;
-            setFiles((prev) => {
-              const existing = prev[activeCodeFilePath];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [activeCodeFilePath]: {
-                  ...existing,
-                  content: raw,
-                },
-              };
-            });
-          } catch (error) {
-            console.warn(
-              `Failed reloading SVG source ${activeCodeFilePath}:`,
-              error,
-            );
-          }
-        })();
+  const handleDetachedEditorChange = useCallback(
+    (nextValue: string) => {
+      if (!activeDetachedEditorFilePath || !activeDetachedEditorFileType)
+        return;
+      if (
+        !isCodeEditableFile(
+          activeDetachedEditorFilePath,
+          activeDetachedEditorFileType,
+        )
+      ) {
+        return;
       }
-    } else {
-      void loadFileContent(activeCodeFilePath, { persistToState: true });
-    }
-    setCodeDraftByPath((prev) => {
-      const next = { ...prev };
-      delete next[activeCodeFilePath];
-      return next;
-    });
-    setCodeDirtyPathSet((prev) => {
-      const next = { ...prev };
-      delete next[activeCodeFilePath];
-      return next;
-    });
-    setDirtyFiles((prev) => prev.filter((entry) => entry !== activeCodeFilePath));
-  }, [activeCodeFilePath, loadFileContent]);
+      codeDraftByPathRef.current = {
+        ...codeDraftByPathRef.current,
+        [activeDetachedEditorFilePath]: nextValue,
+      };
+      codeDirtyPathSetRef.current = {
+        ...codeDirtyPathSetRef.current,
+        [activeDetachedEditorFilePath]: true,
+      };
+      if (!dirtyFilesRef.current.includes(activeDetachedEditorFilePath)) {
+        dirtyFilesRef.current = [
+          ...dirtyFilesRef.current,
+          activeDetachedEditorFilePath,
+        ];
+      }
+      setCodeDraftByPath((prev) => ({
+        ...prev,
+        [activeDetachedEditorFilePath]: nextValue,
+      }));
+      setCodeDirtyPathSet((prev) => ({
+        ...prev,
+        [activeDetachedEditorFilePath]: true,
+      }));
+      setDirtyFiles((prev) =>
+        prev.includes(activeDetachedEditorFilePath)
+          ? prev
+          : [...prev, activeDetachedEditorFilePath],
+      );
+    },
+    [activeDetachedEditorFilePath, activeDetachedEditorFileType],
+  );
   useEffect(() => {
     if (!isCodePanelOpen) return;
     if (!activeCodeFilePath) return;
@@ -9090,24 +9969,38 @@ const App: React.FC = () => {
       usableHeight / tabletMetrics.contentHeight,
     );
   }, [tabletMetrics]);
-  const currentDevicePixelRatio =
+  const [currentDevicePixelRatio, setCurrentDevicePixelRatio] = useState(() =>
     typeof window !== "undefined" && window.devicePixelRatio
       ? window.devicePixelRatio
-      : 1;
+      : 1,
+  );
+  const useCompactBottomPanel = true;
+  const CONSOLE_PANEL_WIDTH = 420;
   const shouldPushTabletFrame =
     deviceMode === "tablet" &&
     frameZoom === 75 &&
     currentDevicePixelRatio !== 1;
   const tabletPanelPushX = useMemo(() => {
+    if (isPdfAnnotationPanelOpen && deviceMode === "tablet") {
+      return 0;
+    }
     if (!shouldPushTabletFrame) return 0;
-    if (isLeftPanelOpen === isRightPanelOpen) return 0;
-    const push = Math.round(leftPanelWidth * 0.42);
-    return isLeftPanelOpen ? push : -push;
+
+    const rightActive =
+      isRightPanelOpen || isPdfAnnotationPanelOpen || isScreenshotGalleryOpen;
+    if (isLeftPanelOpen === rightActive) return 0;
+
+    // Calculate push amount based on panel widths
+    const pushAmount = Math.round(leftPanelWidth * 0.42);
+    return isLeftPanelOpen ? pushAmount : -pushAmount;
   }, [
     isLeftPanelOpen,
     isRightPanelOpen,
+    isPdfAnnotationPanelOpen,
+    isScreenshotGalleryOpen,
     leftPanelWidth,
     shouldPushTabletFrame,
+    deviceMode,
   ]);
   const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
   const isTabletZoomMode = deviceMode === "tablet";
@@ -9138,15 +10031,20 @@ const App: React.FC = () => {
           const viewportWidth =
             typeof window !== "undefined" ? window.innerWidth : 1440;
           if (!isFloatingPanels) return CODE_PANEL_WIDTH;
-          const floatingPanelWidth = Math.min(42 * 16, Math.max(320, viewportWidth - 96));
+          const floatingPanelWidth = Math.min(
+            42 * 16,
+            Math.max(320, viewportWidth - 96),
+          );
           const floatingRightInset = 40; // `right-10`
           return floatingPanelWidth + floatingRightInset;
         })()
       : 0;
+  const consolePanelStageOffset = 0;
   const stageViewportWidth = Math.max(
     320,
     (typeof window !== "undefined" ? window.innerWidth : 1440) -
-      codePanelStageOffset,
+      codePanelStageOffset -
+      consolePanelStageOffset,
   );
   const estimatedFrameWidthPx =
     deviceMode === "mobile"
@@ -9157,7 +10055,9 @@ const App: React.FC = () => {
           ? stageViewportWidth * 0.8 * frameScale
           : 921.6 * frameScale;
   const halfSpareSpace = (stageViewportWidth - estimatedFrameWidthPx) / 2;
-  const maxShiftMagnitude = Math.max(0, Math.floor(halfSpareSpace - 16));
+  const maxShiftMagnitude =
+    Math.max(0, Math.floor(halfSpareSpace - 16)) +
+    (isPdfAnnotationPanelOpen && deviceMode !== "tablet" ? 400 : 0);
   const intendedCodeShiftX = 0;
   const clampedCodeShiftX = Math.max(
     -maxShiftMagnitude,
@@ -9167,9 +10067,263 @@ const App: React.FC = () => {
     -maxShiftMagnitude,
     Math.min(maxShiftMagnitude, tabletPanelPushX + clampedCodeShiftX),
   );
+  const toolbarAnchorLeft = Math.max(
+    16,
+    Math.round(
+      (typeof window !== "undefined" ? window.innerWidth : 1440) / 2 -
+        estimatedFrameWidthPx / 2 +
+        20,
+    ),
+  );
+  const showDeviceFrameToolbar = true;
+
+  useEffect(() => {
+    const syncDevicePixelRatio = () => {
+      const next =
+        typeof window !== "undefined" && window.devicePixelRatio
+          ? window.devicePixelRatio
+          : 1;
+      setCurrentDevicePixelRatio((prev) =>
+        Math.abs(prev - next) > 0.01 ? next : prev,
+      );
+    };
+
+    syncDevicePixelRatio();
+    const media =
+      typeof window !== "undefined" && window.matchMedia
+        ? window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+        : null;
+
+    window.addEventListener("resize", syncDevicePixelRatio);
+    media?.addEventListener?.("change", syncDevicePixelRatio);
+
+    return () => {
+      window.removeEventListener("resize", syncDevicePixelRatio);
+      media?.removeEventListener?.("change", syncDevicePixelRatio);
+    };
+  }, [currentDevicePixelRatio]);
+
+  useEffect(() => {
+    const previousDpr = lastPanelDprRef.current;
+    lastPanelDprRef.current = currentDevicePixelRatio;
+    if (
+      previousDpr === null ||
+      Math.abs(previousDpr - currentDevicePixelRatio) < 0.01
+    ) {
+      return;
+    }
+    setRightPanelFloatingPosition(
+      getDefaultRightPanelPosition(rightPanelWidth),
+    );
+  }, [currentDevicePixelRatio, getDefaultRightPanelPosition, rightPanelWidth]);
+
+  useEffect(() => {
+    const clampRightPanelPosition = () => {
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 1440;
+      const viewportHeight =
+        typeof window !== "undefined" ? window.innerHeight : 900;
+      setRightPanelFloatingPosition((prev) => ({
+        left: Math.max(
+          8,
+          Math.min(prev.left, Math.max(8, viewportWidth - rightPanelWidth - 8)),
+        ),
+        top: Math.max(
+          56,
+          Math.min(prev.top, Math.max(56, viewportHeight - 140)),
+        ),
+      }));
+    };
+
+    window.addEventListener("resize", clampRightPanelPosition);
+    return () => window.removeEventListener("resize", clampRightPanelPosition);
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    if (!isCompactConsoleOpening) return;
+    const timer = window.setTimeout(() => {
+      setIsCompactConsoleOpening(false);
+    }, 520);
+    return () => window.clearTimeout(timer);
+  }, [isCompactConsoleOpening]);
+
+  useEffect(() => {
+    const targetZoom: 75 | 100 = currentDevicePixelRatio >= 1.5 ? 75 : 100;
+    const previousAuto = lastAutoDprZoomRef.current;
+    if (previousAuto === targetZoom) return;
+    lastAutoDprZoomRef.current = targetZoom;
+    if (deviceMode !== "tablet") return;
+    setFrameZoom(targetZoom);
+  }, [currentDevicePixelRatio, deviceMode]);
+
+  useEffect(() => {
+    if (bottomPanelTab !== "console") {
+      setBottomPanelTab("console");
+    }
+  }, [bottomPanelTab]);
+
+  const renderDetachedConsoleWindow = useCallback(() => {
+    const detachedWindow = detachedConsoleWindowRef.current;
+    if (!detachedWindow || detachedWindow.closed) {
+      detachedConsoleWindowRef.current = null;
+      return;
+    }
+
+    const rows =
+      previewConsoleEntries.length === 0
+        ? `<div class="empty">No project logs yet</div>`
+        : previewConsoleEntries
+            .map((entry) => {
+              const levelClass =
+                entry.level === "error"
+                  ? "error"
+                  : entry.level === "warn"
+                    ? "warn"
+                    : "info";
+              return `<div class="row ${levelClass}">
+  <div class="meta">${escapeConsoleHtml(entry.level.toUpperCase())} • ${escapeConsoleHtml(entry.source || "preview")}</div>
+  <div class="message">${escapeConsoleHtml(entry.message)}</div>
+</div>`;
+            })
+            .join("");
+
+    detachedWindow.document.open();
+    detachedWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>NoCodeX Console</title>
+  <style>
+    :root { color-scheme: ${theme === "dark" ? "dark" : "light"}; }
+    body {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: ${theme === "dark" ? "#020617" : "#f8fafc"};
+      color: ${theme === "dark" ? "#e2e8f0" : "#0f172a"};
+    }
+    .shell { display: flex; flex-direction: column; height: 100vh; }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; border-bottom: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.25)" : "rgba(148,163,184,0.2)"};
+      background: ${theme === "dark" ? "rgba(15,23,42,0.96)" : "rgba(255,255,255,0.96)"};
+      position: sticky; top: 0;
+    }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      font-size: 11px; padding: 4px 8px; border-radius: 999px;
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      background: ${theme === "dark" ? "rgba(30,41,59,0.7)" : "rgba(241,245,249,0.95)"};
+    }
+    .body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .row {
+      border-radius: 12px; padding: 10px 12px;
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.18)"};
+      background: ${theme === "dark" ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.95)"};
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .row.warn { border-color: rgba(245,158,11,0.35); }
+    .row.error { border-color: rgba(239,68,68,0.35); }
+    .meta { font-size: 10px; opacity: 0.7; margin-bottom: 6px; }
+    .message { font-size: 12px; line-height: 1.45; }
+    .empty {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      border: 1px dashed ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      border-radius: 16px; min-height: 160px; font-size: 12px; opacity: 0.75;
+    }
+    button {
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      background: transparent; color: inherit; border-radius: 10px; padding: 8px 10px; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <div class="badges">
+        <span class="badge">Logs ${previewConsoleEntries.length}</span>
+        <span class="badge">Warn ${previewConsoleWarnCount}</span>
+        <span class="badge">Error ${previewConsoleErrorCount}</span>
+      </div>
+      <button onclick="window.close()">Close</button>
+    </div>
+    <div class="body">${rows}</div>
+  </div>
+</body>
+</html>`);
+    detachedWindow.document.close();
+  }, [
+    previewConsoleEntries,
+    previewConsoleWarnCount,
+    previewConsoleErrorCount,
+    theme,
+  ]);
+
+  const handleDetachConsoleWindow = useCallback(() => {
+    const existingWindow = detachedConsoleWindowRef.current;
+    if (existingWindow && !existingWindow.closed) {
+      existingWindow.focus();
+      return;
+    }
+    const nextWindow = window.open(
+      "",
+      "nocodex-console-window",
+      "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes",
+    );
+    if (!nextWindow) return;
+    detachedConsoleWindowRef.current = nextWindow;
+    window.setTimeout(() => {
+      renderDetachedConsoleWindow();
+    }, 0);
+    setShowTerminal(false);
+  }, [renderDetachedConsoleWindow]);
+
+  useEffect(() => {
+    renderDetachedConsoleWindow();
+  }, [renderDetachedConsoleWindow]);
+
+  useEffect(() => {
+    return () => {
+      if (
+        detachedConsoleWindowRef.current &&
+        !detachedConsoleWindowRef.current.closed
+      ) {
+        detachedConsoleWindowRef.current.close();
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (interactionMode !== "preview" || !quickTextEdit.open) return;
+    const viewportWidth =
+      typeof window !== "undefined" ? window.innerWidth : 1440;
+    const viewportHeight =
+      typeof window !== "undefined" ? window.innerHeight : 900;
+    const margin = 16;
+    const panelWidth = rightPanelWidth;
+    const panelHeight = 420;
+    const nextLeft = Math.max(
+      margin,
+      Math.min(quickTextEdit.x, viewportWidth - panelWidth - margin),
+    );
+    const nextTop = Math.max(
+      margin,
+      Math.min(quickTextEdit.y, viewportHeight - panelHeight - margin),
+    );
+    setRightPanelFloatingPosition({ left: nextLeft, top: nextTop });
+    if (!isRightPanelOpen) {
+      setIsRightPanelOpen(true);
+    }
+  }, [
+    interactionMode,
+    quickTextEdit.open,
+    quickTextEdit.x,
+    quickTextEdit.y,
+    rightPanelWidth,
+    isRightPanelOpen,
+  ]);
   const pendingSwitchFromLabel =
     pendingPageSwitch?.fromPath &&
-    normalizePath(pendingPageSwitch.fromPath).split("/").filter(Boolean).length > 0
+    normalizePath(pendingPageSwitch.fromPath).split("/").filter(Boolean)
+      .length > 0
       ? normalizePath(pendingPageSwitch.fromPath)
           .split("/")
           .filter(Boolean)
@@ -9177,7 +10331,8 @@ const App: React.FC = () => {
       : pendingPageSwitch?.fromPath || "current page";
   const pendingSwitchNextLabel =
     pendingPageSwitch?.nextPath &&
-    normalizePath(pendingPageSwitch.nextPath).split("/").filter(Boolean).length > 0
+    normalizePath(pendingPageSwitch.nextPath).split("/").filter(Boolean)
+      .length > 0
       ? normalizePath(pendingPageSwitch.nextPath)
           .split("/")
           .filter(Boolean)
@@ -9185,6 +10340,292 @@ const App: React.FC = () => {
       : pendingPageSwitch?.nextPath || "next page";
   const isPendingRefresh = pendingPageSwitch?.mode === "refresh";
   const isPendingPreviewMode = pendingPageSwitch?.mode === "preview_mode";
+  const renderPdfAnnotationCard = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      const isCurrentSlideMatch =
+        annotation.mappedSlideId === currentPreviewSlideId;
+      const isFocused =
+        focusedPdfAnnotation?.annotationId === annotation.annotationId;
+      const mainThreadEntry =
+        annotation.threadEntries.find((entry) => entry.role === "comment") ||
+        annotation.threadEntries[0] ||
+        null;
+      const replyEntries = annotation.threadEntries.filter(
+        (entry) => entry !== mainThreadEntry,
+      );
+      const mappedLabel = resolveMappedLabelShort(annotation);
+      const effectiveType =
+        pdfAnnotationTypeOverrides[annotation.annotationId] ||
+        (ANNOTATION_INTENT_OPTIONS.includes(annotation.annotationType)
+          ? annotation.annotationType
+          : "notFound");
+      const typeOptions = ANNOTATION_INTENT_OPTIONS;
+      const hasResolvableTarget = Boolean(
+        annotation.foundSelector ||
+        annotation.mappedFilePath ||
+        annotation.status === "Mapped" ||
+        annotation.popupInvocation?.triggerSelector ||
+        annotation.popupInvocation?.containerSelector ||
+        (annotation.subtype === "Popup" && annotation.mappedFilePath) ||
+        (annotation.subtype === "Popup" &&
+          annotation.pdfContextText &&
+          annotation.pdfContextText.length > 5),
+      );
+      return (
+        <div
+          key={annotation.annotationId}
+          className="rounded-[22px] border px-4 py-4"
+          style={{
+            borderColor: isFocused
+              ? "rgba(34,211,238,0.55)"
+              : theme === "dark"
+                ? "rgba(148,163,184,0.18)"
+                : "rgba(15,23,42,0.08)",
+            background: isCurrentSlideMatch
+              ? theme === "dark"
+                ? "rgba(8,145,178,0.16)"
+                : "rgba(14,165,233,0.1)"
+              : theme === "dark"
+                ? "rgba(15,23,42,0.54)"
+                : "rgba(255,255,255,0.8)",
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">
+                Page {annotation.annoPdfPage}
+              </div>
+              <div
+                className="mt-1 text-[11px] uppercase tracking-[0.18em]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {mappedLabel ? mappedLabel : "Unmapped"}
+              </div>
+            </div>
+            <div className="shrink-0 flex flex-col items-end gap-2">
+              <select
+                title={`Annotation intent for page ${annotation.annoPdfPage}`}
+                aria-label={`Annotation intent for page ${annotation.annoPdfPage}`}
+                className="rounded-full border bg-transparent px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.4)"
+                      : "rgba(14,165,233,0.35)",
+                  color: "var(--text-main)",
+                }}
+                value={effectiveType}
+                onChange={(event) =>
+                  dispatch(
+                    setTypeOverrides({
+                      ...pdfAnnotationTypeOverrides,
+                      [annotation.annotationId]: event.target.value,
+                    }),
+                  )
+                }
+              >
+                {typeOptions.map((option) => (
+                  <option
+                    key={`anno-type-${annotation.annotationId}-${option}`}
+                    value={option}
+                  >
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <div
+                className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+                style={{
+                  background:
+                    theme === "dark"
+                      ? "rgba(148,163,184,0.18)"
+                      : "rgba(15,23,42,0.1)",
+                  color: "var(--text-main)",
+                }}
+              >
+                {annotation.annotationLocationType}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 text-[13px] leading-6 break-words">
+            {mainThreadEntry ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="font-medium leading-6">
+                    {mainThreadEntry.text}
+                  </div>
+                  <div
+                    className="mt-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {mainThreadEntry.author}
+                  </div>
+                </div>
+                {replyEntries.length > 0 ? (
+                  <div
+                    className="rounded-2xl border px-3 py-3 space-y-3"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.14)"
+                          : "rgba(15,23,42,0.08)",
+                      background:
+                        theme === "dark"
+                          ? "rgba(2,6,23,0.24)"
+                          : "rgba(248,250,252,0.9)",
+                    }}
+                  >
+                    <div
+                      className="text-[10px] font-semibold uppercase tracking-[0.18em]"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      Discussion
+                    </div>
+                    {replyEntries.map((entry, index) => (
+                      <div
+                        key={`${annotation.annotationId}-reply-${index}`}
+                        className="pl-3 border-l space-y-1"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(34,211,238,0.24)"
+                              : "rgba(14,165,233,0.18)",
+                        }}
+                      >
+                        <div className="leading-6">{entry.text}</div>
+                        <div
+                          className="text-[11px] font-semibold uppercase tracking-[0.16em]"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          {entry.author}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              annotation.annotationText
+            )}
+          </div>
+          <div
+            className="mt-3 flex items-center gap-2 text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{
+                background: hasResolvableTarget
+                  ? "rgba(34,197,94,0.9)"
+                  : "rgba(248,113,113,0.9)",
+              }}
+            />
+            {hasResolvableTarget
+              ? "Target mapped in preview"
+              : "Target not mapped to preview"}
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            {annotation.annotationText && hasResolvableTarget && (
+              <button
+                type="button"
+                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors flex items-center gap-1.5"
+                style={{
+                  borderColor: "rgba(16,185,129,0.34)",
+                  background: "rgba(16,185,129,0.1)",
+                  color: theme === "dark" ? "#6ee7b7" : "#065f46",
+                }}
+                onClick={async () => {
+                  try {
+                    const aiRoot =
+                      interactionMode === "preview" ? previewLayersRoot : root;
+                    if (!aiRoot) return;
+
+                    const pipeline = new AIPipeline();
+                    const response = await pipeline.process(
+                      annotation.annotationText,
+                      aiRoot,
+                      files,
+                      {
+                        allowPopupActions: true,
+                        annotationContext: annotation,
+                      },
+                    );
+
+                    if (response.intent !== "UNKNOWN" && response.updatedRoot) {
+                      if (interactionMode === "preview") {
+                        const currentPath = selectedPreviewHtmlRef.current;
+                        if (currentPath) {
+                          const tempDoc =
+                            document.implementation.createHTMLDocument();
+                          const node = materializeVirtualElement(
+                            tempDoc,
+                            response.updatedRoot,
+                          );
+                          const serialized =
+                            (node as HTMLElement).innerHTML || "";
+                          // @ts-ignore
+                          await persistPreviewHtmlContent(
+                            currentPath,
+                            serialized,
+                            { refreshPreviewDoc: true, saveNow: true },
+                          );
+                        }
+                      } else {
+                        setRoot(response.updatedRoot);
+                      }
+
+                      console.log(
+                        "AI Action Applied from Annotation:",
+                        response.message,
+                      );
+                    }
+                  } catch (err) {
+                    console.error("AI Action failed:", err);
+                  }
+                }}
+              >
+                <Sparkles size={12} />
+                Apply AI Action
+              </button>
+            )}
+            {annotation.popupInvocation?.popupId && (
+              <div
+                className="px-2 py-1 rounded text-[10px] font-mono opacity-60 hover:opacity-100 transition-opacity cursor-help"
+                title={`Resolved Popup ID: ${annotation.popupInvocation.popupId}`}
+                style={{ background: "rgba(0,0,0,0.1)" }}
+              >
+                PID: {annotation.popupInvocation.popupId.slice(0, 8)}...
+              </div>
+            )}
+            {annotation.mappedFilePath ? (
+              <button
+                type="button"
+                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.34)"
+                      : "rgba(14,165,233,0.28)",
+                  color: theme === "dark" ? "#67e8f9" : "#0f766e",
+                }}
+                onClick={() => handleJumpToPdfAnnotation(annotation)}
+              >
+                Open In Slide
+              </button>
+            ) : null}
+          </div>
+        </div>
+      );
+    },
+    [
+      currentPreviewSlideId,
+      focusedPdfAnnotation?.annotationId,
+      handleJumpToPdfAnnotation,
+      pdfAnnotationTypeOverrides,
+      resolveMappedLabelShort,
+      theme,
+    ],
+  );
 
   return (
     <div
@@ -9194,6 +10635,7 @@ const App: React.FC = () => {
         backgroundColor: "var(--bg-app)",
         color: "var(--text-main)",
         ["--left-panel-width" as any]: `${leftPanelWidth}px`,
+        ["--right-panel-width" as any]: `${rightPanelWidth}px`,
         ...(theme !== "light"
           ? {
               boxShadow:
@@ -9202,7 +10644,6 @@ const App: React.FC = () => {
           : {}),
       }}
     >
-      <TitleBar />
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
@@ -9213,9 +10654,7 @@ const App: React.FC = () => {
           className="fixed inset-0 z-[1400] flex items-center justify-center px-4"
           style={{
             background:
-              theme === "dark"
-                ? "rgba(2,6,23,0.58)"
-                : "rgba(15,23,42,0.25)",
+              theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
             backdropFilter: "blur(8px)",
           }}
         >
@@ -9233,7 +10672,10 @@ const App: React.FC = () => {
               color: "var(--text-main)",
             }}
           >
-            <div className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2" style={{ color: "var(--text-muted)" }}>
+            <div
+              className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2"
+              style={{ color: "var(--text-muted)" }}
+            >
               Unsaved Changes
             </div>
             <h3 className="text-base font-semibold leading-tight">
@@ -9243,14 +10685,37 @@ const App: React.FC = () => {
                   ? "Save changes before switching mode?"
                   : "Save changes before switching page?"}
             </h3>
-            <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--text-muted)" }}>
-              You have unsaved edits in <span className="font-semibold" style={{ color: "var(--text-main)" }}>{pendingSwitchFromLabel}</span>.
+            <p
+              className="text-xs mt-2 leading-relaxed"
+              style={{ color: "var(--text-muted)" }}
+            >
+              You have unsaved edits in{" "}
+              <span
+                className="font-semibold"
+                style={{ color: "var(--text-main)" }}
+              >
+                {pendingSwitchFromLabel}
+              </span>
+              .
               {isPendingRefresh ? (
                 <> Refresh can overwrite your in-memory edits.</>
               ) : isPendingPreviewMode ? (
-                <> Switching to Preview mode can overwrite your in-memory edits.</>
+                <>
+                  {" "}
+                  Switching to Preview mode can overwrite your in-memory edits.
+                </>
               ) : (
-                <> Switching to <span className="font-semibold" style={{ color: "var(--text-main)" }}>{pendingSwitchNextLabel}</span> can overwrite your in-memory edits.</>
+                <>
+                  {" "}
+                  Switching to{" "}
+                  <span
+                    className="font-semibold"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    {pendingSwitchNextLabel}
+                  </span>{" "}
+                  can overwrite your in-memory edits.
+                </>
               )}
             </p>
             <div className="mt-4 flex items-center justify-end gap-2">
@@ -9313,245 +10778,209 @@ const App: React.FC = () => {
       )}
 
       {/* --- Floating Toolbar --- */}
-      <div
-        className={`absolute top-6 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-4 glass-toolbar rounded-full px-6 py-2 transition-all animate-slideDown ${isZenMode ? "opacity-65 hover:opacity-90" : "hover:scale-[1.02]"}`}
-      >
-        <div className="flex items-center gap-2 pr-4 border-r border-gray-500/20">
-          <div className="w-2.5 h-2.5 rounded-full bg-red-500/80 shadow-red-500/50 shadow-sm"></div>
-          <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80 shadow-yellow-500/50 shadow-sm"></div>
-          <div className="w-2.5 h-2.5 rounded-full bg-green-500/80 shadow-green-500/50 shadow-sm"></div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            className="glass-icon-btn group"
-            onClick={() => setIsCommandPaletteOpen(true)}
-            title="Command Palette (Ctrl+K)"
-          >
-            <Command
-              size={16}
-              className="group-hover:text-indigo-400 transition-colors"
-            />
-          </button>
-          <button
-            className="glass-icon-btn group"
-            onClick={handleOpenFolder}
-            title="Open Project Folder"
-          >
-            <FolderOpen
-              size={16}
-              className="group-hover:text-indigo-400 transition-colors"
-            />
-          </button>
-          <button
-            className={`glass-icon-btn group ${isCodePanelOpen ? "text-cyan-400" : ""}`}
-            onClick={openCodePanel}
-            title="Open Code Panel"
-          >
-            <Code2
-              size={16}
-              className="group-hover:text-cyan-400 transition-colors"
-            />
-          </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className={`glass-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
-            onClick={() => {
-              setDeviceMode("tablet");
-              setTabletOrientation((prev) =>
-                prev === "landscape" ? "portrait" : "landscape",
-              );
+      {false && (
+        <div
+          className={`absolute top-3 z-[1000] transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+          style={{ left: `${toolbarAnchorLeft}px` }}
+        >
+          <div
+            className="px-3 py-1 flex items-center gap-2 min-w-0 rounded-[16px] border"
+            style={{
+              background:
+                theme === "dark"
+                  ? "rgba(12,18,30,0.96)"
+                  : "rgba(248,250,252,0.96)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(199,208,220,0.42)"
+                  : "rgba(15,23,42,0.14)",
+              boxShadow:
+                theme === "dark"
+                  ? "0 10px 24px rgba(2,6,23,0.34)"
+                  : "0 10px 24px rgba(15,23,42,0.10)",
+              backdropFilter: "blur(14px)",
             }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setDeviceMode("tablet");
-              setDeviceCtxMenu({ type: "tablet", x: e.clientX, y: e.clientY });
-            }}
-            title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
           >
-            <Tablet
-              size={16}
-              className="transition-transform duration-300 ease-out"
-              style={{
-                transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
-              }}
-            />
-          </button>
-          <button
-            className="glass-icon-btn"
-            onClick={handlePreviewRefresh}
-            title="Refresh iPad content (Ctrl+T)"
-          >
-            <RotateCw size={16} />
-          </button>
-          <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
-            {[50, 75, 100].map((zoom) => (
-              <button
-                key={zoom}
-                onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  frameZoom === zoom
-                    ? theme === "light"
-                      ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
-                      : "bg-indigo-500/25 text-indigo-300"
-                    : theme === "light"
-                      ? "text-slate-500 hover:bg-slate-200/70"
-                      : "text-gray-300 hover:bg-white/10"
-                }`}
-                title={`Set frame zoom to ${zoom}%`}
-              >
-                {zoom}%
-              </button>
-            ))}
-          </div>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className="glass-icon-btn"
-            onClick={toggleThemeWithTransition}
-            title="Toggle Theme"
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className="glass-icon-btn"
-            onClick={runUndo}
-            title="Undo (Ctrl+Z)"
-          >
-            <Undo2 size={16} />
-          </button>
-          <button
-            className="glass-icon-btn"
-            onClick={runRedo}
-            title="Redo (Ctrl+U)"
-          >
-            <Redo2 size={16} />
-          </button>
-          <div className="relative" ref={saveMenuRef}>
+            {null}
             <button
-              className={`glass-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
-              onClick={() => setIsSaveMenuOpen((prev) => !prev)}
-              title="Save settings"
+              className={`glass-icon-btn navbar-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
+              onClick={() => {
+                setDeviceMode("tablet");
+                setTabletOrientation((prev) =>
+                  prev === "landscape" ? "portrait" : "landscape",
+                );
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setDeviceMode("tablet");
+                setDeviceCtxMenu({
+                  type: "tablet",
+                  x: e.clientX,
+                  y: e.clientY,
+                });
+              }}
+              title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
             >
-              <Settings2 size={16} />
-            </button>
-            {dirtyFiles.length > 0 && (
-              <span
-                className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
-                aria-hidden="true"
-              />
-            )}
-            {isSaveMenuOpen && (
-              <div
-                className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+              <Tablet
+                size={16}
+                className="transition-transform duration-300 ease-out"
                 style={{
-                  background:
-                    theme === "dark"
-                      ? "rgba(15,23,42,0.98)"
-                      : "rgba(255,255,255,0.98)",
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(148,163,184,0.35)"
-                      : "rgba(15,23,42,0.15)",
-                  color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                  transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
                 }}
-              >
+              />
+            </button>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={handlePreviewRefresh}
+              title="Refresh iPad content (Ctrl+T)"
+            >
+              <RotateCw size={16} />
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+              {[50, 75, 100].map((zoom) => (
                 <button
-                  className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
-                  onClick={() => {
-                    void saveCodeDraftsRef.current?.();
-                    void flushPendingPreviewSaves();
-                    setIsSaveMenuOpen(false);
+                  key={zoom}
+                  onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    frameZoom === zoom
+                      ? theme === "light"
+                        ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                        : "bg-indigo-500/25 text-indigo-300"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title={`Set frame zoom to ${zoom}%`}
+                >
+                  {zoom}%
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={toggleThemeWithTransition}
+              title="Toggle Theme"
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={runUndo}
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 size={16} />
+            </button>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={runRedo}
+              title="Redo (Ctrl+U)"
+            >
+              <Redo2 size={16} />
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <div className="relative" ref={saveMenuRef}>
+              <button
+                className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
+                onClick={() => setIsSaveMenuOpen((prev) => !prev)}
+                title="Save settings"
+              >
+                <Settings2 size={16} />
+              </button>
+              {dirtyFiles.length > 0 && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
+                  aria-hidden="true"
+                />
+              )}
+              {isSaveMenuOpen && (
+                <div
+                  className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+                  style={{
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.98)"
+                        : "rgba(255,255,255,0.98)",
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.35)"
+                        : "rgba(15,23,42,0.15)",
+                    color: theme === "dark" ? "#e2e8f0" : "#0f172a",
                   }}
                 >
-                  <span className="flex items-center gap-2">
-                    <Save size={13} />
-                    Save Now
-                  </span>
-                  <span className="opacity-70">Ctrl+S</span>
-                </button>
-                <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
-                  <span>Auto Save</span>
-                  <input
-                    type="checkbox"
-                    checked={autoSaveEnabled}
-                    onChange={(e) => setAutoSaveEnabled(e.target.checked)}
-                  />
-                </label>
-                <div className="px-2 pt-1 text-[10px] opacity-70">
-                  Smart debounce (about 1.2s idle), not every keystroke.
-                </div>
-                {dirtyFiles.length > 0 && (
-                  <div className="px-2 pt-2 text-[10px] text-amber-400">
-                    {dirtyFiles.length} unsaved file
-                    {dirtyFiles.length > 1 ? "s" : ""}
+                  <button
+                    className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
+                    onClick={() => {
+                      void saveCodeDraftsRef.current?.();
+                      void flushPendingPreviewSaves();
+                      setIsSaveMenuOpen(false);
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Save size={13} />
+                      Save Now
+                    </span>
+                    <span className="opacity-70">Ctrl+S</span>
+                  </button>
+                  <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                    <span>Auto Save</span>
+                    <input
+                      type="checkbox"
+                      checked={autoSaveEnabled}
+                      onChange={(e) => setAutoSaveEnabled(e.target.checked)}
+                    />
+                  </label>
+                  <div className="px-2 pt-1 text-[10px] opacity-70">
+                    Smart debounce (about 1.2s idle), not every keystroke.
                   </div>
-                )}
+                  {dirtyFiles.length > 0 && (
+                    <div className="px-2 pt-2 text-[10px] text-amber-400">
+                      {dirtyFiles.length} unsaved file
+                      {dirtyFiles.length > 1 ? "s" : ""}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {interactionMode === "preview" && (
+              <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+                <button
+                  onClick={() => setPreviewModeWithSync("edit")}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    previewMode === "edit"
+                      ? theme === "light"
+                        ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                        : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title="LIVE Edit mode: select and edit elements"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setPreviewModeWithSync("preview")}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    previewMode === "preview"
+                      ? theme === "light"
+                        ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                        : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title="LIVE Preview mode: navigate and interact"
+                >
+                  Preview
+                </button>
               </div>
             )}
           </div>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${
-              interactionMode === "preview"
-                ? theme === "light"
-                  ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
-                  : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/35"
-                : theme === "light"
-                  ? "bg-cyan-500/10 text-cyan-600 border border-cyan-500/25 hover:bg-cyan-500/20"
-                  : "bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 hover:bg-cyan-500/20"
-            }`}
-            onClick={() => {
-              if (interactionMode === "preview") {
-                setSidebarToolMode("edit");
-                setPreviewModeWithSync("edit");
-                return;
-              }
-              requestSwitchToPreviewMode();
-            }}
-            title="Run Project on Device"
-          >
-            <Play
-              size={10}
-              fill={interactionMode === "preview" ? "currentColor" : "none"}
-            />
-            {interactionMode === "preview" ? "LIVE" : "Run"}
-          </button>
-          {interactionMode === "preview" && (
-            <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
-              <button
-                onClick={() => setPreviewModeWithSync("edit")}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  previewMode === "edit"
-                    ? theme === "light"
-                      ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
-                      : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
-                    : theme === "light"
-                      ? "text-slate-500 hover:bg-slate-200/70"
-                      : "text-gray-300 hover:bg-white/10"
-                }`}
-                title="LIVE Edit mode: select and edit elements"
-              >
-                Edit
-              </button>
-              <button
-                onClick={() => setPreviewModeWithSync("preview")}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  previewMode === "preview"
-                    ? theme === "light"
-                      ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
-                      : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
-                    : theme === "light"
-                      ? "text-slate-500 hover:bg-slate-200/70"
-                      : "text-gray-300 hover:bg-white/10"
-                }`}
-                title="LIVE Preview mode: navigate and interact"
-              >
-                Preview
-              </button>
-            </div>
-          )}
         </div>
-      </div>
+      )}
       {isZenMode && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[999] px-3 py-1 rounded-full text-[10px] font-semibold tracking-wider border backdrop-blur-md bg-black/20 text-white/90 border-white/20">
           Zen Mode Active • Press Esc to exit
@@ -9568,6 +10997,7 @@ const App: React.FC = () => {
           desktopResolution={desktopResolution}
           setDesktopResolution={setDesktopResolution}
           tabletModel={tabletModel}
+          tabletOrientation={tabletOrientation}
           setTabletModel={setTabletModel}
           onClose={() => setDeviceCtxMenu(null)}
         />
@@ -9576,34 +11006,34 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "left-10 top-24" : "left-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isLeftPanelOpen ? "animate-panelInLeft" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "left-0 top-20" : "left-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
           style={{
-            transform: isLeftPanelOpen
-              ? "translateX(0)"
-              : isFloatingPanels
-                ? "translateX(calc(-100% - 2.5rem))"
-                : "translateX(-100%)",
-            width: "var(--left-panel-width)",
+            transform: isLeftPanelOpen ? "translateX(0)" : "translateX(0)",
+            width: isLeftPanelOpen
+              ? "var(--left-panel-width)"
+              : `${LEFT_PANEL_COLLAPSED_WIDTH}px`,
             minHeight: isFloatingPanels ? "30vh" : undefined,
             maxHeight: isFloatingPanels
               ? "min(70vh, calc(100vh - 7.5rem))"
               : undefined,
-            height: isFloatingPanels ? "fit-content" : undefined,
-            borderRadius: isFloatingPanels ? "1rem" : undefined,
+            height: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            borderRadius: isFloatingPanels ? "0 1rem 1rem 0" : undefined,
             border: isFloatingPanels
               ? theme === "light"
                 ? "1px solid rgba(15, 23, 42, 0.18)"
                 : "1px solid rgba(255, 255, 255, 0.25)"
               : undefined,
             background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
-            overflowY: isFloatingPanels ? "auto" : undefined,
-            overflowX: isFloatingPanels ? "hidden" : undefined,
+            overflowY: "hidden",
+            overflowX: "hidden",
             transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
           }}
         >
           <div
             className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-              isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
+              isFloatingPanels ? "rounded-r-2xl overflow-hidden" : ""
             }`}
             style={{
               background:
@@ -9613,45 +11043,6 @@ const App: React.FC = () => {
               backdropFilter: "blur(14px)",
             }}
           >
-            <div
-              className="h-11 shrink-0 px-3 flex items-center justify-between"
-              style={{
-                borderBottom:
-                  theme === "dark"
-                    ? "1px solid rgba(148,163,184,0.28)"
-                    : "1px solid rgba(0,0,0,0.1)",
-                background:
-                  theme === "dark"
-                    ? "linear-gradient(90deg, rgba(14,165,233,0.18), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
-                    : "linear-gradient(90deg,rgba(14,165,233,0.12),rgba(99,102,241,0.1),transparent)",
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />
-                <span
-                  className="text-[11px] uppercase tracking-[0.2em] font-semibold"
-                  style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
-                >
-                  Explorer
-                </span>
-              </div>
-              <span
-                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                style={{
-                  background:
-                    theme === "dark"
-                      ? "rgba(15,23,42,0.7)"
-                      : "rgba(255,255,255,0.7)",
-                  border:
-                    theme === "dark"
-                      ? "1px solid rgba(148,163,184,0.32)"
-                      : "1px solid rgba(0,0,0,0.1)",
-                  color: theme === "dark" ? "#94a3b8" : "#64748b",
-                }}
-              >
-                {Object.keys(files).length} files
-              </span>
-            </div>
             <div className="min-h-0 flex-1">
               <Sidebar
                 files={files}
@@ -9667,6 +11058,10 @@ const App: React.FC = () => {
                 onDeletePath={handleDeletePath}
                 onDuplicateFile={handleDuplicateFile}
                 onRefreshFiles={refreshProjectFiles}
+                onOpenProjectFolder={handleOpenFolder}
+                onOpenCodePanel={openCodePanel}
+                selectedFolderCloneSource={selectedFolderCloneSource}
+                onChooseFolderCloneSource={handleChooseFolderCloneSource}
                 onAddElement={handleSidebarAddElement}
                 root={interactionMode === "preview" ? previewLayersRoot : root}
                 selectedId={
@@ -9680,10 +11075,16 @@ const App: React.FC = () => {
                 drawElementTag={drawElementTag}
                 setDrawElementTag={setDrawElementTag}
                 theme={theme}
+                showConfigButton={isEdaProject(files)}
+                onOpenConfig={handleOpenConfigModal}
+                onLoadImage={handleSidebarLoadImage}
+                isPanelOpen={isLeftPanelOpen}
+                onTogglePanelOpen={setIsLeftPanelOpen}
+                showMasterTools={SHOW_MASTER_TOOLS}
               />
             </div>
             <div
-              className="pointer-events-none absolute inset-0 rounded-2xl"
+              className={`pointer-events-none absolute inset-0 ${isFloatingPanels ? "rounded-r-2xl" : ""}`}
               style={{
                 boxShadow:
                   theme === "dark"
@@ -9695,8 +11096,9 @@ const App: React.FC = () => {
           {isLeftPanelOpen && (
             <div
               onMouseDown={handleLeftPanelResizeStart}
+              onClick={handleLeftPanelStretchToggle}
               className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
-              title="Resize panel"
+              title="Resize panel. Click to stretch or shrink"
             />
           )}
         </div>
@@ -9704,7 +11106,7 @@ const App: React.FC = () => {
         {/* --- Main Canvas Area ("The Stage") --- */}
         {/* Non-mobile: 1 panel = push, both panels = overlay with scrollable content. Mobile: always overlay. */}
         <div
-          className={`flex-1 flex flex-col relative ${isResizingLeftPanel ? "" : "transition-all duration-500"}`}
+          className={`flex-1 flex flex-col relative ${isResizingLeftPanel || isResizingRightPanel ? "" : "transition-all duration-500"}`}
           style={{
             marginLeft:
               !isFloatingPanels &&
@@ -9715,19 +11117,21 @@ const App: React.FC = () => {
                 : 0,
             marginRight: codePanelStageOffset
               ? `${codePanelStageOffset}px`
-              : !isFloatingPanels &&
-                  deviceMode !== "mobile" &&
-                  !isLeftPanelOpen &&
-                  isRightPanelOpen
-                ? "16.5rem"
-                : 0,
+              : consolePanelStageOffset
+                ? `${consolePanelStageOffset}px`
+                : !isFloatingPanels &&
+                    deviceMode !== "mobile" &&
+                    !isLeftPanelOpen &&
+                    isRightPanelOpen
+                  ? "var(--right-panel-width)"
+                  : 0,
             // When both panels open, no margins - content will scroll
           }}
         >
           {/* Background & Scroller */}
           <div
             ref={scrollerRef}
-            className={`flex-1 relative no-scrollbar transition-all duration-300 ${showTerminal ? "pb-52" : "pb-10"}`}
+            className="flex-1 relative no-scrollbar transition-all duration-300 pb-10"
             style={{
               overflowX: shouldLockHorizontalScroll ? "hidden" : baseOverflowX,
               overflowY: shouldLockVerticalScroll ? "hidden" : "auto",
@@ -9752,7 +11156,10 @@ const App: React.FC = () => {
               style={{
                 perspective: "1000px",
                 paddingLeft: `${BASE_STAGE_PADDING}px`,
-                paddingRight: `${BASE_STAGE_PADDING}px`,
+                paddingRight:
+                  isPdfAnnotationPanelOpen && deviceMode !== "tablet"
+                    ? "400px"
+                    : `${BASE_STAGE_PADDING}px`,
                 width: "100%",
                 minWidth: bothPanelsOpen
                   ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
@@ -9762,11 +11169,11 @@ const App: React.FC = () => {
               }}
             >
               {/* Safe Spacing for Toolbar */}
-              <div className="w-full shrink-0 h-[3.5rem] pointer-events-none"></div>
+              <div className="w-full shrink-0 h-4 pointer-events-none"></div>
               {/* --- Device Frame Container --- */}
               {/* --- Device Frame Wrapper (Layout Isolation) --- */}
               <div
-                className="relative shrink-0 flex items-center justify-center transition-all duration-700 m-auto"
+                className="relative shrink-0 flex items-center justify-center transition-all duration-700 mx-auto mt-0"
                 style={{
                   width:
                     deviceMode === "mobile"
@@ -9791,6 +11198,269 @@ const App: React.FC = () => {
                   transformOrigin: "top center",
                 }}
               >
+                {showDeviceFrameToolbar && (
+                  <>
+                    <div
+                      className={`absolute left-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+                      style={{ marginBottom: "-10px" }}
+                    >
+                      <div
+                        className="px-3 pt-1 pb-3 flex items-center gap-2 min-w-0 rounded-t-[16px] rounded-b-none border"
+                        style={{
+                          background:
+                            theme === "dark"
+                              ? "rgba(12,18,30,0.96)"
+                              : "rgba(248,250,252,0.96)",
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(199,208,220,0.42)"
+                              : "rgba(15,23,42,0.14)",
+                          boxShadow:
+                            theme === "dark"
+                              ? "0 10px 24px rgba(2,6,23,0.34)"
+                              : "0 10px 24px rgba(15,23,42,0.10)",
+                          backdropFilter: "blur(14px)",
+                          borderBottomWidth: 0,
+                        }}
+                      >
+                        {null}
+                        <button
+                          className={`glass-icon-btn navbar-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
+                          onClick={() => {
+                            setDeviceMode("tablet");
+                            setTabletOrientation((prev) =>
+                              prev === "landscape" ? "portrait" : "landscape",
+                            );
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setDeviceMode("tablet");
+                            setDeviceCtxMenu({
+                              type: "tablet",
+                              x: e.clientX,
+                              y: e.clientY,
+                            });
+                          }}
+                          title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
+                        >
+                          <Tablet
+                            size={16}
+                            className="transition-transform duration-300 ease-out"
+                            style={{
+                              transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
+                            }}
+                          />
+                        </button>
+                        <button
+                          className="glass-icon-btn navbar-icon-btn"
+                          onClick={handlePreviewRefresh}
+                          title="Refresh iPad content (Ctrl+T)"
+                        >
+                          <RotateCw size={16} />
+                        </button>
+                      {currentDevicePixelRatio >= 1.5 && (
+                        <>
+                          <div className="h-4 w-px bg-gray-500/20"></div>
+                          <div className="flex items-center gap-0.5 rounded-full px-0.5 py-0.5 border border-gray-500/20">
+                            {[50, 75, 100].map((zoom) => (
+                              <button
+                                key={zoom}
+                                onClick={() =>
+                                  setFrameZoom(zoom as 50 | 75 | 100)
+                                }
+                                className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold transition-all ${
+                                  frameZoom === zoom
+                                    ? theme === "light"
+                                      ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                                      : "bg-indigo-500/25 text-indigo-300"
+                                    : theme === "light"
+                                      ? "text-slate-500"
+                                      : "text-gray-300"
+                                }`}
+                                title={`Set frame zoom to ${zoom}%`}
+                              >
+                                {zoom}%
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={toggleThemeWithTransition}
+                        title="Toggle Theme"
+                      >
+                        {theme === "dark" ? (
+                          <Sun size={16} />
+                        ) : (
+                          <Moon size={16} />
+                        )}
+                      </button>
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={runUndo}
+                        title="Undo (Ctrl+Z)"
+                      >
+                        <Undo2 size={16} />
+                      </button>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={runRedo}
+                        title="Redo (Ctrl+U)"
+                      >
+                        <Redo2 size={16} />
+                      </button>
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <div className="relative" ref={saveMenuRef}>
+                        <button
+                          className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
+                          onClick={() =>
+                            setIsSaveMenuOpen((prev) => !prev)
+                          }
+                          title="Save settings"
+                        >
+                          <Settings2 size={16} />
+                        </button>
+                        {dirtyFiles.length > 0 && (
+                          <span
+                            className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
+                            aria-hidden="true"
+                          />
+                        )}
+                        {isSaveMenuOpen && (
+                          <div
+                            className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+                            style={{
+                              background:
+                                theme === "dark"
+                                  ? "rgba(15,23,42,0.98)"
+                                  : "rgba(255,255,255,0.98)",
+                              borderColor:
+                                theme === "dark"
+                                  ? "rgba(148,163,184,0.35)"
+                                  : "rgba(15,23,42,0.15)",
+                              color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                            }}
+                          >
+                            <button
+                              className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
+                              onClick={() => {
+                                void saveCodeDraftsRef.current?.();
+                                void flushPendingPreviewSaves();
+                                setIsSaveMenuOpen(false);
+                              }}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Save size={13} />
+                                Save Now
+                              </span>
+                              <span className="opacity-70">Ctrl+S</span>
+                            </button>
+                            <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                              <span>Auto Save</span>
+                              <input
+                                type="checkbox"
+                                checked={autoSaveEnabled}
+                                onChange={(e) =>
+                                  setAutoSaveEnabled(e.target.checked)
+                                }
+                              />
+                            </label>
+                            <div className="px-2 pt-1 text-[10px] opacity-70">
+                              Smart debounce (about 1.2s idle), not every
+                              keystroke.
+                            </div>
+                            {dirtyFiles.length > 0 && (
+                              <div className="px-2 pt-2 text-[10px] text-amber-400">
+                                {dirtyFiles.length} unsaved file
+                                {dirtyFiles.length > 1 ? "s" : ""}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {interactionMode === "preview" && (
+                        <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+                          <button
+                            onClick={() => setPreviewModeWithSync("edit")}
+                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                              previewMode === "edit"
+                                ? theme === "light"
+                                  ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                                  : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                                : theme === "light"
+                                  ? "text-slate-500"
+                                  : "text-gray-300"
+                            }`}
+                            title="LIVE Edit mode: select and edit elements"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => setPreviewModeWithSync("preview")}
+                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                              previewMode === "preview"
+                                ? theme === "light"
+                                  ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                                  : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                                : theme === "light"
+                                  ? "text-slate-500"
+                                  : "text-gray-300"
+                            }`}
+                            title="LIVE Preview mode: navigate and interact"
+                          >
+                            Preview
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                    {deviceMode === "tablet" && SHOW_SCREENSHOT_FEATURES && (
+                      <div
+                        className={`absolute right-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+                        style={{ marginBottom: "-10px" }}
+                      >
+                        <div
+                          className="px-2.5 pt-1 pb-3 flex items-center gap-2 rounded-t-[10px] rounded-b-none border"
+                          style={{
+                            background:
+                              theme === "dark"
+                                ? "rgba(12,18,30,0.96)"
+                                : "rgba(248,250,252,0.96)",
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(199,208,220,0.42)"
+                                : "rgba(15,23,42,0.14)",
+                            boxShadow:
+                              theme === "dark"
+                                ? "0 10px 24px rgba(2,6,23,0.34)"
+                                : "0 10px 24px rgba(15,23,42,0.10)",
+                            backdropFilter: "blur(14px)",
+                            borderBottomWidth: 0,
+                          }}
+                        >
+                          <button
+                            className={`glass-icon-btn navbar-icon-btn rounded-md ${
+                              screenshotCaptureBusy ? "opacity-60" : ""
+                            }`}
+                            onClick={() => openScreenshotGallery(true)}
+                            disabled={screenshotCaptureBusy || !projectPath}
+                            title={
+                              projectPath
+                                ? "Capture iPad screenshot"
+                                : "Open a presentation first"
+                            }
+                            style={{ borderRadius: "8px" }}
+                          >
+                            <Camera size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
                 {/* Actual Device Frame */}
                 <div
                   className={`
@@ -10001,15 +11671,134 @@ const App: React.FC = () => {
                       }}
                     >
                       <div
+                        ref={previewStageRef}
                         className="w-full h-full relative"
                         onDragOver={handlePreviewStageDragOver}
                         onDrop={handlePreviewStageDrop}
                       >
+                        {shouldShowFrameWelcome && (
+                          <div className="absolute inset-0 flex items-center justify-center p-12">
+                            <div
+                              className="w-full max-w-6xl rounded-[42px] border px-24 py-24 text-center shadow-[0_42px_140px_rgba(15,23,42,0.16)]"
+                              style={{
+                                background:
+                                  theme === "dark"
+                                    ? "linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.9) 100%)"
+                                    : "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.3)"
+                                    : "rgba(15,23,42,0.12)",
+                                color: "var(--text-main)",
+                                backdropFilter: "blur(16px)",
+                              }}
+                            >
+                              <div
+                                className="text-[44px] font-semibold uppercase tracking-[0.34em]"
+                                style={{ color: "var(--text-muted)" }}
+                              >
+                                Welcome To NoCode X
+                              </div>
+                              <p
+                                className="mt-8 text-[30px] leading-[1.45] max-w-4xl mx-auto"
+                                style={{ color: "var(--text-muted)" }}
+                              >
+                                Open a previous presentation or choose a new
+                                project folder directly from the frame.
+                              </p>
+                              <div className="mt-12 flex items-center justify-center gap-4">
+                                <button
+                                  type="button"
+                                  className="rounded-[22px] px-10 py-5 text-[22px] font-semibold transition-colors"
+                                  style={{
+                                    background: "rgba(14,165,233,0.14)",
+                                    border: "1px solid rgba(14,165,233,0.25)",
+                                    color: "var(--text-main)",
+                                  }}
+                                  onClick={() => {
+                                    void handleOpenFolder();
+                                  }}
+                                >
+                                  Select Presentation
+                                </button>
+                              </div>
+                              {recentProjects.length > 0 && (
+                                <div className="mt-12 text-left">
+                                  <div
+                                    className="text-[18px] font-semibold uppercase tracking-[0.24em] text-center"
+                                    style={{ color: "var(--text-muted)" }}
+                                  >
+                                    Recent Presentations
+                                  </div>
+                                  <div className="mt-6 grid grid-cols-1 gap-4">
+                                    {recentProjects.map((recentPath) => {
+                                      const recentName = recentPath
+                                        .replace(/\\/g, "/")
+                                        .split("/")
+                                        .filter(Boolean)
+                                        .slice(-1)[0];
+                                      return (
+                                        <button
+                                          key={recentPath}
+                                          type="button"
+                                          className="w-full rounded-[22px] border px-6 py-5 text-left transition-colors"
+                                          style={{
+                                            borderColor:
+                                              theme === "dark"
+                                                ? "rgba(148,163,184,0.24)"
+                                                : "rgba(15,23,42,0.12)",
+                                            background:
+                                              theme === "dark"
+                                                ? "rgba(15,23,42,0.48)"
+                                                : "rgba(255,255,255,0.68)",
+                                            color: "var(--text-main)",
+                                          }}
+                                          onClick={() => {
+                                            void handleOpenFolder(recentPath);
+                                          }}
+                                          title={recentPath}
+                                        >
+                                          <div className="text-[24px] font-semibold">
+                                            {recentName}
+                                          </div>
+                                          <div
+                                            className="mt-2 truncate text-[15px]"
+                                            style={{
+                                              color: "var(--text-muted)",
+                                            }}
+                                          >
+                                            {recentPath}
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                              {projectPath ? (
+                                <div
+                                  className="mt-8 text-[18px]"
+                                  style={{ color: "var(--text-muted)" }}
+                                >
+                                  Current project:{" "}
+                                  {
+                                    projectPath
+                                      .replace(/\\/g, "/")
+                                      .split("/")
+                                      .filter(Boolean)
+                                      .slice(-1)[0]
+                                  }
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
                         {hasPreviewContent && (
                           <iframe
                             key={
-                              selectedPreviewSrc ||
-                              `preview-doc:${selectedPreviewHtml || "none"}:${previewRefreshNonce}`
+                              selectedPreviewSrc
+                                ? `preview-src:${selectedPreviewSrc}:${previewRefreshNonce}`
+                                : `preview-doc:${selectedPreviewHtml || "none"}:${previewRefreshNonce}`
                             }
                             ref={previewFrameRef}
                             title="project-preview"
@@ -10025,32 +11814,338 @@ const App: React.FC = () => {
                             onDrop={handlePreviewStageDrop}
                             className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-150 ${
                               interactionMode === "preview"
-                                ? "opacity-100 pointer-events-auto"
+                                ? isToolboxDragging
+                                  ? "opacity-100 pointer-events-none"
+                                  : "opacity-100 pointer-events-auto"
                                 : "opacity-0 pointer-events-none"
                             }`}
                           />
                         )}
-                        <div
-                          className={`w-full h-full transition-opacity duration-200 ${
-                            interactionMode === "preview"
-                              ? "opacity-0 pointer-events-none"
-                              : "opacity-100 pointer-events-auto"
-                          }`}
-                        >
-                          <EditorContent
-                            root={root}
-                            selectedId={selectedId}
-                            selectedPathIds={selectedPathIds}
-                            handleSelect={handleSelect}
-                            handleMoveElement={handleMoveElement}
-                            handleMoveElementByPosition={
-                              handleMoveElementByPosition
-                            }
-                            handleResize={handleResize}
-                            interactionMode={interactionMode}
-                            INJECTED_STYLES={INJECTED_STYLES}
-                          />
-                        </div>
+                        {interactionMode === "preview" &&
+                          isPdfAnnotationPanelOpen &&
+                          filteredAnnotationsForCurrentSlide.map((annotation) => {
+                            const isFocused =
+                              focusedAnnotationForCurrentSlide?.annotationId ===
+                              annotation.annotationId;
+                            const isPopup = isPopupAnnotation(annotation);
+                            return (
+                              <div
+                                key={annotation.annotationId}
+                                className={`absolute pointer-events-none rounded-[18px] border-2 ${
+                                  isFocused ? "z-30" : "z-20"
+                                }`}
+                                style={{
+                                  left: `${annotation.positionPct.left}%`,
+                                  top: `${annotation.positionPct.top}%`,
+                                  width: `${Math.max(2, annotation.positionPct.width)}%`,
+                                  height: `${Math.max(2, annotation.positionPct.height)}%`,
+                                  borderColor: isFocused
+                                    ? "rgba(239,68,68,0.98)"
+                                    : isPopup
+                                      ? "rgba(34,211,238,0.85)"
+                                      : "rgba(34,197,94,0.9)",
+                                  boxShadow: isFocused
+                                    ? "0 0 0 5px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.45), inset 0 0 0 1px rgba(255,255,255,0.82)"
+                                    : isPopup
+                                      ? "0 0 0 3px rgba(34,211,238,0.18), 0 0 22px rgba(34,211,238,0.32), inset 0 0 0 1px rgba(255,255,255,0.65)"
+                                      : "0 0 0 3px rgba(34,197,94,0.2), 0 0 22px rgba(34,197,94,0.34), inset 0 0 0 1px rgba(255,255,255,0.65)",
+                                  background: isFocused
+                                    ? "rgba(239,68,68,0.08)"
+                                    : isPopup
+                                      ? "rgba(34,211,238,0.06)"
+                                      : "rgba(34,197,94,0.06)",
+                                  animation: isFocused
+                                    ? "pulse 1.1s ease-in-out 2"
+                                    : "none",
+                                }}
+                              />
+                            );
+                          })}
+                        {!shouldShowFrameWelcome && (
+                          <div
+                            className={`w-full h-full transition-opacity duration-200 ${
+                              interactionMode === "preview"
+                                ? "opacity-0 pointer-events-none"
+                                : "opacity-100 pointer-events-auto"
+                            }`}
+                          >
+                            <EditorContent
+                              root={root}
+                              selectedId={selectedId}
+                              selectedPathIds={selectedPathIds}
+                              handleSelect={handleSelect}
+                              handleMoveElement={handleMoveElement}
+                              handleMoveElementByPosition={
+                                handleMoveElementByPosition
+                              }
+                              handleResize={handleResize}
+                              interactionMode={interactionMode}
+                              INJECTED_STYLES={INJECTED_STYLES}
+                              vibeUpdateKey={lastVibeUpdateRef.current}
+                              onVibeError={(msg) => setVibeErrorContext(msg)}
+                            />
+                          </div>
+                        )}
+                        {false}
+                        {interactionMode === "preview" &&
+                          previewMode === "edit" &&
+                          Array.isArray(previewSelectedPath) &&
+                          previewSelectedPath.length > 0 &&
+                          previewSelectionBox && (
+                            <div
+                              className="absolute z-30 pointer-events-none"
+                              style={{
+                                left: `${previewSelectionBox.left}px`,
+                                top: `${previewSelectionBox.top}px`,
+                                width: `${previewSelectionBox.width}px`,
+                                height: `${previewSelectionBox.height}px`,
+                                border: "2px solid rgba(34,211,238,0.95)",
+                                boxShadow:
+                                  "0 0 0 1px rgba(6,182,212,0.85), 0 0 0 6px rgba(34,211,238,0.12)",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              {[
+                                [
+                                  "n",
+                                  "Resize from top",
+                                  "ns-resize",
+                                  "absolute left-3 right-3 top-[-6px] h-4",
+                                  "999px",
+                                ],
+                                [
+                                  "s",
+                                  "Resize from bottom",
+                                  "ns-resize",
+                                  "absolute left-3 right-3 bottom-[-6px] h-4",
+                                  "999px",
+                                ],
+                                [
+                                  "e",
+                                  "Resize from right",
+                                  "ew-resize",
+                                  "absolute top-3 bottom-3 right-[-6px] w-4",
+                                  "999px",
+                                ],
+                                [
+                                  "w",
+                                  "Resize from left",
+                                  "ew-resize",
+                                  "absolute top-3 bottom-3 left-[-6px] w-4",
+                                  "999px",
+                                ],
+                                [
+                                  "nw",
+                                  "Resize from top left",
+                                  "nwse-resize",
+                                  "absolute left-[-7px] top-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "ne",
+                                  "Resize from top right",
+                                  "nesw-resize",
+                                  "absolute right-[-7px] top-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "sw",
+                                  "Resize from bottom left",
+                                  "nesw-resize",
+                                  "absolute left-[-7px] bottom-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "se",
+                                  "Resize from bottom right",
+                                  "nwse-resize",
+                                  "absolute right-[-7px] bottom-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                              ].map(
+                                ([key, title, cursor, className, radius]) => (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    className={`pointer-events-auto absolute ${className}`}
+                                    style={{ cursor }}
+                                    title={title}
+                                    onMouseDown={(event) =>
+                                      handlePreviewResizeHandleMouseDown(
+                                        key as
+                                          | "n"
+                                          | "s"
+                                          | "e"
+                                          | "w"
+                                          | "ne"
+                                          | "nw"
+                                          | "se"
+                                          | "sw",
+                                        event,
+                                      )
+                                    }
+                                  >
+                                    <span
+                                      className="absolute inset-0"
+                                      style={{
+                                        borderRadius: radius,
+                                        background: "rgba(34, 211, 238, 0.82)",
+                                        border:
+                                          "1px solid rgba(255,255,255,0.95)",
+                                        boxShadow:
+                                          "0 0 0 1px rgba(8,145,178,0.42), 0 4px 12px rgba(34,211,238,0.35)",
+                                      }}
+                                    />
+                                  </button>
+                                ),
+                              )}
+                              {false && (
+                                <button
+                                  type="button"
+                                  className="pointer-events-auto absolute right-1 bottom-1 w-7 h-7 rounded-md border-2 border-white/90 bg-amber-500 shadow-[0_0_0_2px_rgba(2,6,23,0.7),0_8px_20px_rgba(245,158,11,0.45)] text-slate-950 font-black text-xs leading-none flex items-center justify-center"
+                                  style={{
+                                    cursor: isPreviewResizing
+                                      ? "nwse-resize"
+                                      : "nwse-resize",
+                                  }}
+                                  title="Resize from bottom right"
+                                  onMouseDown={(event) =>
+                                    handlePreviewResizeHandleMouseDown(
+                                      "se",
+                                      event,
+                                    )
+                                  }
+                                >
+                                  <>{"↘"}</>
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        {false &&
+                          interactionMode === "preview" &&
+                          previewMode === "edit" &&
+                          Array.isArray(previewSelectedPath) &&
+                          (previewSelectedPath?.length ?? 0) > 0 &&
+                          previewSelectedElement && (
+                            <div
+                              className="absolute right-4 top-4 z-40 rounded-2xl border shadow-2xl backdrop-blur-md p-3 flex flex-col gap-2 min-w-[230px]"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.35)"
+                                    : "rgba(15,23,42,0.18)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(2,6,23,0.86)"
+                                    : "rgba(255,255,255,0.96)",
+                                color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
+                              <div className="text-xs font-bold tracking-wide opacity-90">
+                                Quick Controls
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-cyan-500/35 hover:bg-cyan-500/20 flex items-center gap-1"
+                                  title="Duplicate"
+                                  onClick={() => {
+                                    void handlePreviewDuplicateSelected();
+                                  }}
+                                >
+                                  <Copy size={12} />
+                                  Dup
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-slate-500/35 hover:bg-slate-500/20"
+                                  title="Send backward"
+                                  onClick={() => handlePreviewNudgeZIndex(-1)}
+                                >
+                                  <MoveDown size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-slate-500/35 hover:bg-slate-500/20"
+                                  title="Bring forward"
+                                  onClick={() => handlePreviewNudgeZIndex(1)}
+                                >
+                                  <MoveUp size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-red-500/40 hover:bg-red-500/20 flex items-center gap-1"
+                                  title="Delete"
+                                  onClick={handlePreviewDeleteStable}
+                                >
+                                  <Trash2 size={12} />
+                                  Del
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-emerald-500/35 hover:bg-emerald-500/20 flex items-center gap-1"
+                                  title="Narrower"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("width", -12)
+                                  }
+                                >
+                                  <Shrink size={12} />
+                                  W-
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-emerald-500/35 hover:bg-emerald-500/20 flex items-center gap-1"
+                                  title="Wider"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("width", 12)
+                                  }
+                                >
+                                  <Expand size={12} />
+                                  W+
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-violet-500/35 hover:bg-violet-500/20"
+                                  title="Shorter"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("height", -12)
+                                  }
+                                >
+                                  H-
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-violet-500/35 hover:bg-violet-500/20"
+                                  title="Taller"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("height", 12)
+                                  }
+                                >
+                                  H+
+                                </button>
+                              </div>
+                              <div className="text-[11px] opacity-80">
+                                {`${Math.round(
+                                  parseNumericCssValue(
+                                    previewSelectedElement?.styles?.width ??
+                                      previewSelectedComputedStyles?.width ??
+                                      0,
+                                  ) || 0,
+                                )} x ${Math.round(
+                                  parseNumericCssValue(
+                                    previewSelectedElement?.styles?.height ??
+                                      previewSelectedComputedStyles?.height ??
+                                      0,
+                                  ) || 0,
+                                )} px`}
+                              </div>
+                            </div>
+                          )}
                       </div>
                     </div>
                   </div>
@@ -10071,14 +12166,22 @@ const App: React.FC = () => {
 
         {/* Right Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24" : "right-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? "animate-panelInRight" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? "animate-panelInRight" : ""}`}
           style={{
             transform: isRightPanelOpen
               ? "translateX(0)"
               : isFloatingPanels
                 ? "translateX(calc(100% + 2.5rem))"
                 : "translateX(100%)",
-            width: isFloatingPanels ? "var(--left-panel-width)" : "16.5rem",
+            width: isFloatingPanels
+              ? "var(--right-panel-width)"
+              : "var(--right-panel-width)",
+            left: isFloatingPanels
+              ? `${rightPanelFloatingPosition.left}px`
+              : undefined,
+            top: isFloatingPanels
+              ? `${rightPanelFloatingPosition.top}px`
+              : undefined,
             minHeight: isFloatingPanels ? "30vh" : undefined,
             maxHeight: isFloatingPanels
               ? "min(70vh, calc(100vh - 7.5rem))"
@@ -10093,6 +12196,7 @@ const App: React.FC = () => {
             background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
             overflowY: isFloatingPanels ? "auto" : undefined,
             overflowX: isFloatingPanels ? "hidden" : undefined,
+            transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
           }}
         >
           <div
@@ -10109,6 +12213,7 @@ const App: React.FC = () => {
           >
             <div
               className="h-11 shrink-0 px-3 flex items-center justify-between"
+              onMouseDown={handleRightPanelDragStart}
               style={{
                 borderBottom:
                   theme === "dark"
@@ -10135,30 +12240,60 @@ const App: React.FC = () => {
                   className="text-[11px] uppercase tracking-[0.2em] font-semibold"
                   style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
                 >
-                  Inspector
+                  {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
                 </span>
               </div>
-              <span
-                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                style={{
-                  background:
-                    theme === "dark"
-                      ? "rgba(15,23,42,0.7)"
-                      : "rgba(255,255,255,0.7)",
-                  border:
-                    theme === "dark"
-                      ? "1px solid rgba(148,163,184,0.32)"
-                      : "1px solid rgba(0,0,0,0.1)",
-                  color: theme === "dark" ? "#94a3b8" : "#64748b",
-                }}
-              >
-                {selectedId || previewSelectedElement ? "Element" : "Project"}
-              </span>
+              <div className="flex items-center gap-2">
+                {rightPanelMode === "gallery" ? (
+                  <button
+                    type="button"
+                    className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(248,113,113,0.12)"
+                          : "rgba(248,113,113,0.18)",
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(248,113,113,0.4)"
+                          : "rgba(248,113,113,0.35)",
+                      color: theme === "dark" ? "#fecdd3" : "#be123c",
+                    }}
+                    onClick={closeScreenshotGallery}
+                    title="Close gallery"
+                  >
+                    Close
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.7)"
+                          : "rgba(255,255,255,0.7)",
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.32)"
+                          : "rgba(0,0,0,0.1)",
+                      color: theme === "dark" ? "#94a3b8" : "#64748b",
+                    }}
+                    onClick={() => {
+                      setIsRightPanelOpen(false);
+                      setRightPanelMode("inspector");
+                    }}
+                    title="Close inspector panel"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-              {interactionMode === "preview" && (
+            {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
                 <div
-                  className="shrink-0 px-2.5 py-2 border-b"
+                  className="shrink-0 px-3 py-2 border-b"
                   style={{
                     borderColor:
                       theme === "dark"
@@ -10170,99 +12305,343 @@ const App: React.FC = () => {
                         : "rgba(255,255,255,0.72)",
                   }}
                 >
-                  <div
-                    className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
-                    style={{ color: theme === "dark" ? "#94a3b8" : "#64748b" }}
-                  ></div>
-                  <div className="mt-1 grid grid-cols-4 gap-1">
-                    {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div
+                      className="text-[10px] font-semibold uppercase tracking-[0.2em]"
+                      style={{
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    >
+                      Screenshots
+                    </div>
+                    <div className="flex items-center gap-2">
                       <button
-                        key={option.value}
-                        onClick={() => setPreviewSelectionMode(option.value)}
-                        className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
                         style={{
-                          color:
-                            previewSelectionMode === option.value
-                              ? theme === "dark"
-                                ? "#ecfeff"
-                                : "#155e75"
-                              : theme === "dark"
-                                ? "#cbd5e1"
-                                : "#475569",
-                          background:
-                            previewSelectionMode === option.value
-                              ? theme === "dark"
-                                ? "rgba(34,211,238,0.2)"
-                                : "rgba(14,165,233,0.16)"
-                              : theme === "dark"
-                                ? "rgba(15,23,42,0.68)"
-                                : "rgba(241,245,249,0.9)",
-                          border:
-                            previewSelectionMode === option.value
-                              ? "1px solid rgba(34,211,238,0.55)"
-                              : theme === "dark"
-                                ? "1px solid rgba(148,163,184,0.28)"
-                                : "1px solid rgba(148,163,184,0.26)",
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(148,163,184,0.38)"
+                              : "rgba(15,23,42,0.18)",
+                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
                         }}
-                        title={option.label}
+                        onClick={() => void loadGalleryItems()}
+                        title="Refresh gallery"
                       >
-                        {option.label}
+                        Refresh
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(34,211,238,0.45)"
+                              : "rgba(8,145,178,0.3)",
+                          color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                          opacity: screenshotCaptureBusy ? 0.6 : 1,
+                        }}
+                        onClick={() => void handleScreenshotCapture()}
+                        disabled={screenshotCaptureBusy}
+                        title="Capture screenshot"
+                      >
+                        {screenshotCaptureBusy ? "Capturing..." : "Capture"}
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(148,163,184,0.38)"
+                              : "rgba(15,23,42,0.18)",
+                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                        }}
+                        onClick={() => void handleRevealScreenshotsFolder()}
+                        title="Reveal screenshots folder"
+                      >
+                        Reveal
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-2 text-[10px] uppercase tracking-[0.12em]"
+                    style={{
+                      color: theme === "dark" ? "#94a3b8" : "#64748b",
+                    }}
+                  >
+                    {screenshotItems.length} items
                   </div>
                 </div>
-              )}
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {interactionMode === "inspect" && selectedId ? (
-                  <StyleInspectorPanel
-                    element={inspectorElement}
-                    onUpdateStyle={handleUpdateStyle}
-                    computedStyles={null}
-                  />
-                ) : (
-                  <PropertiesPanel
-                    element={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? previewSelectedElement
-                        : selectedElement
-                    }
-                    onUpdateStyle={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? handlePreviewStyleUpdateStable
-                        : handleUpdateStyle
-                    }
-                    onUpdateContent={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? handlePreviewContentUpdateStable
-                        : handleUpdateContent
-                    }
-                    onUpdateAttributes={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? handlePreviewAttributesUpdateStable
-                        : handleUpdateAttributes
-                    }
-                    onUpdateAnimation={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? handlePreviewAnimationUpdateStable
-                        : handleUpdateAnimation
-                    }
-                    onDelete={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? handlePreviewDeleteStable
-                        : handleDeleteElement
-                    }
-                    onAddElement={
-                      interactionMode === "preview" && previewSelectedElement
-                        ? noopPropertiesAction
-                        : handleAddElement
-                    }
-                    onMoveOrder={noopMoveOrder}
-                    resolveImage={resolvePreviewImagePath}
-                    availableFonts={availableFonts}
-                  />
-                )}
+                <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
+                  {screenshotItems.length === 0 ? (
+                    <div
+                      className="rounded-xl border px-4 py-6 text-center text-xs"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.3)"
+                            : "rgba(15,23,42,0.12)",
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    >
+                      No screenshots yet. Capture one from the iPad button.
+                    </div>
+                  ) : (
+                    screenshotItems.map((item) => {
+                      const imageUrl = screenshotPreviewUrls[item.id] || "";
+                      return (
+                        <div
+                          key={item.id}
+                          className="rounded-2xl border overflow-hidden"
+                          style={{
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(148,163,184,0.3)"
+                                : "rgba(15,23,42,0.12)",
+                            background:
+                              theme === "dark"
+                                ? "rgba(15,23,42,0.65)"
+                                : "rgba(255,255,255,0.7)",
+                          }}
+                        >
+                          {imageUrl && (
+                            <img
+                              src={imageUrl}
+                              alt={item.imageFileName}
+                              className="w-full h-40 object-cover"
+                            />
+                          )}
+                          <div className="p-3 space-y-2">
+                            <div className="text-xs font-semibold">
+                              {item.slideId || "Unknown slide"}
+                              {item.popupId ? ` • ${item.popupId}` : ""}
+                            </div>
+                            <div className="text-[10px] opacity-70">
+                              {new Date(item.createdAt).toLocaleString()}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(34,211,238,0.45)"
+                                      : "rgba(8,145,178,0.3)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#a5f3fc"
+                                      : "#0e7490",
+                                }}
+                                onClick={() =>
+                                  void handleOpenScreenshotItem(item)
+                                }
+                              >
+                                Open
+                              </button>
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(148,163,184,0.38)"
+                                      : "rgba(15,23,42,0.18)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#e2e8f0"
+                                      : "#0f172a",
+                                }}
+                                onClick={() =>
+                                  void handleRevealScreenshotsFolder()
+                                }
+                              >
+                                Reveal
+                              </button>
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(248,113,113,0.45)"
+                                      : "rgba(248,113,113,0.35)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#fecdd3"
+                                      : "#be123c",
+                                }}
+                                onClick={() =>
+                                  void handleDeleteScreenshotItem(item)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div
+                  className="shrink-0 px-3 py-3 border-t"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(0,0,0,0.1)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.42)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(14,165,233,0.45)"
+                          : "rgba(8,145,178,0.3)",
+                      color: theme === "dark" ? "#bae6fd" : "#0e7490",
+                      opacity: isPdfExporting ? 0.6 : 1,
+                    }}
+                    onClick={() => void handleExportEditablePdf()}
+                    disabled={isPdfExporting || !projectPath}
+                  >
+                    <FileDown size={14} />
+                    {isPdfExporting
+                      ? "Exporting Editable PDF..."
+                      : "Export Editable PDF"}
+                  </button>
+                  {pdfExportLogs.length > 0 && (
+                    <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
+                      {pdfExportLogs.map((log, index) => (
+                        <div key={`${index}-${log}`} className="opacity-80">
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                {interactionMode === "preview" && (
+                  <div
+                    className="shrink-0 px-2.5 py-2 border-b"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(0,0,0,0.1)",
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.42)"
+                          : "rgba(255,255,255,0.72)",
+                    }}
+                  >
+                    <div
+                      className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
+                      style={{
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    ></div>
+                    <div className="mt-1 grid grid-cols-4 gap-1">
+                      {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => setPreviewSelectionMode(option.value)}
+                          className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
+                          style={{
+                            color:
+                              previewSelectionMode === option.value
+                                ? theme === "dark"
+                                  ? "#ecfeff"
+                                  : "#155e75"
+                                : theme === "dark"
+                                  ? "#cbd5e1"
+                                  : "#475569",
+                            background:
+                              previewSelectionMode === option.value
+                                ? theme === "dark"
+                                  ? "rgba(34,211,238,0.2)"
+                                  : "rgba(14,165,233,0.16)"
+                                : theme === "dark"
+                                  ? "rgba(15,23,42,0.68)"
+                                  : "rgba(241,245,249,0.9)",
+                            border:
+                              previewSelectionMode === option.value
+                                ? "1px solid rgba(34,211,238,0.55)"
+                                : theme === "dark"
+                                  ? "1px solid rgba(148,163,184,0.28)"
+                                  : "1px solid rgba(148,163,184,0.26)",
+                          }}
+                          title={option.label}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {interactionMode === "inspect" && selectedId ? (
+                    <StyleInspectorPanel
+                      element={inspectorElement}
+                      onUpdateStyle={handleUpdateStyle}
+                      computedStyles={null}
+                    />
+                  ) : (
+                    <PropertiesPanel
+                      element={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? previewSelectedElement
+                          : selectedElement
+                      }
+                      requestedTab={propertiesPanelRequestedTab}
+                      requestedTabNonce={propertiesPanelRequestedTabNonce}
+                      onUpdateStyle={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewStyleUpdateStable
+                          : handleUpdateStyle
+                      }
+                      onUpdateContent={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewContentUpdateStable
+                          : handleUpdateContent
+                      }
+                      onUpdateAttributes={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewAttributesUpdateStable
+                          : handleUpdateAttributes
+                      }
+                      onUpdateAnimation={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewAnimationUpdateStable
+                          : handleUpdateAnimation
+                      }
+                      onDelete={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewDeleteStable
+                          : handleDeleteElement
+                      }
+                      onAddElement={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? noopPropertiesAction
+                          : handleAddElement
+                      }
+                      onMoveOrder={noopMoveOrder}
+                      resolveImage={resolvePreviewImagePath}
+                      availableFonts={availableFonts}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
             <div
               className="pointer-events-none absolute inset-0 rounded-2xl"
               style={{
@@ -10273,6 +12652,13 @@ const App: React.FC = () => {
               }}
             />
           </div>
+          {isRightPanelOpen && (
+            <div
+              onMouseDown={handleRightPanelResizeStart}
+              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              title="Resize panel"
+            />
+          )}
         </div>
       </div>
 
@@ -10376,7 +12762,7 @@ const App: React.FC = () => {
                   borderColor: "var(--border-color)",
                   color: "var(--text-main)",
                 }}
-                onClick={() => setIsCodePanelOpen(false)}
+                onClick={closeCodePanel}
                 title="Close code panel"
               >
                 <PanelRightClose size={14} />
@@ -10384,20 +12770,31 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">
-            <CodeWorkspace
-              filePath={activeCodeFilePath}
-              fileType={activeCodeFileType}
-              content={activeCodeContent}
-              isDirty={activeCodeIsDirty}
-              theme={theme}
-              availableFiles={codeEditorFiles}
-              onSelectFile={handleCodeSelectFile}
+            <ColorCodeEditor
+              value={activeCodeContent}
               onChange={handleCodeDraftChange}
-              onSave={() => {
-                if (!activeCodeFilePath) return;
-                void saveCodeDraftAtPath(activeCodeFilePath);
-              }}
-              onReload={handleCodeReload}
+              language={
+                activeCodeFilePath?.endsWith(".ts")
+                  ? "ts"
+                  : activeCodeFilePath?.endsWith(".tsx")
+                    ? "tsx"
+                    : activeCodeFilePath?.endsWith(".jsx")
+                      ? "jsx"
+                      : activeCodeFilePath?.endsWith(".js")
+                        ? "js"
+                        : activeCodeFilePath?.endsWith(".css")
+                          ? "css"
+                          : activeCodeFilePath?.endsWith(".html")
+                            ? "html"
+                            : activeCodeFilePath?.endsWith(".json")
+                              ? "json"
+                              : activeCodeFilePath?.endsWith(".svg")
+                                ? "svg"
+                                : "text"
+              }
+              theme={theme}
+              minHeight="100%"
+              readOnly={!activeCodeFilePath}
             />
           </div>
           <div
@@ -10412,379 +12809,239 @@ const App: React.FC = () => {
         </div>
       </div>
 
-
-      {/* Terminal Panel — Glass effect with smooth transition */}
+      {/* Console Panel — Chrome-like side panel */}
       <div
-        className={`fixed bottom-3 left-10 right-10 flex flex-col z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible rounded-2xl ${isZenMode || isCodePanelOpen ? "translate-y-full opacity-0 pointer-events-none" : ""}`}
+        ref={bottomPanelRef}
+        className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isZenMode || isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
+        style={{
+          right: "1rem",
+          bottom: "1rem",
+        }}
       >
-        {!showTerminal && (
-          <>
-            <div
-              className="pointer-events-none absolute -inset-3 rounded-[24px] blur-2xl"
-              style={{
-                background:
-                  theme === "dark"
-                    ? "conic-gradient(from 180deg at 50% 50%, rgba(56,189,248,0.42), rgba(16,185,129,0.36), rgba(167,139,250,0.4), rgba(56,189,248,0.42))"
-                    : "conic-gradient(from 180deg at 50% 50%, rgba(56,189,248,0.22), rgba(16,185,129,0.2), rgba(167,139,250,0.2), rgba(56,189,248,0.22))",
-              }}
-            />
-            <div
-              className="pointer-events-none absolute -inset-5 rounded-[28px] blur-3xl"
-              style={{
-                opacity: theme === "dark" ? 0.92 : 0.45,
-                background:
-                  theme === "dark"
-                    ? "radial-gradient(120% 90% at 50% 50%, rgba(99,102,241,0.28) 0%, rgba(14,165,233,0.24) 35%, rgba(16,185,129,0.2) 65%, rgba(0,0,0,0) 100%)"
-                    : "radial-gradient(120% 90% at 50% 50%, rgba(99,102,241,0.16) 0%, rgba(14,165,233,0.14) 35%, rgba(16,185,129,0.1) 65%, rgba(0,0,0,0) 100%)",
-              }}
-            />
-          </>
-        )}
-        <div
-          className={`relative z-10 flex flex-col backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden rounded-2xl ${showTerminal ? "h-56" : "h-11"}`}
+        <button
+          type="button"
+          className={`relative z-10 h-14 w-14 rounded-full backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
           style={{
             background:
               theme === "light"
                 ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
                 : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
             border: "1px solid var(--border-color)",
-            boxShadow: showTerminal
-              ? "0 20px 45px rgba(15,23,42,0.28)"
-              : "0 8px 20px rgba(15,23,42,0.2)",
+            boxShadow: "0 8px 20px rgba(15,23,42,0.2)",
+            color: "var(--text-muted)",
+          }}
+          onClick={() => {
+            setIsCompactConsoleOpening(true);
+            handleDetachConsoleWindow();
+          }}
+          title="Open console in a separate window"
+        >
+          <PanelRight
+            size={18}
+            className="shrink-0"
+            style={{ color: theme === "dark" ? "#67e8f9" : "#0891b2" }}
+          />
+          {previewConsoleErrorCount > 0 && (
+            <span className="absolute -top-1 -right-1 inline-flex min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] leading-[18px] justify-center">
+              {previewConsoleErrorCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      <ConfigEditorModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        initialTab={configModalInitialTab}
+        slidesOnlyMode={isConfigModalSlidesOnly}
+        configContent={(files[configPathForModal]?.content as string) || null}
+        portfolioContent={
+          (files[portfolioPathForModal]?.content as string) || null
+        }
+        onSave={handleSaveConfig}
+        theme={theme}
+        aiBackend={aiBackend}
+        onAiBackendChange={(val) => {
+          setAiBackend(val);
+          localStorage.setItem(AI_BACKEND_STORAGE_KEY, val);
+        }}
+        colabUrl={colabUrl}
+        onColabUrlChange={(val) => {
+          setColabUrl(val);
+          localStorage.setItem(COLAB_URL_STORAGE_KEY, val);
+        }}
+        showAiOptions={SHOW_AI_FEATURES}
+        hasProjectConfig={Boolean(projectPath)}
+        selectedSlideCloneSource={selectedFolderCloneSource}
+        onSelectSlideCloneSource={setSelectedFolderCloneSource}
+        files={files}
+      />
+
+      <DetachedCodeEditorWindow
+        isOpen={isDetachedEditorOpen}
+        onClose={closeCodePanel}
+        theme={theme}
+        files={files}
+        activeFilePath={activeDetachedEditorFilePath}
+        content={activeDetachedEditorContent}
+        isDirty={activeDetachedEditorIsDirty}
+        onSelectFile={handleDetachedEditorSelectFile}
+        onChange={handleDetachedEditorChange}
+        onSave={() => {
+          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
+            return;
+          void saveCodeDraftAtPath(activeDetachedEditorFilePath);
+        }}
+        onReload={() => {
+          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
+            return;
+          if (isSvgPath(activeDetachedEditorFilePath)) {
+            handleDetachedEditorSelectFile(activeDetachedEditorFilePath);
+            return;
+          }
+          void loadFileContent(activeDetachedEditorFilePath, {
+            persistToState: true,
+          });
+          setCodeDraftByPath((prev) => {
+            const next = { ...prev };
+            delete next[activeDetachedEditorFilePath];
+            return next;
+          });
+          setCodeDirtyPathSet((prev) => {
+            const next = { ...prev };
+            delete next[activeDetachedEditorFilePath];
+            return next;
+          });
+        }}
+        isTextEditable={detachedEditorIsTextEditable}
+      />
+
+      {SHOW_AI_FEATURES ? (
+        <button
+          type="button"
+          className={`fixed z-[2147483647] right-6 bottom-24 flex items-center gap-2 px-3 py-2 rounded-full text-xs font-semibold border shadow-lg transition-all ${
+            isVibeAssistantOpen
+              ? theme === "dark"
+                ? "bg-cyan-500/25 text-cyan-200 border-cyan-400/40"
+                : "bg-cyan-500/20 text-cyan-700 border-cyan-500/30"
+              : theme === "dark"
+                ? "bg-slate-900/80 text-slate-200 border-slate-600/40 hover:bg-slate-900"
+                : "bg-white/95 text-slate-700 border-slate-300/70 hover:bg-white"
+          }`}
+          style={{ pointerEvents: "auto" }}
+          onClick={() => setIsVibeAssistantOpen((prev) => !prev)}
+          title="AI Assistant"
+        >
+          <Sparkles size={14} />
+          AI Assistant
+        </button>
+      ) : null}
+
+      {SHOW_AI_FEATURES ? (
+        <VibeAssistant
+          isOpen={isVibeAssistantOpen}
+          onClose={() => setIsVibeAssistantOpen(false)}
+          currentRoot={interactionMode === "preview" ? previewLayersRoot : root}
+          selectedElement={previewSelectedElement}
+          fileMap={files}
+          onVibeUpdate={async (response) => {
+            if (response.updatedRoot) {
+              lastVibeUpdateRef.current = Date.now();
+              setVibeErrorContext(undefined);
+              if (interactionMode === "preview") {
+                const currentPath = selectedPreviewHtmlRef.current;
+                if (currentPath) {
+                  const tempDoc = document.implementation.createHTMLDocument();
+                  const node = materializeVirtualElement(
+                    tempDoc,
+                    response.updatedRoot,
+                  );
+                  const serialized = (node as HTMLElement).innerHTML || "";
+                  // @ts-ignore
+                  await persistPreviewHtmlContent(currentPath, serialized, {
+                    refreshPreviewDoc: true,
+                    saveNow: true,
+                  });
+                }
+              } else {
+                setRoot(response.updatedRoot);
+              }
+            }
+          }}
+          lastErrorContext={vibeErrorContext}
+          aiBackend={aiBackend}
+          colabUrl={colabUrl}
+        />
+      ) : null}
+
+      {(isPdfExporting || pdfExportLogs.length > 0) && (
+        <div
+          className="fixed right-6 bottom-6 z-[1200] w-[320px] rounded-2xl border shadow-2xl p-3 text-xs"
+          style={{
+            background:
+              theme === "dark"
+                ? "rgba(15,23,42,0.92)"
+                : "rgba(255,255,255,0.95)",
+            borderColor:
+              theme === "dark"
+                ? "rgba(148,163,184,0.35)"
+                : "rgba(15,23,42,0.15)",
+            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
           }}
         >
-          <div
-            className={`px-4 py-2 flex justify-between items-center text-xs cursor-pointer select-none transition-colors duration-200 shrink-0 ${
-              theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"
-            }`}
-            style={{
-              borderBottom: "1px solid var(--border-color)",
-              color: "var(--text-muted)",
-            }}
-            onClick={() => setShowTerminal(!showTerminal)}
-          >
-            <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setBottomPanelTab("terminal");
-                  if (!showTerminal) setShowTerminal(true);
-                }}
-                className={`font-bold font-mono text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-lg border transition-all duration-200 ${
-                  bottomPanelTab === "terminal"
-                    ? theme === "dark"
-                      ? "bg-indigo-500/30 text-indigo-100 border-indigo-300/70 shadow-[0_0_0_1px_rgba(129,140,248,0.35)_inset]"
-                      : "bg-indigo-500/15 text-indigo-600 border-indigo-400/40"
-                    : theme === "dark"
-                      ? "hover:bg-white/5 text-slate-200"
-                      : "hover:bg-black/5"
-                }`}
-                style={{ borderColor: "var(--border-color)" }}
-              >
-                Terminal
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setBottomPanelTab("console");
-                  if (!showTerminal) setShowTerminal(true);
-                }}
-                className={`font-bold font-mono text-[10px] tracking-[0.2em] uppercase px-3 py-1.5 rounded-lg border transition-all duration-200 flex items-center gap-2 ${
-                  bottomPanelTab === "console"
-                    ? theme === "dark"
-                      ? "bg-cyan-500/30 text-cyan-100 border-cyan-300/70 shadow-[0_0_0_1px_rgba(103,232,249,0.35)_inset]"
-                      : "bg-cyan-500/15 text-cyan-700 border-cyan-400/40"
-                    : theme === "dark"
-                      ? "hover:bg-white/5 text-slate-200"
-                      : "hover:bg-black/5"
-                }`}
-                style={{ borderColor: "var(--border-color)" }}
-              >
-                Console
-                {previewConsoleErrorCount > 0 && (
-                  <span className="inline-flex min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] leading-4 justify-center">
-                    {previewConsoleErrorCount}
-                  </span>
-                )}
-              </button>
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-[0.2em] font-semibold opacity-70">
+              PDF Export
             </div>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowTerminal((prev) => !prev);
-              }}
-              className={`h-7 w-7 rounded-lg border transition-all duration-300 flex items-center justify-center ${
-                showTerminal
-                  ? theme === "dark"
-                    ? "rotate-180 bg-white/10"
-                    : "rotate-180 bg-black/5"
-                  : ""
-              }`}
-              style={{ borderColor: "var(--border-color)" }}
-            >
-              {showTerminal ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-            </button>
-          </div>
-          {/* Always mounted, visibility controlled by parent height */}
-          <div
-            className={`flex-1 overflow-hidden transition-opacity duration-300 ${showTerminal ? "opacity-100" : "opacity-0"}`}
-          >
-            {bottomPanelTab === "terminal" ? (
-              <Terminal />
-            ) : (
-              <div
-                className="h-full flex flex-col"
-                style={{
-                  background:
-                    theme === "dark"
-                      ? "linear-gradient(180deg, rgba(2,6,23,0.58) 0%, rgba(2,6,23,0.42) 100%)"
-                      : "linear-gradient(180deg,rgba(15,23,42,0.06)_0%,rgba(15,23,42,0.02)_100%)",
-                }}
+            {pdfExportLogs.length > 0 && (
+              <button
+                type="button"
+                className="text-[10px] font-semibold opacity-70 hover:opacity-100"
+                onClick={clearPdfExportLogs}
               >
-                <div
-                  className="px-3 py-2 text-[11px] font-mono flex items-center justify-between"
-                  style={{
-                    borderBottom: "1px solid var(--border-color)",
-                    background:
-                      theme === "dark"
-                        ? "linear-gradient(90deg, rgba(59,130,246,0.2) 0%, rgba(16,185,129,0.14) 100%)"
-                        : "linear-gradient(90deg, rgba(59,130,246,0.08) 0%, rgba(16,185,129,0.04) 100%)",
-                  }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border"
-                      style={{
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(148,163,184,0.35)"
-                            : "rgba(148,163,184,0.2)",
-                        backgroundColor:
-                          theme === "dark"
-                            ? "rgba(148,163,184,0.16)"
-                            : "rgba(100,116,139,0.1)",
-                        color: theme === "dark" ? "#e2e8f0" : "#334155",
-                      }}
-                    >
-                      Logs {previewConsoleEntries.length}
-                    </span>
-                    {previewConsoleWarnCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-amber-400/30 bg-amber-500/15 text-amber-700">
-                        Warn {previewConsoleWarnCount}
-                      </span>
-                    )}
-                    {previewConsoleErrorCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-red-400/30 bg-red-500/15 text-red-700">
-                        Error {previewConsoleErrorCount}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    className={`px-2.5 py-1 rounded-md border text-[10px] uppercase tracking-wider transition-colors ${
-                      theme === "dark"
-                        ? "hover:bg-white/10"
-                        : "hover:bg-black/5"
-                    }`}
-                    style={{
-                      borderColor: "var(--border-color)",
-                      color: "var(--text-muted)",
-                      backgroundColor:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.5)"
-                          : "rgba(255,255,255,0.35)",
-                    }}
-                    onClick={() => {
-                      previewConsoleSeqRef.current = 0;
-                      previewConsoleBufferRef.current = [];
-                      if (previewConsoleFlushTimerRef.current !== null) {
-                        window.clearTimeout(
-                          previewConsoleFlushTimerRef.current,
-                        );
-                        previewConsoleFlushTimerRef.current = null;
-                      }
-                      setPreviewConsoleEntries([]);
-                    }}
-                  >
-                    Clear
-                  </button>
+                Close
+              </button>
+            )}
+          </div>
+          <div className="mt-2 space-y-1 max-h-32 overflow-auto">
+            {pdfExportLogs.length === 0 ? (
+              <div className="opacity-70">Exporting...</div>
+            ) : (
+              pdfExportLogs.slice(-6).map((log, index) => (
+                <div key={`${index}-${log}`} className="opacity-80">
+                  {log}
                 </div>
-                <div className="flex-1 overflow-y-auto p-2.5 font-mono text-[11px] space-y-1.5 custom-scrollbar">
-                  {previewConsoleEntries.length === 0 ? (
-                    <div
-                      className="h-full min-h-[110px] flex items-center justify-center rounded-xl border border-dashed"
-                      style={{
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(148,163,184,0.35)"
-                            : "rgba(148,163,184,0.25)",
-                        backgroundColor:
-                          theme === "dark"
-                            ? "rgba(15,23,42,0.55)"
-                            : "rgba(255,255,255,0.3)",
-                      }}
-                    >
-                      <div className="text-center">
-                        <div
-                          className="text-[12px] font-semibold"
-                          style={{
-                            color: theme === "dark" ? "#e2e8f0" : "#475569",
-                          }}
-                        >
-                          No project logs yet
-                        </div>
-                        <div
-                          className="text-[10px] mt-1"
-                          style={{
-                            color: theme === "dark" ? "#94a3b8" : "#64748b",
-                          }}
-                        >
-                          Interact with the preview to stream console output
-                          here
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    previewConsoleEntries.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="whitespace-pre-wrap break-words px-2.5 py-2 rounded-lg border shadow-[0_1px_0_rgba(255,255,255,0.15)_inset]"
-                        style={{
-                          backgroundColor:
-                            entry.level === "error"
-                              ? "rgba(239, 68, 68, 0.10)"
-                              : entry.level === "warn"
-                                ? "rgba(245, 158, 11, 0.10)"
-                                : entry.level === "info"
-                                  ? "rgba(14, 165, 233, 0.10)"
-                                  : "rgba(15, 23, 42, 0.05)",
-                          borderColor:
-                            entry.level === "error"
-                              ? "rgba(239, 68, 68, 0.35)"
-                              : entry.level === "warn"
-                                ? "rgba(245, 158, 11, 0.35)"
-                                : entry.level === "info"
-                                  ? "rgba(14, 165, 233, 0.35)"
-                                  : "rgba(100, 116, 139, 0.22)",
-                          color:
-                            entry.level === "error"
-                              ? theme === "dark"
-                                ? "#fca5a5"
-                                : "#dc2626"
-                              : entry.level === "warn"
-                                ? theme === "dark"
-                                  ? "#fcd34d"
-                                  : "#d97706"
-                                : entry.level === "info"
-                                  ? theme === "dark"
-                                    ? "#7dd3fc"
-                                    : "#0369a1"
-                                  : theme === "dark"
-                                    ? "#e2e8f0"
-                                    : "var(--text-main)",
-                        }}
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <span
-                            className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded border"
-                            style={{
-                              borderColor:
-                                entry.level === "error"
-                                  ? "rgba(239, 68, 68, 0.5)"
-                                  : entry.level === "warn"
-                                    ? "rgba(245, 158, 11, 0.5)"
-                                    : entry.level === "info"
-                                      ? "rgba(14, 165, 233, 0.5)"
-                                      : "rgba(100, 116, 139, 0.35)",
-                              backgroundColor:
-                                entry.level === "error"
-                                  ? "rgba(239,68,68,0.12)"
-                                  : entry.level === "warn"
-                                    ? "rgba(245,158,11,0.12)"
-                                    : entry.level === "info"
-                                      ? "rgba(14,165,233,0.12)"
-                                      : "rgba(100,116,139,0.10)",
-                            }}
-                          >
-                            {entry.level}
-                          </span>
-                          <span className="text-[10px] opacity-70">
-                            {new Date(entry.time).toLocaleTimeString()}
-                          </span>
-                          <span className="text-[10px] opacity-60">
-                            {entry.source}
-                          </span>
-                        </div>
-                        <div className="leading-5">{entry.message}</div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+              ))
             )}
           </div>
         </div>
-      </div>
+      )}
+
+      {/* PDF Selector — top-right header pill */}
+      <PdfSelector
+        onSelectPdf={handleOpenPdfAnnotationsPicker}
+        onRefreshPdf={handleRefreshPdfAnnotationMapping}
+        onExportEditablePdf={handleExportEditablePdf}
+        isExporting={isPdfExporting}
+        showExportEditablePdf={SHOW_SCREENSHOT_FEATURES}
+        projectPath={projectPath}
+        theme={theme as "light" | "dark"}
+      />
+
+      {/* PDF Annotations Overlay — compact left-side overlay */}
+      <PdfAnnotationsOverlay
+        currentPreviewSlideId={currentPreviewSlideId ?? null}
+        theme={theme as "light" | "dark"}
+        onJumpToAnnotation={handleJumpToPdfAnnotation}
+      />
     </div>
   );
 };
 
-type EditorContentProps = {
-  root: VirtualElement;
-  selectedId: string | null;
-  selectedPathIds: Set<string> | null;
-  handleSelect: (id: string) => void;
-  handleMoveElement: (draggedId: string, targetId: string) => void;
-  handleMoveElementByPosition: (
-    id: string,
-    styles: Partial<React.CSSProperties>,
-  ) => void;
-  handleResize: (id: string, width: string, height: string) => void;
-  interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
-  INJECTED_STYLES: string;
-};
-
-const resolvePreviewImagePath = (path: string) => path;
-
-// --- Sub-Component for Content (Dry) ---
-const EditorContent = React.memo<EditorContentProps>(
-  ({
-    root,
-    selectedId,
-    selectedPathIds,
-    handleSelect,
-    handleMoveElement,
-    handleMoveElementByPosition,
-    handleResize,
-    interactionMode,
-    INJECTED_STYLES,
-  }) => (
-    <>
-      <style dangerouslySetInnerHTML={{ __html: INJECTED_STYLES }} />
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `* { outline: none; } ${selectedId ? `[data-id="${selectedId}"] { outline: 2px solid #6366f1 !important; z-index: 10; cursor: default; }` : ""}`,
-        }}
-      />
-      <div className="w-full h-full overflow-auto custom-scrollbar bg-white">
-        <EditorCanvas
-          element={root}
-          selectedId={selectedId}
-          selectedPathIds={selectedPathIds}
-          onSelect={handleSelect}
-          resolveImage={resolvePreviewImagePath}
-          onMoveElement={handleMoveElement}
-          onMoveByPosition={handleMoveElementByPosition}
-          onResize={handleResize}
-          interactionMode={interactionMode}
-        />
-      </div>
-    </>
-  ),
+const AppRoot: React.FC = () => (
+  <Provider store={store}>
+    <App />
+  </Provider>
 );
-EditorContent.displayName = "EditorContent";
 
-export default App;
+export default AppRoot;

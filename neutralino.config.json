@@ -7,6 +7,8 @@
   "enableServer": true,
   "singlePageServe": true,
   "enableNativeAPI": true,
+  "tokenSecurity": "none",
+  "allowedOrigins": ["http://localhost:3000"],
   "nativeBlockList": [],
   "nativeAllowList": [
     "app.*",
@@ -28,7 +30,7 @@
       "fullScreen": false,
       "alwaysOnTop": false,
       "enableInspector": true,
-      "borderless": true,
+      "borderless": false,
       "maximize": false,
       "hidden": false,
       "resizable": true,
