@@ -6,14 +6,16 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
+import html2canvas from "html2canvas";
+import { flushSync } from "react-dom";
 import Sidebar from "./components/Sidebar";
-import EditorCanvas from "./components/EditorCanvas";
 import PropertiesPanel from "./components/PropertiesPanel";
 import StyleInspectorPanel from "./components/StyleInspectorPanel";
 import Terminal from "./components/Terminal";
-import CodeViewer from "./components/CodeViewer";
+import ColorCodeEditor from "./components/ColorCodeEditor";
+import DetachedCodeEditorWindow from "./components/DetachedCodeEditorWindow";
 import CommandPalette from "./components/CommandPalette";
-import TitleBar from "./components/TitleBar";
+import ConfigEditorModal from "./components/ConfigEditorModal";
 import { INITIAL_ROOT, INJECTED_STYLES } from "./constants";
 import {
   VirtualElement,
@@ -30,8 +32,6 @@ import {
   PanelRight,
   Maximize2,
   Minimize2,
-  Command,
-  Play,
   Tablet,
   RotateCw,
   FolderOpen,
@@ -39,1046 +39,239 @@ import {
   Wifi,
   Sun,
   Moon,
+  Save,
+  Undo2,
+  Redo2,
+  Settings2,
+  Code2,
+  Sparkles,
+  Copy,
+  Trash2,
+  MoveUp,
+  MoveDown,
+  Shrink,
+  Expand,
+  StickyNote,
+  X,
+  Camera,
+  FileDown,
 } from "lucide-react";
 
-// --- Helper Functions (Same as before) ---
-const findElementById = (
-  root: VirtualElement,
-  id: string,
-): VirtualElement | null => {
-  if (root.id === id) return root;
-  for (const child of root.children) {
-    const found = findElementById(child, id);
-    if (found) return found;
-  }
-  return null;
-};
-
-const updateElementInTree = (
-  root: VirtualElement,
-  id: string,
-  updater: (el: VirtualElement) => VirtualElement,
-): VirtualElement => {
-  if (root.id === id) {
-    return updater(root);
-  }
-  return {
-    ...root,
-    children: root.children.map((child) =>
-      updateElementInTree(child, id, updater),
-    ),
-  };
-};
-
-const deleteElementFromTree = (
-  root: VirtualElement,
-  id: string,
-): VirtualElement => {
-  return {
-    ...root,
-    children: root.children
-      .filter((child) => child.id !== id)
-      .map((child) => deleteElementFromTree(child, id)),
-  };
-};
-
-const normalizePath = (path: string): string => path.replace(/\\/g, "/");
-const PREVIEW_MOUNT_PATH = "/__vh__";
-const SHARED_MOUNT_PATH = "/shared";
-const SHARED_MOUNT_PATH_IN_PREVIEW = "/__vh__/shared";
-
-const joinPath = (base: string, entry: string): string =>
-  `${base.replace(/[\\/]$/, "")}/${entry}`;
-
-const getParentPath = (path: string): string | null => {
-  const normalized = normalizePath(path).replace(/[\\/]$/, "");
-  const idx = normalized.lastIndexOf("/");
-  if (idx <= 0) return null;
-  return normalized.slice(0, idx);
-};
-
-const IGNORED_FOLDERS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".turbo",
-  ".cache",
-  "coverage",
-]);
-const THEME_STORAGE_KEY = "nocode-x-studio-theme";
-
-const inferFileType = (name: string): ProjectFile["type"] => {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
-  if (lower.endsWith(".css")) return "css";
-  if (lower.endsWith(".js")) return "js";
-  if (lower.match(/\.(png|jpg|jpeg|gif|svg|webp)$/)) return "image";
-  if (lower.match(/\.(woff|woff2|ttf|otf|eot)$/)) return "font";
-  return "unknown";
-};
-
-const toFileUrl = (absolutePath: string): string => {
-  const normalized = normalizePath(absolutePath);
-  return normalized.startsWith("/")
-    ? `file://${normalized}`
-    : `file:///${normalized}`;
-};
-
-const mimeFromType = (type: ProjectFile["type"], fileName: string): string => {
-  if (type === "image") {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    if (ext === "svg") return "image/svg+xml";
-    if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
-    if (ext === "gif") return "image/gif";
-    if (ext === "webp") return "image/webp";
-    return "image/png";
-  }
-  if (type === "font") {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    if (ext === "woff2") return "font/woff2";
-    if (ext === "woff") return "font/woff";
-    if (ext === "ttf") return "font/ttf";
-    if (ext === "otf") return "font/otf";
-    if (ext === "eot") return "application/vnd.ms-fontobject";
-    return "application/octet-stream";
-  }
-  return "application/octet-stream";
-};
-
-const toByteArray = (value: any): Uint8Array => {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (Array.isArray(value)) return new Uint8Array(value);
-  if (value?.buffer instanceof ArrayBuffer) return new Uint8Array(value.buffer);
-  return new Uint8Array();
-};
-
-const toBase64 = (bytes: Uint8Array): string => {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-};
-
-const isExternalUrl = (raw: string): boolean =>
-  /^(https?:|data:|blob:|mailto:|tel:|#|javascript:)/i.test(raw);
-
-const normalizeProjectRelative = (rawPath: string): string => {
-  const normalized = rawPath.replace(/\\/g, "/");
-  const parts = normalized.split("/");
-  const out: string[] = [];
-  for (const part of parts) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      out.pop();
-      continue;
-    }
-    out.push(part);
-  }
-  return out.join("/");
-};
-
-const resolveProjectRelativePath = (
-  currentFile: string,
-  target: string,
-): string | null => {
-  const trimmed = target.trim();
-  if (!trimmed || isExternalUrl(trimmed)) return null;
-
-  const pathOnly = trimmed.split("#")[0].split("?")[0];
-  if (!pathOnly) return null;
-
-  if (pathOnly.startsWith("/")) {
-    return normalizeProjectRelative(pathOnly.slice(1));
-  }
-  const currentDir = currentFile.includes("/")
-    ? currentFile.slice(0, currentFile.lastIndexOf("/"))
-    : "";
-  const joined = currentDir ? `${currentDir}/${pathOnly}` : pathOnly;
-  return normalizeProjectRelative(joined);
-};
-
-const findFilePathCaseInsensitive = (
-  fileMap: FileMap,
-  candidate: string,
-): string | null => {
-  if (!candidate) return null;
-  if (fileMap[candidate]) return candidate;
-  const lower = candidate.toLowerCase();
-  const exactLower = Object.keys(fileMap).find((k) => k.toLowerCase() === lower);
-  return exactLower ?? null;
-};
-
-const resolvePreviewNavigationPath = (
-  currentHtmlPath: string,
-  rawTarget: string,
-  fileMap: FileMap,
-): string | null => {
-  const normalizedRaw = String(rawTarget || "").trim();
-  if (!normalizedRaw) return null;
-  if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#)/i.test(normalizedRaw)) {
-    return null;
-  }
-
-  const directCandidate = normalizeProjectRelative(normalizedRaw.replace(/^\/+/, ""));
-  const variants = directCandidate.startsWith("shared/")
-    ? [directCandidate, directCandidate.slice("shared/".length)]
-    : [directCandidate, `shared/${directCandidate}`];
-
-  for (const candidate of variants) {
-    const matched = findFilePathCaseInsensitive(fileMap, candidate);
-    if (!matched) continue;
-    const file = fileMap[matched];
-    if (file?.type === "html") {
-      const lower = matched.toLowerCase();
-      if (lower.startsWith("shared/media/")) return null;
-      return matched;
-    }
-  }
-
-  const resolved = resolveProjectRelativePath(currentHtmlPath, normalizedRaw);
-  if (!resolved) return null;
-  const resolvedVariants = resolved.startsWith("shared/")
-    ? [resolved, resolved.slice("shared/".length)]
-    : [resolved, `shared/${resolved}`];
-  for (const candidate of resolvedVariants) {
-    const matched = findFilePathCaseInsensitive(fileMap, candidate);
-    if (!matched) continue;
-    const file = fileMap[matched];
-    if (file?.type === "html") {
-      const lower = matched.toLowerCase();
-      if (lower.startsWith("shared/media/")) return null;
-      return matched;
-    }
-  }
-
-  return null;
-};
-
-const isPathWithinBase = (basePath: string, candidatePath: string): boolean => {
-  const base = normalizePath(basePath).replace(/[\\/]$/, "").toLowerCase();
-  const candidate = normalizePath(candidatePath).toLowerCase();
-  return candidate === base || candidate.startsWith(`${base}/`);
-};
-
-const toMountRelativePath = (basePath: string, absolutePath: string): string | null => {
-  const base = normalizePath(basePath).replace(/[\\/]$/, "");
-  const absolute = normalizePath(absolutePath);
-  if (!isPathWithinBase(base, absolute)) return null;
-  const trimmed = absolute.startsWith(`${base}/`)
-    ? absolute.slice(base.length + 1)
-    : absolute.slice(base.length);
-  return normalizeProjectRelative(trimmed.replace(/^\/+/, ""));
-};
-
-const rewriteInlineAssetRefs = (
-  raw: string,
-  currentFile: string,
-  fileMap: FileMap,
-): string => {
-  let content = raw;
-
-  content = content.replace(
-    /\b(src|href)=["']([^"']+)["']/gi,
-    (full, attrName, rawValue) => {
-      const resolved = resolveProjectRelativePath(currentFile, rawValue);
-      if (!resolved) return full;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0
-      ) {
-        return full;
-      }
-      if (file.type === "image" || file.type === "font") {
-        return `${attrName}="${file.content}"`;
-      }
-      return full;
-    },
-  );
-
-  content = content.replace(
-    /url\((['"]?)([^'")]+)\1\)/gi,
-    (full, quote, rawValue) => {
-      const resolved = resolveProjectRelativePath(currentFile, rawValue);
-      if (!resolved) return full;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0
-      ) {
-        return full;
-      }
-      if (file.type === "image" || file.type === "font") {
-        return `url("${file.content}")`;
-      }
-      return full;
-    },
-  );
-
-  content = content.replace(/\bsrcset=["']([^"']+)["']/gi, (full, rawValue) => {
-    const rawSrcset = String(rawValue || "").trim();
-    if (!rawSrcset || /^data:/i.test(rawSrcset)) return full;
-    const parts = rawSrcset.split(",");
-    let changed = false;
-    const nextParts = parts.map((part) => {
-      const token = part.trim();
-      if (!token) return token;
-      const [rawUrl, ...descriptorParts] = token.split(/\s+/);
-      const resolved = resolveProjectRelativePath(currentFile, rawUrl);
-      if (!resolved) return token;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0 ||
-        (file.type !== "image" && file.type !== "font")
-      ) {
-        return token;
-      }
-      changed = true;
-      const descriptor = descriptorParts.join(" ");
-      return descriptor ? `${file.content} ${descriptor}` : file.content;
-    });
-    if (!changed) return full;
-    return `srcset="${nextParts.join(", ")}"`;
-  });
-
-  return content;
-};
-
-const buildPreviewRuntimeScript = (fileMap: FileMap, htmlPath: string): string => {
-  const records: Record<
-    string,
-    { kind: "text"; content: string } | { kind: "data"; data: string }
-  > = {};
-
-  for (const [path, file] of Object.entries(fileMap)) {
-    if (typeof file.content !== "string" || file.content.trim().length === 0) {
-      continue;
-    }
-    if (file.type === "image" || file.type === "font") {
-      records[path] = { kind: "data", data: file.content };
-      continue;
-    }
-    const transformed =
-      file.type === "html" || file.type === "css"
-        ? rewriteInlineAssetRefs(file.content, path, fileMap)
-        : file.content;
-    records[path] = { kind: "text", content: transformed };
-  }
-
-  const payload = JSON.stringify(records).replace(/<\//g, "<\\/");
-  const safeEntry = JSON.stringify(htmlPath).replace(/<\//g, "<\\/");
-
-  return `
-  (function () {
-    var __FILES = ${payload};
-    var __FILE_KEYS = Object.keys(__FILES);
-    var __LOWER_KEY_MAP = {};
-    for (var i = 0; i < __FILE_KEYS.length; i++) {
-      __LOWER_KEY_MAP[__FILE_KEYS[i].toLowerCase()] = __FILE_KEYS[i];
-    }
-    var __ENTRY = ${safeEntry};
-    var __ENTRY_DIR = __ENTRY.indexOf('/') > -1 ? __ENTRY.slice(0, __ENTRY.lastIndexOf('/')) : '';
-    var __ORIG_FETCH = window.fetch ? window.fetch.bind(window) : null;
-    var __XHR_OPEN = XMLHttpRequest.prototype.open;
-    var __XHR_SEND = XMLHttpRequest.prototype.send;
-
-    function normalize(path) {
-      var normalized = String(path || '').replace(/\\\\/g, '/');
-      var parts = normalized.split('/');
-      var out = [];
-      for (var i = 0; i < parts.length; i++) {
-        var part = parts[i];
-        if (!part || part === '.') continue;
-        if (part === '..') { out.pop(); continue; }
-        out.push(part);
-      }
-      return out.join('/');
-    }
-
-    function resolveFrom(baseFile, target) {
-      if (!target) return null;
-      if (/^(data:|blob:|mailto:|tel:|javascript:)/i.test(target)) return null;
-      var cleaned = String(target).split('#')[0].split('?')[0];
-      try { cleaned = decodeURIComponent(cleaned); } catch (e) {}
-      if (!cleaned) return null;
-      if (/^https?:/i.test(cleaned)) {
-        try {
-          var u = new URL(cleaned);
-          cleaned = u.pathname || '';
-        } catch (e) { return null; }
-      }
-      if (cleaned.startsWith('/')) return normalize(cleaned.slice(1));
-      var baseDir = baseFile.indexOf('/') > -1 ? baseFile.slice(0, baseFile.lastIndexOf('/')) : '';
-      return normalize(baseDir ? (baseDir + '/' + cleaned) : cleaned);
-    }
-
-    function getMime(path) {
-      var lower = String(path || '').toLowerCase();
-      if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html';
-      if (lower.endsWith('.css')) return 'text/css';
-      if (lower.endsWith('.js')) return 'text/javascript';
-      if (lower.endsWith('.json')) return 'application/json';
-      if (lower.endsWith('.svg')) return 'image/svg+xml';
-      return 'text/plain';
-    }
-
-    function lookupRecord(path) {
-      if (!path) return null;
-      if (__FILES[path]) return { key: path, rec: __FILES[path] };
-
-      var lowerPath = String(path).toLowerCase();
-      var exactLower = __LOWER_KEY_MAP[lowerPath];
-      if (exactLower && __FILES[exactLower]) {
-        return { key: exactLower, rec: __FILES[exactLower] };
-      }
-
-      for (var i = 0; i < __FILE_KEYS.length; i++) {
-        var key = __FILE_KEYS[i];
-        var lowerKey = key.toLowerCase();
-        if (lowerKey === lowerPath || lowerKey.endsWith('/' + lowerPath)) {
-          return { key: key, rec: __FILES[key] };
-        }
-      }
-      return null;
-    }
-
-    function getPathVariants(path) {
-      var variants = [];
-      var normalized = normalize(path);
-      if (!normalized) return variants;
-      variants.push(normalized);
-      if (normalized.startsWith('shared/')) {
-        variants.push(normalized.slice('shared/'.length));
-      } else {
-        variants.push('shared/' + normalized);
-      }
-      return variants;
-    }
-
-    function toPath(input) {
-      var raw = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-      if (!raw) return null;
-      return resolveFrom(__ENTRY, raw);
-    }
-
-    function getRecord(input) {
-      var path = toPath(input);
-      if (!path) return null;
-      var variants = getPathVariants(path);
-      for (var i = 0; i < variants.length; i++) {
-        var found = lookupRecord(variants[i]);
-        if (found) return { path: found.key, rec: found.rec };
-      }
-
-      if (__ENTRY_DIR) {
-        for (var j = 0; j < variants.length; j++) {
-          var prefixed = normalize(__ENTRY_DIR + '/' + variants[j]);
-          var prefixedFound = lookupRecord(prefixed);
-          if (prefixedFound) {
-            return { path: prefixedFound.key, rec: prefixedFound.rec };
-          }
-        }
-      }
-      return { path: path, rec: null };
-    }
-
-    function resolveNavigationTarget(target) {
-      if (!target) return null;
-      var raw = String(target || '').trim();
-      if (!raw) return null;
-      if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#)/i.test(raw)) return null;
-
-      var resolved = resolveFrom(__ENTRY, raw);
-      if (!resolved) return null;
-      var variants = getPathVariants(resolved);
-
-      for (var i = 0; i < variants.length; i++) {
-        var found = lookupRecord(variants[i]);
-        if (!found || !found.rec || found.rec.kind !== 'text') continue;
-        var lower = String(found.key || '').toLowerCase();
-        if (lower.endsWith('.html') || lower.endsWith('.htm')) {
-          if (lower.startsWith('shared/media/')) return null;
-          return found.key;
-        }
-      }
-      return null;
-    }
-
-    function toDataUrl(path, rec) {
-      if (!rec) return null;
-      if (rec.kind === 'data') return rec.data;
-      var mime = getMime(path);
-      return 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(rec.content);
-    }
-
-    function rewriteCssText(cssText) {
-      return String(cssText || '').replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function(full, _quote, raw) {
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return 'url("' + rewritten + '")';
-      });
-    }
-
-    function rewriteHtmlMarkup(markup) {
-      var next = String(markup || '');
-      next = next.replace(/\\b(src|href|srcset)=["']([^"']+)["']/gi, function(full, attr, raw) {
-        if (String(attr).toLowerCase() === 'srcset') {
-          var rewrittenSet = rewriteSrcsetValue(raw);
-          if (!rewrittenSet) return full;
-          return attr + '="' + rewrittenSet + '"';
-        }
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return attr + '="' + rewritten + '"';
-      });
-      next = next.replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function(full, _q, raw) {
-        var rewritten = rewriteAttrValue(raw);
-        if (!rewritten) return full;
-        return 'url("' + rewritten + '")';
-      });
-      return next;
-    }
-
-    function rewriteAttrValue(rawValue) {
-      if (!rawValue) return null;
-      var resolved = getRecord(rawValue);
-      if (!resolved || !resolved.rec) return null;
-      return toDataUrl(resolved.path, resolved.rec);
-    }
-
-    function rewriteSrcsetValue(rawValue) {
-      if (!rawValue) return null;
-      var srcset = String(rawValue).trim();
-      if (!srcset || /^data:/i.test(srcset)) return null;
-      var parts = srcset.split(',');
-      var changed = false;
-      for (var i = 0; i < parts.length; i++) {
-        var token = String(parts[i] || '').trim();
-        if (!token) continue;
-        var segs = token.split(/\s+/);
-        var rawUrl = segs[0];
-        var rewritten = rewriteAttrValue(rawUrl);
-        if (!rewritten) continue;
-        changed = true;
-        var descriptor = segs.slice(1).join(' ');
-        parts[i] = descriptor ? (rewritten + ' ' + descriptor) : rewritten;
-      }
-      return changed ? parts.join(', ') : null;
-    }
-
-    function patchElementAttributes(root) {
-      if (!root || !root.querySelectorAll) return;
-      if (root.tagName === 'STYLE' && root.textContent) {
-        root.textContent = rewriteCssText(root.textContent);
-      }
-      var nodes = root.querySelectorAll('[src], [href], [srcset]');
-      for (var i = 0; i < nodes.length; i++) {
-        var node = nodes[i];
-        if (node.tagName === 'STYLE' && node.textContent) {
-          node.textContent = rewriteCssText(node.textContent);
-        }
-        if (node.hasAttribute('src')) {
-          var src = node.getAttribute('src');
-          var nextSrc = rewriteAttrValue(src);
-          if (nextSrc) node.setAttribute('src', nextSrc);
-        }
-        if (node.hasAttribute('href')) {
-          var href = node.getAttribute('href');
-          var rel = (node.getAttribute('rel') || '').toLowerCase();
-          var nextHref = rewriteAttrValue(href);
-          if (nextHref && (rel === 'stylesheet' || node.tagName === 'A' || node.tagName === 'LINK')) {
-            node.setAttribute('href', nextHref);
-          }
-        }
-        if (node.hasAttribute('srcset')) {
-          var srcset = node.getAttribute('srcset');
-          var nextSrcset = rewriteSrcsetValue(srcset);
-          if (nextSrcset) node.setAttribute('srcset', nextSrcset);
-        }
-      }
-    }
-
-    var __APPEND_CHILD = Node.prototype.appendChild;
-    Node.prototype.appendChild = function(child) {
-      patchElementAttributes(child);
-      return __APPEND_CHILD.call(this, child);
-    };
-
-    var __INSERT_BEFORE = Node.prototype.insertBefore;
-    Node.prototype.insertBefore = function(newNode, referenceNode) {
-      patchElementAttributes(newNode);
-      return __INSERT_BEFORE.call(this, newNode, referenceNode);
-    };
-
-    var __SET_ATTR = Element.prototype.setAttribute;
-    Element.prototype.setAttribute = function(name, value) {
-      var lower = String(name || '').toLowerCase();
-      if (lower === 'srcset') {
-        var rewrittenSet = rewriteSrcsetValue(value);
-        if (rewrittenSet) value = rewrittenSet;
-      } else if (lower === 'src' || lower === 'href') {
-        var rewritten = rewriteAttrValue(value);
-        if (rewritten) value = rewritten;
-      } else if (lower === 'style' && typeof value === 'string') {
-        value = rewriteCssText(value);
-      }
-      return __SET_ATTR.call(this, name, value);
-    };
-
-    function patchUrlProperty(proto, propName) {
-      if (!proto) return;
-      var desc = Object.getOwnPropertyDescriptor(proto, propName);
-      if (!desc || !desc.set || !desc.get) return;
-      if (!desc.configurable) return;
-      Object.defineProperty(proto, propName, {
-        configurable: true,
-        enumerable: desc.enumerable,
-        get: function() {
-          return desc.get.call(this);
-        },
-        set: function(value) {
-          if (propName === 'srcset') {
-            var rewrittenSet = rewriteSrcsetValue(value);
-            return desc.set.call(this, rewrittenSet || value);
-          }
-          var rewritten = rewriteAttrValue(value);
-          return desc.set.call(this, rewritten || value);
-        }
-      });
-    }
-
-    patchUrlProperty(window.HTMLImageElement && window.HTMLImageElement.prototype, 'src');
-    patchUrlProperty(window.HTMLImageElement && window.HTMLImageElement.prototype, 'srcset');
-    patchUrlProperty(window.HTMLScriptElement && window.HTMLScriptElement.prototype, 'src');
-    patchUrlProperty(window.HTMLLinkElement && window.HTMLLinkElement.prototype, 'href');
-    patchUrlProperty(window.HTMLAnchorElement && window.HTMLAnchorElement.prototype, 'href');
-    patchUrlProperty(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'src');
-    patchUrlProperty(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'srcset');
-    patchUrlProperty(window.HTMLIFrameElement && window.HTMLIFrameElement.prototype, 'src');
-
-    var __INSERT_ADJ = Element.prototype.insertAdjacentHTML;
-    Element.prototype.insertAdjacentHTML = function(position, text) {
-      return __INSERT_ADJ.call(this, position, rewriteHtmlMarkup(text));
-    };
-
-    var innerHtmlDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
-    if (innerHtmlDesc && innerHtmlDesc.set && innerHtmlDesc.get) {
-      Object.defineProperty(Element.prototype, 'innerHTML', {
-        configurable: true,
-        enumerable: innerHtmlDesc.enumerable,
-        get: function() {
-          return innerHtmlDesc.get.call(this);
-        },
-        set: function(value) {
-          return innerHtmlDesc.set.call(this, rewriteHtmlMarkup(value));
-        }
-      });
-    }
-
-    var __DOC_WRITE = document.write ? document.write.bind(document) : null;
-    if (__DOC_WRITE) {
-      document.write = function() {
-        var args = [];
-        for (var i = 0; i < arguments.length; i++) {
-          args.push(rewriteHtmlMarkup(arguments[i]));
-        }
-        return __DOC_WRITE.apply(document, args);
-      };
-    }
-
-    if (document && document.documentElement) {
-      patchElementAttributes(document.documentElement);
-      var observer = new MutationObserver(function(mutations) {
-        for (var i = 0; i < mutations.length; i++) {
-          var m = mutations[i];
-          for (var j = 0; j < m.addedNodes.length; j++) {
-            patchElementAttributes(m.addedNodes[j]);
-          }
-        }
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
-
-    function notifyNavigate(targetPath) {
-      if (!targetPath || !window.parent || window.parent === window) return;
-      try {
-        window.parent.postMessage({ type: 'PREVIEW_NAVIGATE', path: targetPath }, '*');
-      } catch (e) {}
-    }
-
-    document.addEventListener('click', function(event) {
-      var target = event && event.target;
-      if (!target || !target.closest) return;
-      var anchor = target.closest('a[href]');
-      if (!anchor) return;
-      var href = anchor.getAttribute('href');
-      var navTarget = resolveNavigationTarget(href);
-      if (!navTarget) return;
-      event.preventDefault();
-      event.stopPropagation();
-      notifyNavigate(navTarget);
-    }, true);
-
-    var __LOCATION_ASSIGN = window.location.assign ? window.location.assign.bind(window.location) : null;
-    if (__LOCATION_ASSIGN) {
-      try {
-        window.location.assign = function(url) {
-          var navTarget = resolveNavigationTarget(url);
-          if (navTarget) {
-            notifyNavigate(navTarget);
-            return;
-          }
-          return __LOCATION_ASSIGN(url);
-        };
-      } catch (e) {}
-    }
-
-    var __LOCATION_REPLACE = window.location.replace ? window.location.replace.bind(window.location) : null;
-    if (__LOCATION_REPLACE) {
-      try {
-        window.location.replace = function(url) {
-          var navTarget = resolveNavigationTarget(url);
-          if (navTarget) {
-            notifyNavigate(navTarget);
-            return;
-          }
-          return __LOCATION_REPLACE(url);
-        };
-      } catch (e) {}
-    }
-
-    if (__ORIG_FETCH) {
-      window.fetch = function(input, init) {
-        var method = (init && init.method) || (input && input.method) || 'GET';
-        if (String(method).toUpperCase() !== 'GET') return __ORIG_FETCH(input, init);
-        var resolved = getRecord(input);
-        if (!resolved || !resolved.rec) return __ORIG_FETCH(input, init);
-        if (resolved.rec.kind === 'data') return __ORIG_FETCH(resolved.rec.data, init);
-        return Promise.resolve(
-          new Response(resolved.rec.content, {
-            status: 200,
-            headers: { 'Content-Type': getMime(resolved.path) + '; charset=utf-8' }
-          })
-        );
-      };
-    }
-
-    XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-      this.__codexMethod = method;
-      this.__codexUrl = url;
-      this.__codexAsync = async;
-      this.__codexUser = user;
-      this.__codexPassword = password;
-      return __XHR_OPEN.apply(this, arguments);
-    };
-
-    XMLHttpRequest.prototype.send = function(body) {
-      var method = String(this.__codexMethod || 'GET').toUpperCase();
-      if (method === 'GET') {
-        var resolved = getRecord(this.__codexUrl);
-        if (resolved && resolved.rec) {
-          var dataUrl = resolved.rec.kind === 'data'
-            ? resolved.rec.data
-            : ('data:' + getMime(resolved.path) + ';charset=utf-8,' + encodeURIComponent(resolved.rec.content));
-          __XHR_OPEN.call(
-            this,
-            method,
-            dataUrl,
-            this.__codexAsync !== false,
-            this.__codexUser,
-            this.__codexPassword
-          );
-        }
-      }
-      return __XHR_SEND.call(this, body);
-    };
-  })();
-  `;
-};
-
-const createPreviewDocument = (fileMap: FileMap, htmlPath: string): string => {
-  const entry = fileMap[htmlPath];
-  if (
-    !entry ||
-    typeof entry.content !== "string" ||
-    entry.content.trim().length === 0
-  ) {
-    return "";
-  }
-  let html = entry.content;
-  const runtimeScript = buildPreviewRuntimeScript(fileMap, htmlPath);
-
-  if (/<head[\s>]/i.test(html)) {
-    html = html.replace(
-      /<head([^>]*)>/i,
-      `<head$1>\n<script data-preview-runtime="true">\n${runtimeScript}\n</script>\n`,
-    );
-  } else {
-    html = `<head><script data-preview-runtime="true">\n${runtimeScript}\n</script></head>\n${html}`;
-  }
-
-  html = html.replace(
-    /<link\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi,
-    (full, beforeHref, hrefValue, afterHref) => {
-      if (!/rel=["']stylesheet["']/i.test(full)) return full;
-      const resolved = resolveProjectRelativePath(htmlPath, hrefValue);
-      if (!resolved) return full;
-      const cssFile = fileMap[resolved];
-      if (
-        !cssFile ||
-        typeof cssFile.content !== "string" ||
-        cssFile.content.trim().length === 0
-      ) {
-        return full;
-      }
-      return `<style data-source="${resolved}">\n${rewriteInlineAssetRefs(cssFile.content, resolved, fileMap)}\n</style>`;
-    },
-  );
-
-  html = html.replace(
-    /<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
-    (full, beforeSrc, srcValue, afterSrc) => {
-      const resolved = resolveProjectRelativePath(htmlPath, srcValue);
-      if (!resolved) return full;
-      const jsFile = fileMap[resolved];
-      if (
-        !jsFile ||
-        typeof jsFile.content !== "string" ||
-        jsFile.content.trim().length === 0
-      ) {
-        return full;
-      }
-      return `<script${beforeSrc}${afterSrc} data-source="${resolved}">\n${jsFile.content}\n</script>`;
-    },
-  );
-
-  html = rewriteInlineAssetRefs(html, htmlPath, fileMap);
-
-  return html;
-};
-
-const pickDefaultHtmlFile = (fileMap: FileMap): string | null => {
-  const htmlFiles = Object.values(fileMap).filter((f) => f.type === "html");
-  if (htmlFiles.length === 0) return null;
-
-  const slide000 = htmlFiles.find((f) =>
-    /_000\/index\.html$/i.test(normalizePath(f.path)),
-  );
-  if (slide000) return slide000.path;
-
-  const slide001 = htmlFiles.find((f) =>
-    /_001\/index\.html$/i.test(normalizePath(f.path)),
-  );
-  if (slide001) return slide001.path;
-
-  const slideIndexFiles = htmlFiles
-    .map((f) => ({ file: f, normalizedPath: normalizePath(f.path) }))
-    .filter(({ normalizedPath }) =>
-      /_([0-9]{3,})\/index\.html$/i.test(normalizedPath),
-    )
-    .sort((a, b) => {
-      const aMatch = a.normalizedPath.match(/_([0-9]{3,})\/index\.html$/i);
-      const bMatch = b.normalizedPath.match(/_([0-9]{3,})\/index\.html$/i);
-      const aNum = aMatch ? Number.parseInt(aMatch[1], 10) : Number.MAX_SAFE_INTEGER;
-      const bNum = bMatch ? Number.parseInt(bMatch[1], 10) : Number.MAX_SAFE_INTEGER;
-      if (aNum !== bNum) return aNum - bNum;
-      return a.normalizedPath.localeCompare(b.normalizedPath);
-    });
-  if (slideIndexFiles.length > 0) {
-    return slideIndexFiles[0].file.path;
-  }
-
-  const indexHtml =
-    htmlFiles.find((f) => f.path.toLowerCase() === "index.html") ||
-    htmlFiles.find((f) => f.name.toLowerCase() === "index.html");
-  return (indexHtml || htmlFiles[0]).path;
-};
-
-const addElementToTree = (
-  root: VirtualElement,
-  parentId: string,
-  newElement: VirtualElement,
-  position: "inside" | "before" | "after" = "inside",
-): VirtualElement => {
-  if (root.id === parentId && position === "inside") {
-    return { ...root, children: [...root.children, newElement] };
-  }
-  if (
-    root.children.some((child) => child.id === parentId) &&
-    position !== "inside"
-  ) {
-    const targetIndex = root.children.findIndex(
-      (child) => child.id === parentId,
-    );
-    const newChildren = [...root.children];
-    if (position === "before") newChildren.splice(targetIndex, 0, newElement);
-    else newChildren.splice(targetIndex + 1, 0, newElement);
-    return { ...root, children: newChildren };
-  }
-  return {
-    ...root,
-    children: root.children.map((child) =>
-      addElementToTree(child, parentId, newElement, position),
-    ),
-  };
-};
-
-// --- Device Context Menu ---
-const DeviceContextMenu: React.FC<{
-  type: "mobile" | "desktop" | "tablet";
-  position: { x: number; y: number };
-  mobileFrameStyle: "dynamic-island" | "punch-hole" | "notch";
-  setMobileFrameStyle: (s: "dynamic-island" | "punch-hole" | "notch") => void;
-  desktopResolution: "1080p" | "1.5k" | "2k" | "4k" | "resizable";
-  setDesktopResolution: (
-    r: "1080p" | "1.5k" | "2k" | "4k" | "resizable",
-  ) => void;
+import VibeAssistant from "./components/VibeAssistant";
+import { AIPipeline } from "./utils/ai/AIPipeline";
+
+import EditorContent from "./app/EditorContent";
+import { Provider } from "react-redux";
+import { store } from "./src/store";
+import PdfSelector from "./src/components/PdfSelector";
+import PdfAnnotationsOverlay from "./src/components/PdfAnnotationsOverlay";
+import {
+  setRecords,
+  setFileName,
+  setSourcePath,
+  setError,
+  setIsOpen,
+  setIsLoading,
+  setFocusedAnnotation,
+  setViewMode,
+  setTypeOverrides,
+  setClassifierMetrics,
+  addProcessingLog,
+  clearProcessingLogs,
+  resetState,
+} from "./src/store/annotationSlice";
+import { useDispatch, useSelector } from "react-redux";
+import { RootState } from "./src/store";
+import {
+  buildMappedPdfAnnotations,
+  evaluateAnnotationTypeClassifier,
+  PdfAnnotationRecord,
+  PdfAnnotationUiRecord,
+} from "./app/pdfAnnotationHelpers";
+import {
+  isEdaProject,
+  findElementById,
+  collectPathIdsToElement,
+  updateElementInTree,
+  deleteElementFromTree,
+  normalizePath,
+  PREVIEW_LAYER_ID_PREFIX,
+  PREVIEW_MOUNT_PATH,
+  SHARED_MOUNT_PATH,
+  SHARED_MOUNT_PATH_IN_PREVIEW,
+  joinPath,
+  getParentPath,
+  IGNORED_FOLDERS,
+  THEME_STORAGE_KEY,
+  PREVIEW_AUTOSAVE_STORAGE_KEY,
+  AI_BACKEND_STORAGE_KEY,
+  COLAB_URL_STORAGE_KEY,
+  SHOW_AI_FEATURES,
+  SHOW_SCREENSHOT_FEATURES,
+  SHOW_MASTER_TOOLS,
+  MAX_CANVAS_HISTORY,
+  MAX_PREVIEW_HISTORY,
+  MAX_PREVIEW_CONSOLE_ENTRIES,
+  MAX_PREVIEW_DOC_CACHE_ENTRIES,
+  MAX_PREVIEW_DOC_CACHE_CHARS,
+  SHARED_FONT_VIRTUAL_DIR,
+  PRESENTATION_CSS_VIRTUAL_PATH,
+  FONT_CACHE_VIRTUAL_PATH,
+  FONT_CACHE_VERSION,
+  CONFIG_JSON_PATH,
+  PORTFOLIO_CONFIG_PATH,
+  ADD_TOOL_COMPONENT_PRESETS,
+  ADD_TOOL_CSS_MARKER_START,
+  ADD_TOOL_CSS_MARKER_END,
+  ADD_TOOL_JS_MARKER_START,
+  ADD_TOOL_JS_MARKER_END,
+  VOID_HTML_TAGS,
+  ADD_TOOL_COMPONENTS_CSS_CONTENT,
+  ADD_TOOL_COMPONENTS_JS_CONTENT,
+  resolveConfigPathFromFiles,
+  getConfigPathCandidates,
+  scoreConfigContent,
+  DEFAULT_EDITOR_FONTS,
+  PREVIEW_DRAW_ALLOWED_TAGS,
+  normalizePreviewDrawTag,
+  FontCachePayload,
+  MaybeViewTransitionDocument,
+  sanitizeFontFamilyName,
+  dedupeFontFamilies,
+  buildEditorFontOptions,
+  parsePresentationCssFontFamilies,
+  parseFontCacheFamilies,
+  deriveFontFamilyFromFontFileName,
+  fontFormatFromFileName,
+  relativePathBetweenVirtualFiles,
+  collectSharedFontFamiliesFromFileMap,
+  inferFileType,
+  isTextFileType,
+  isSvgPath,
+  isCodeEditableFile,
+  toFileUrl,
+  mimeFromType,
+  toByteArray,
+  isExternalUrl,
+  normalizeProjectRelative,
+  resolveProjectRelativePath,
+  findFilePathCaseInsensitive,
+  resolvePreviewNavigationPath,
+  isPathWithinBase,
+  toMountRelativePath,
+  rewriteInlineAssetRefs,
+  buildPreviewRuntimeScript,
+  createPreviewDocument,
+  pickDefaultHtmlFile,
+  MOUNTED_PREVIEW_BRIDGE_SCRIPT,
+  toCssPropertyName,
+  parseNumericCssValue,
+  CSS_GENERIC_FONT_FAMILIES,
+  normalizeFontFamilyCssValue,
+  readElementByPath,
+  normalizePreviewPath,
+  toPreviewLayerId,
+  fromPreviewLayerId,
+  parseInlineStyleText,
+  extractComputedStylesFromElement,
+  RESERVED_ATTRIBUTE_NAMES,
+  extractCustomAttributesFromElement,
+  normalizeEditorMultilineText,
+  extractTextWithBreaks,
+  extractTextFromHtmlFragment,
+  hasRichInlineTextStructure,
+  collectTextNodeGroupsByBreak,
+  chooseTextSplitPoint,
+  distributeTextAcrossNodes,
+  applyMultilineTextToElement,
+  PreviewHistoryEntry,
+  addElementToTree,
+  TOOLBOX_DRAG_MIME,
+  hasToolboxDragType,
+  getToolboxDragPayload,
+  createPresetIdFactory,
+  createVirtualNode,
+  buildPresetElement,
+  buildPresetElementV2,
+  buildStandardElement,
+  materializeVirtualElement,
+  buildPreviewLayerTreeFromElement,
+  DeviceContextMenu,
+  PreviewConsoleLevel,
+  PreviewConsoleEntry,
+  PreviewSelectionMode,
+  PreviewSyncSource,
+  PendingPageSwitch,
+  PREVIEW_SELECTION_MODE_OPTIONS,
+} from "./app/appHelpers";
+import { resourceScanner } from "./utils/ai/ResourceScanner";
+const escapeConsoleHtml = (value: string): string =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const RECENT_PROJECTS_STORAGE_KEY = "nocodex_recent_projects_v1";
+const PDF_ANNOTATION_CACHE_KEY = "nocodex_pdf_annotation_cache_v1";
+const DEFAULT_COLAB_URL = "https://upset-hands-hope.loca.lt";
+const SCREENSHOT_INDEX_FILE = "shared/screenshots/index.json";
+const SCREENSHOT_DIR = "shared/screenshots";
+const PDF_EXPORT_DIR = "shared/pdf_exports";
+
+type ScreenshotMetadata = {
+  id: string;
+  createdAt: string;
+  projectPath: string;
+  slidePath: string | null;
+  slideId: string | null;
+  popupId: string | null;
+  popupSelector: string | null;
+  deviceMode: "desktop" | "mobile" | "tablet";
   tabletModel: "ipad" | "ipad-pro";
-  setTabletModel: (m: "ipad" | "ipad-pro") => void;
-  onClose: () => void;
-}> = ({
-  type,
-  position,
-  mobileFrameStyle,
-  setMobileFrameStyle,
-  desktopResolution,
-  setDesktopResolution,
-  tabletModel,
-  setTabletModel,
-  onClose,
-}) => {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onClickOut = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onClickOut);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onClickOut);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [onClose]);
-
-  const mobileItems = [
-    { label: "📱  iPhone — Dynamic Island", value: "dynamic-island" as const },
-    { label: "📱  iPhone — Notch", value: "notch" as const },
-    { label: "🤖  Android — Punch Hole", value: "punch-hole" as const },
-  ];
-
-  const desktopItems = [
-    { label: "🖥️  1080p (1920 × 1080)", value: "1080p" as const },
-    { label: "🖥️  1.5K (1600 × 900)", value: "1.5k" as const },
-    { label: "🖥️  2K (2560 × 1440)", value: "2k" as const },
-    { label: "🖥️  4K (3840 × 2160)", value: "4k" as const },
-    { label: "↔️  Resizable", value: "resizable" as const },
-  ];
-
-  const tabletItems = [
-    { label: "iPad (1536 x 2048)", value: "ipad" as const },
-    { label: "iPad Pro (2048 x 2732)", value: "ipad-pro" as const },
-  ];
-
-  const items =
-    type === "mobile"
-      ? mobileItems
-      : type === "desktop"
-        ? desktopItems
-        : tabletItems;
-  const currentValue =
-    type === "mobile"
-      ? mobileFrameStyle
-      : type === "desktop"
-        ? desktopResolution
-        : tabletModel;
-
-  return (
-    <div
-      ref={ref}
-      className="fixed z-[2000] py-1.5 rounded-xl overflow-hidden animate-fadeIn"
-      style={{
-        left: position.x,
-        top: position.y,
-        minWidth: "200px",
-        background: "var(--bg-glass-strong)",
-        backdropFilter: "blur(24px)",
-        border: "1px solid var(--border-color)",
-        boxShadow: "0 12px 40px -8px rgba(0,0,0,0.5)",
-      }}
-    >
-      <div
-        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {type === "mobile"
-          ? "Frame Style"
-          : type === "desktop"
-            ? "Resolution"
-            : "iPad Model"}
-      </div>
-      {items.map((item) => (
-        <button
-          key={item.value}
-          onClick={() => {
-            if (type === "mobile") setMobileFrameStyle(item.value as any);
-            else if (type === "desktop") setDesktopResolution(item.value as any);
-            else setTabletModel(item.value as any);
-            onClose();
-          }}
-          className="w-full px-3 py-2 text-left text-[12px] font-medium flex items-center gap-2 transition-all duration-150"
-          style={{
-            color:
-              currentValue === item.value
-                ? "var(--accent-primary)"
-                : "var(--text-main)",
-            backgroundColor:
-              currentValue === item.value
-                ? "var(--accent-glow)"
-                : "transparent",
-          }}
-          onMouseEnter={(e) => {
-            if (currentValue !== item.value)
-              e.currentTarget.style.backgroundColor = "var(--input-bg)";
-          }}
-          onMouseLeave={(e) => {
-            if (currentValue !== item.value)
-              e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          <span>{item.label}</span>
-          {currentValue === item.value && (
-            <span className="ml-auto text-[10px] opacity-60">✓</span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
+  tabletOrientation: "landscape" | "portrait";
+  frameZoom: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  previewMode: "edit" | "preview";
+  interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
+  imagePath: string;
+  imageFileName: string;
 };
+const ANNOTATION_INTENT_OPTIONS = [
+  "stylingChange",
+  "textualChange",
+  "textInImage",
+  "notFound",
+  "referenceChange",
+  "assetChange",
+  "flowChange",
+  "piChange",
+  "siChange",
+];
 
-type PreviewConsoleLevel = "log" | "info" | "warn" | "error" | "debug";
-type PreviewConsoleEntry = {
-  id: number;
-  level: PreviewConsoleLevel;
-  message: string;
-  source: string;
-  time: number;
-};
+const ALLOW_POPUP_OPEN_FROM_PDF = false;
+
+const resolvePreviewImagePath = (path: string) => path;
 
 const App: React.FC = () => {
+  // --- Redux Dispatch Setup ---
+  const dispatch = useDispatch();
+  const {
+    records: pdfAnnotationRecords,
+    fileName: pdfAnnotationFileName,
+    sourcePath: pdfAnnotationSourcePath,
+    error: pdfAnnotationError,
+    isOpen: isPdfAnnotationPanelOpen,
+    isLoading: isPdfAnnotationLoading,
+    focusedAnnotation: focusedPdfAnnotation,
+    viewMode: pdfAnnotationViewMode,
+    typeFilter: pdfAnnotationTypeFilter,
+    typeOverrides: pdfAnnotationTypeOverrides,
+    classifierMetrics: pdfAnnotationClassifierMetrics,
+  } = useSelector((state: RootState) => state.annotations);
+
   // --- Neutralino Setup ---
   useEffect(() => {
     Neutralino.events.on("ready", () =>
@@ -1088,6 +281,20 @@ const App: React.FC = () => {
 
   // --- State ---
   const [root, setRoot] = useState<VirtualElement>(INITIAL_ROOT);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [configModalInitialTab, setConfigModalInitialTab] = useState<
+    "references" | "slides" | "configRaw"
+  >("references");
+  const [isConfigModalSlidesOnly, setIsConfigModalSlidesOnly] = useState(false);
+  const [configModalConfigPath, setConfigModalConfigPath] = useState<
+    string | null
+  >(null);
+  const [configModalPortfolioPath, setConfigModalPortfolioPath] = useState<
+    string | null
+  >(null);
+  const [selectedFolderCloneSource, setSelectedFolderCloneSource] = useState<
+    string | null
+  >(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
@@ -1096,21 +303,70 @@ const App: React.FC = () => {
   });
   const [files, setFiles] = useState<FileMap>({});
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [previewMountBasePath, setPreviewMountBasePath] = useState<string | null>(null);
+  const [recentProjects, setRecentProjects] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_PROJECTS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed
+            .filter((entry) => typeof entry === "string" && entry.trim())
+            .slice(0, 5)
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const [previewMountBasePath, setPreviewMountBasePath] = useState<
+    string | null
+  >(null);
   const [isPreviewMountReady, setIsPreviewMountReady] = useState(false);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
-  const [previewSyncedFile, setPreviewSyncedFile] = useState<string | null>(null);
+  const [activeFile, setActiveFileRaw] = useState<string | null>(null);
+  const setActiveFile = useCallback(
+    (path: string | null | ((prev: string | null) => string | null)) => {
+      setActiveFileRaw((prev) => {
+        const next = typeof path === "function" ? path(prev) : path;
+        console.log("[DEBUG] activeFile changing from", prev, "to", next);
+        return next;
+      });
+    },
+    [],
+  );
+  const [previewSyncedFile, setPreviewSyncedFile] = useState<string | null>(
+    null,
+  );
+  const [previewNavigationFile, setPreviewNavigationFile] = useState<
+    string | null
+  >(null);
   const [deviceMode, setDeviceMode] = useState<"desktop" | "mobile" | "tablet">(
     "tablet",
   );
   const [interactionMode, setInteractionMode] = useState<
-    "edit" | "preview" | "inspect" | "draw"
+    "edit" | "preview" | "inspect" | "draw" | "move"
   >("edit");
+  const [sidebarToolMode, setSidebarToolMode] = useState<
+    "edit" | "inspect" | "draw" | "move"
+  >("edit");
+  const [previewMode, setPreviewMode] = useState<"edit" | "preview">("preview");
+  const [previewSelectionMode, setPreviewSelectionMode] =
+    useState<PreviewSelectionMode>("default");
+  const [availableFonts, setAvailableFonts] =
+    useState<string[]>(DEFAULT_EDITOR_FONTS);
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
   const [showTerminal, setShowTerminal] = useState(false);
+  const [isCompactConsoleOpening, setIsCompactConsoleOpening] = useState(false);
+  const [isZenMode, setIsZenMode] = useState(false);
+  const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
+  const [isDetachedEditorOpen, setIsDetachedEditorOpen] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
+  const [codeDraftByPath, setCodeDraftByPath] = useState<
+    Record<string, string>
+  >({});
+  const [codeDirtyPathSet, setCodeDirtyPathSet] = useState<
+    Record<string, true>
+  >({});
   const [previewConsoleEntries, setPreviewConsoleEntries] = useState<
     PreviewConsoleEntry[]
   >([]);
@@ -1123,6 +379,34 @@ const App: React.FC = () => {
     }
     return "light";
   });
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(PREVIEW_AUTOSAVE_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [aiBackend, setAiBackend] = useState<"local" | "colab">(() => {
+    try {
+      const saved = localStorage.getItem(AI_BACKEND_STORAGE_KEY);
+      return (saved as "local" | "colab") || "local";
+    } catch {
+      return "local";
+    }
+  });
+  const [colabUrl, setColabUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem(COLAB_URL_STORAGE_KEY) || DEFAULT_COLAB_URL;
+    } catch {
+      return DEFAULT_COLAB_URL;
+    }
+  });
+  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
+  const [dirtyFiles, setDirtyFiles] = useState<string[]>([]);
+  const [dirtyPathKeysByFile, setDirtyPathKeysByFile] = useState<
+    Record<string, string[]>
+  >({});
+  // PDF Annotation local states removed and managed by Redux.
 
   // Design Revamp States
   const [mobileFrameStyle, setMobileFrameStyle] = useState<
@@ -1135,28 +419,242 @@ const App: React.FC = () => {
   const [tabletOrientation, setTabletOrientation] = useState<
     "portrait" | "landscape"
   >("landscape");
+  const [previewRefreshNonce, setPreviewRefreshNonce] = useState(0);
+  const [previewFrameLoadNonce, setPreviewFrameLoadNonce] = useState(0);
   const [frameZoom, setFrameZoom] = useState<50 | 75 | 100>(100);
   const [deviceCtxMenu, setDeviceCtxMenu] = useState<{
     type: "mobile" | "desktop" | "tablet";
     x: number;
     y: number;
   } | null>(null);
+
+  const [isVibeAssistantOpen, setIsVibeAssistantOpen] = useState(false);
+  const [vibeErrorContext, setVibeErrorContext] = useState<
+    string | undefined
+  >();
+
+  // Use a ref to track if a vibe update was just applied to handle errors
+  const lastVibeUpdateRef = useRef<number>(0);
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [rightPanelMode, setRightPanelMode] = useState<
+    "inspector" | "gallery"
+  >("inspector");
+  const [isScreenshotGalleryOpen, setIsScreenshotGalleryOpen] = useState(false);
+  const [screenshotItems, setScreenshotItems] = useState<ScreenshotMetadata[]>(
+    [],
+  );
+  const [screenshotPreviewUrls, setScreenshotPreviewUrls] = useState<
+    Record<string, string>
+  >({});
+  const [screenshotCaptureBusy, setScreenshotCaptureBusy] = useState(false);
+  const [screenshotSessionRestore, setScreenshotSessionRestore] = useState<{
+    leftOpen: boolean;
+    rightOpen: boolean;
+    rightMode: "inspector" | "gallery";
+  } | null>(null);
+  const [pdfExportLogs, setPdfExportLogs] = useState<string[]>([]);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isToolboxDragging, setIsToolboxDragging] = useState(false);
+  const toolboxDragTypeRef = useRef("");
+  const [pendingPageSwitch, setPendingPageSwitch] =
+    useState<PendingPageSwitch | null>(null);
+
+  const readPdfAnnotationCache = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(PDF_ANNOTATION_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        version: number;
+        projects: Record<
+          string,
+          {
+            lastPdfPath: string | null;
+            entries: Record<
+              string,
+              {
+                fileName: string;
+                records: PdfAnnotationUiRecord[];
+                storedAt: number;
+              }
+            >;
+          }
+        >;
+      };
+      if (!parsed || parsed.version !== 2) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const writePdfAnnotationCache = useCallback(
+    (
+      projectKey: string,
+      pdfPath: string,
+      fileName: string,
+      records: PdfAnnotationUiRecord[],
+    ) => {
+      try {
+        const existing = readPdfAnnotationCache() || {
+          version: 1,
+          projects: {},
+        };
+        const nextProjects = { ...existing.projects };
+        const projectEntry = nextProjects[projectKey] || {
+          lastPdfPath: null,
+          entries: {},
+        };
+        projectEntry.lastPdfPath = pdfPath;
+        projectEntry.entries = {
+          ...projectEntry.entries,
+          [pdfPath]: {
+            fileName,
+            records,
+            storedAt: Date.now(),
+          },
+        };
+        nextProjects[projectKey] = projectEntry;
+        localStorage.setItem(
+          PDF_ANNOTATION_CACHE_KEY,
+          JSON.stringify({ version: 2, projects: nextProjects }),
+        );
+      } catch {
+        // Ignore storage errors.
+      }
+    },
+    [readPdfAnnotationCache],
+  );
+  const [isPageSwitchPromptOpen, setIsPageSwitchPromptOpen] = useState(false);
+  const [isPageSwitchPromptBusy, setIsPageSwitchPromptBusy] = useState(false);
+  // Keep both implementations available: switch to "docked" anytime.
+  const panelLayoutMode: "docked" | "floating" = "floating";
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState("");
+  const [previewSelectedPath, setPreviewSelectedPath] = useState<
+    number[] | null
+  >(null);
+  const [previewSelectedElement, setPreviewSelectedElement] =
+    useState<VirtualElement | null>(null);
+  const [previewSelectedComputedStyles, setPreviewSelectedComputedStyles] =
+    useState<React.CSSProperties | null>(null);
+  const [propertiesPanelRequestedTab, setPropertiesPanelRequestedTab] =
+    useState<"content" | "style" | "advanced" | null>(null);
+  const [
+    propertiesPanelRequestedTabNonce,
+    setPropertiesPanelRequestedTabNonce,
+  ] = useState(0);
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const previewStageRef = useRef<HTMLDivElement | null>(null);
+  const previewFocusedPdfElementRef = useRef<HTMLElement | null>(null);
+  const [previewSelectionBox, setPreviewSelectionBox] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [quickTextEdit, setQuickTextEdit] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+  }>({ open: false, x: 0, y: 0 });
+  const quickTextEditRef = useRef<HTMLDivElement | null>(null);
+  const quickTextRangeRef = useRef<Range | null>(null);
+  const QUICK_TEXT_PANEL_WIDTH = 320;
+  const QUICK_TEXT_PANEL_HEIGHT = 220;
+  const showQuickTextEdit = useCallback((x: number, y: number) => {
+    setQuickTextEdit({ open: true, x, y });
+  }, []);
+  const hideQuickTextEdit = useCallback(() => {
+    setQuickTextEdit((prev) => (prev.open ? { ...prev, open: false } : prev));
+  }, []);
+  const positionQuickTextEditAtRange = useCallback(
+    (range: Range) => {
+      const frame = previewFrameRef.current;
+      if (!frame) return;
+      const rect = range.getBoundingClientRect();
+      if (!rect || rect.width === 0 || rect.height === 0) {
+        hideQuickTextEdit();
+        return;
+      }
+      const frameRect = frame.getBoundingClientRect();
+      const spacing = 12;
+      const rightX = frameRect.left + rect.right + spacing;
+      const leftX =
+        frameRect.left + rect.left - QUICK_TEXT_PANEL_WIDTH - spacing;
+      let nextX = rightX;
+      if (nextX + QUICK_TEXT_PANEL_WIDTH > frameRect.right - spacing) {
+        nextX = leftX;
+      }
+      nextX = Math.max(
+        frameRect.left + spacing,
+        Math.min(
+          nextX,
+          frameRect.right - QUICK_TEXT_PANEL_WIDTH - spacing,
+        ),
+      );
+      const nextY = Math.max(
+        frameRect.top + spacing,
+        Math.min(
+          frameRect.top + rect.top,
+          frameRect.bottom - QUICK_TEXT_PANEL_HEIGHT - spacing,
+        ),
+      );
+      showQuickTextEdit(nextX, nextY);
+    },
+    [hideQuickTextEdit, showQuickTextEdit],
+  );
+  const [isPreviewResizing, setIsPreviewResizing] = useState(false);
+  const previewResizeDragRef = useRef<{
+    path: number[];
+    target: HTMLElement;
+    direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startTop: number;
+    startWidth: number;
+    startHeight: number;
+    scaleX: number;
+    scaleY: number;
+    canMoveLeft: boolean;
+    canMoveTop: boolean;
+  } | null>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState(256);
+  const [rightPanelWidth, setRightPanelWidth] = useState(264);
   const [isResizingLeftPanel, setIsResizingLeftPanel] = useState(false);
+  const [isResizingRightPanel, setIsResizingRightPanel] = useState(false);
+  const [rightPanelFloatingPosition, setRightPanelFloatingPosition] = useState({
+    left: 0,
+    top: 96,
+  });
   const filePathIndexRef = useRef<Record<string, string>>({});
+  const presentationCssPathRef = useRef<string | null>(null);
+  const fontCachePathRef = useRef<string | null>(null);
   const previewRootAliasPathRef = useRef<string | null>(null);
   const loadingFilesRef = useRef<Set<string>>(new Set());
   const loadingFilePromisesRef = useRef<
-    Record<string, Promise<string | Blob | undefined>>
+    Partial<Record<string, Promise<string | undefined>>>
   >({});
+  const textFileCacheRef = useRef<Record<string, string>>({});
+  const binaryAssetUrlCacheRef = useRef<Record<string, string>>({});
+  const previewDependencyIndexRef = useRef<Record<string, string[]>>({});
   const filesRef = useRef<FileMap>({});
+  const configModalConfigPathRef = useRef<string | null>(null);
+  const configModalPortfolioPathRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
-  const interactionModeRef = useRef<"edit" | "preview" | "inspect" | "draw">("edit");
+  const selectedPreviewHtmlRef = useRef<string | null>(null);
+  const interactionModeRef = useRef<
+    "edit" | "preview" | "inspect" | "draw" | "move"
+  >("edit");
+  const previewModeRef = useRef<"edit" | "preview">("preview");
+  const zenRestoreRef = useRef<{
+    isLeftPanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    showTerminal: boolean;
+    isCodePanelOpen: boolean;
+    interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
+  } | null>(null);
   const lastPreviewSyncRef = useRef<{
     path: string;
     at: number;
@@ -1168,11 +666,101 @@ const App: React.FC = () => {
   const leftPanelResizeStartWidthRef = useRef(256);
   const leftPanelPendingWidthRef = useRef(256);
   const leftPanelResizeRafRef = useRef<number | null>(null);
+  const rightPanelResizeStartXRef = useRef(0);
+  const rightPanelResizeStartWidthRef = useRef(264);
+  const rightPanelPendingWidthRef = useRef(264);
+  const rightPanelResizeRafRef = useRef<number | null>(null);
+  const rightPanelDragStartRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [isDraggingRightPanel, setIsDraggingRightPanel] = useState(false);
+  const rightPanelManualClosedRef = useRef(false);
+  const lastEditSelectionRef = useRef<string | null>(null);
+  const rightPanelRestorePendingRef = useRef(false);
+  const lastPanelDprRef = useRef<number | null>(null);
+  const pendingPopupOpenRef = useRef<{
+    selector: string | null;
+    popupId: string | null;
+  } | null>(null);
+  const codePanelRestoreRef = useRef<{
+    isLeftPanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    showTerminal: boolean;
+  } | null>(null);
   const previewConsoleSeqRef = useRef(0);
+  const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
+  const previewConsoleFlushTimerRef = useRef<number | null>(null);
+  const saveMenuRef = useRef<HTMLDivElement | null>(null);
+  const bottomPanelRef = useRef<HTMLDivElement | null>(null);
+  const detachedConsoleWindowRef = useRef<Window | null>(null);
+  const isRefreshingFilesRef = useRef(false);
+  const saveCodeDraftsRef = useRef<(() => Promise<void>) | null>(null);
+  const pendingPreviewWritesRef = useRef<Record<string, string>>({});
+  const codeDraftByPathRef = useRef<Record<string, string>>({});
+  const codeDirtyPathSetRef = useRef<Record<string, true>>({});
+  const dirtyFilesRef = useRef<string[]>([]);
+  const lastAutoDprZoomRef = useRef<50 | 75 | 100>(100);
+  const previewHistoryRef = useRef<Record<string, PreviewHistoryEntry>>({});
+  const previewDocCacheRef = useRef<Record<string, string>>({});
+  const previewDocCacheOrderRef = useRef<string[]>([]);
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const inlineEditDraftTimerRef = useRef<number | null>(null);
+  const inlineEditDraftPendingRef = useRef<{
+    filePath: string;
+    elementPath: number[];
+    html: string;
+  } | null>(null);
+  const applyPreviewDropCreateRef = useRef<
+    ((type: string, clientX: number, clientY: number) => Promise<void>) | null
+  >(null);
+  const explorerSelectionLockRef = useRef<string | null>(null);
+  const explorerSelectionLockUntilRef = useRef<number>(0);
+  const themeTransitionInFlightRef = useRef(false);
+  const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(
+    null,
+  );
   const BASE_STAGE_PADDING = 40;
+  const EXPLORER_LOCK_TTL_MS = 6000;
   const LEFT_PANEL_MIN_WIDTH = 220;
   const LEFT_PANEL_MAX_WIDTH = 520;
-  const RIGHT_PANEL_WIDTH = 264;
+  const LEFT_PANEL_STRETCHED_WIDTH = 360;
+  const LEFT_PANEL_COLLAPSED_WIDTH = 48;
+  const RIGHT_PANEL_MIN_WIDTH = 264;
+  const RIGHT_PANEL_MAX_WIDTH = 640;
+  const CODE_PANEL_WIDTH = 620;
+
+  const requestPropertiesPanelTab = useCallback(
+    (tab: "content" | "style" | "advanced") => {
+      setPropertiesPanelRequestedTab(tab);
+      setPropertiesPanelRequestedTabNonce((prev) => prev + 1);
+    },
+    [],
+  );
+
+  const getDefaultRightPanelPosition = useCallback((width: number) => {
+    const viewportWidth =
+      typeof window !== "undefined" ? window.innerWidth : 1440;
+    const viewportHeight =
+      typeof window !== "undefined" ? window.innerHeight : 900;
+    return {
+      left: Math.max(8, viewportWidth - width - 40),
+      top: Math.max(56, Math.min(96, viewportHeight - 160)),
+    };
+  }, []);
+
+  useEffect(() => {
+    setRightPanelFloatingPosition((prev) => {
+      if (prev.left > 0) return prev;
+      const next = getDefaultRightPanelPosition(rightPanelWidth);
+      return {
+        left: next.left,
+        top: prev.top,
+      };
+    });
+  }, [getDefaultRightPanelPosition, rightPanelWidth]);
   const previewConsoleErrorCount = useMemo(
     () =>
       previewConsoleEntries.reduce(
@@ -1191,57 +779,529 @@ const App: React.FC = () => {
   );
   const appendPreviewConsole = useCallback(
     (level: PreviewConsoleLevel, message: string, source = "preview") => {
-      setPreviewConsoleEntries((prev) => {
-        const nextId = previewConsoleSeqRef.current + 1;
-        previewConsoleSeqRef.current = nextId;
-        const next = [
-          ...prev,
-          { id: nextId, level, message, source, time: Date.now() },
-        ];
-        return next.length > 1000 ? next.slice(next.length - 1000) : next;
+      const nextId = previewConsoleSeqRef.current + 1;
+      previewConsoleSeqRef.current = nextId;
+      previewConsoleBufferRef.current.push({
+        id: nextId,
+        level,
+        message,
+        source,
+        time: Date.now(),
       });
+      if (previewConsoleFlushTimerRef.current !== null) return;
+      previewConsoleFlushTimerRef.current = window.setTimeout(() => {
+        previewConsoleFlushTimerRef.current = null;
+        const buffered = previewConsoleBufferRef.current.splice(0);
+        if (buffered.length === 0) return;
+        setPreviewConsoleEntries((prev) => {
+          const next = [...prev, ...buffered];
+          return next.length > MAX_PREVIEW_CONSOLE_ENTRIES
+            ? next.slice(next.length - MAX_PREVIEW_CONSOLE_ENTRIES)
+            : next;
+        });
+      }, 120);
     },
     [],
   );
 
+  const revokeBinaryAssetUrls = useCallback(() => {
+    const cache = binaryAssetUrlCacheRef.current;
+    for (const url of Object.values(cache)) {
+      if (typeof url === "string" && url.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // Ignore revoke failures for stale object URLs.
+        }
+      }
+    }
+    binaryAssetUrlCacheRef.current = {};
+  }, []);
+
+  const invalidatePreviewDocCache = useCallback((path: string) => {
+    if (!path) return;
+    delete previewDocCacheRef.current[path];
+    previewDocCacheOrderRef.current = previewDocCacheOrderRef.current.filter(
+      (item) => item !== path,
+    );
+  }, []);
+
+  const cachePreviewDoc = useCallback((path: string, doc: string) => {
+    if (!path) return;
+    previewDocCacheRef.current[path] = doc;
+    const nextOrder = previewDocCacheOrderRef.current.filter(
+      (item) => item !== path,
+    );
+    nextOrder.push(path);
+
+    let totalChars = nextOrder.reduce(
+      (sum, key) => sum + (previewDocCacheRef.current[key]?.length || 0),
+      0,
+    );
+    while (
+      nextOrder.length > MAX_PREVIEW_DOC_CACHE_ENTRIES ||
+      totalChars > MAX_PREVIEW_DOC_CACHE_CHARS
+    ) {
+      const evicted = nextOrder.shift();
+      if (!evicted) break;
+      totalChars -= previewDocCacheRef.current[evicted]?.length || 0;
+      delete previewDocCacheRef.current[evicted];
+    }
+
+    previewDocCacheOrderRef.current = nextOrder;
+  }, []);
+
   // Desktop only: both panels open in overlay mode with horizontal scroll.
+  const isFloatingPanels = panelLayoutMode === "floating";
   const bothPanelsOpen =
-    isLeftPanelOpen && isRightPanelOpen && deviceMode !== "mobile";
-  const rightOverlayInset = bothPanelsOpen ? RIGHT_PANEL_WIDTH : 0;
+    !isFloatingPanels &&
+    isLeftPanelOpen &&
+    isRightPanelOpen &&
+    deviceMode !== "mobile";
+  const rightOverlayInset = bothPanelsOpen ? rightPanelWidth : 0;
+  const floatingHorizontalInset =
+    isFloatingPanels && deviceMode !== "mobile"
+      ? (isLeftPanelOpen ? leftPanelWidth : 0) +
+        (isRightPanelOpen ? rightPanelWidth : 0)
+      : 0;
   useEffect(() => {
-    filesRef.current = files;
+    const next: FileMap = { ...files };
+    for (const [path, content] of Object.entries(
+      textFileCacheRef.current,
+    ) as Array<[string, string]>) {
+      const existing = next[path];
+      if (
+        existing &&
+        (typeof existing.content !== "string" || existing.content.length === 0)
+      ) {
+        next[path] = { ...existing, content };
+      }
+    }
+    for (const [path, content] of Object.entries(
+      binaryAssetUrlCacheRef.current,
+    ) as Array<[string, string]>) {
+      const existing = next[path];
+      if (
+        existing &&
+        (typeof existing.content !== "string" || existing.content.length === 0)
+      ) {
+        next[path] = { ...existing, content };
+      }
+    }
+    filesRef.current = next;
   }, [files]);
+  useEffect(() => {
+    return () => {
+      revokeBinaryAssetUrls();
+      if (previewConsoleFlushTimerRef.current !== null) {
+        window.clearTimeout(previewConsoleFlushTimerRef.current);
+      }
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+      if (inlineEditDraftTimerRef.current !== null) {
+        window.clearTimeout(inlineEditDraftTimerRef.current);
+      }
+    };
+  }, [revokeBinaryAssetUrls]);
   useEffect(() => {
     activeFileRef.current = activeFile;
   }, [activeFile]);
   useEffect(() => {
     interactionModeRef.current = interactionMode;
   }, [interactionMode]);
+  useEffect(() => {
+    previewModeRef.current = previewMode;
+  }, [previewMode]);
+  useEffect(() => {
+    codeDraftByPathRef.current = codeDraftByPath;
+  }, [codeDraftByPath]);
+  useEffect(() => {
+    codeDirtyPathSetRef.current = codeDirtyPathSet;
+  }, [codeDirtyPathSet]);
+  useEffect(() => {
+    dirtyFilesRef.current = dirtyFiles;
+  }, [dirtyFiles]);
+  useEffect(() => {
+    configModalConfigPathRef.current = configModalConfigPath;
+  }, [configModalConfigPath]);
+  useEffect(() => {
+    configModalPortfolioPathRef.current = configModalPortfolioPath;
+  }, [configModalPortfolioPath]);
 
   const setActiveFileStable = useCallback((nextPath: string | null) => {
     activeFileRef.current = nextPath;
     setActiveFile((prev) => (prev === nextPath ? prev : nextPath));
   }, []);
-  const syncPreviewActiveFile = useCallback(
-    (
-      nextPath: string,
-      source: "load" | "navigate" | "path_changed" | "explorer",
+
+  const persistLoadedContentToState = useCallback(
+    (path: string, content: string) => {
+      setFiles((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        if (
+          typeof existing.content === "string" &&
+          existing.content.length > 0 &&
+          existing.content === content
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content,
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const loadFileContent = useCallback(
+    async (
+      relativePath: string,
+      options?: {
+        persistToState?: boolean;
+      },
     ) => {
+      const persistToState = options?.persistToState ?? true;
+      const target = filesRef.current[relativePath];
+      if (!target) return;
+
+      if (typeof target.content === "string" && target.content.length > 0) {
+        if (target.type === "image" || target.type === "font") {
+          binaryAssetUrlCacheRef.current[relativePath] = target.content;
+          return target.content;
+        }
+        textFileCacheRef.current[relativePath] = target.content;
+        if (persistToState) {
+          persistLoadedContentToState(relativePath, target.content);
+        }
+        return target.content;
+      }
+
+      const cachedText = textFileCacheRef.current[relativePath];
+      if (typeof cachedText === "string" && cachedText.length > 0) {
+        if (persistToState) {
+          persistLoadedContentToState(relativePath, cachedText);
+        }
+        return cachedText;
+      }
+
+      const cachedBinary = binaryAssetUrlCacheRef.current[relativePath];
+      if (
+        (target.type === "image" || target.type === "font") &&
+        typeof cachedBinary === "string" &&
+        cachedBinary.length > 0
+      ) {
+        return cachedBinary;
+      }
+
+      const existingPending = loadingFilePromisesRef.current[relativePath];
+      if (existingPending) {
+        if (
+          !persistToState ||
+          target.type === "image" ||
+          target.type === "font"
+        ) {
+          return existingPending;
+        }
+        return existingPending.then((content) => {
+          if (typeof content === "string" && content.length > 0) {
+            persistLoadedContentToState(relativePath, content);
+          }
+          return content;
+        });
+      }
+
+      const absolutePath = filePathIndexRef.current[relativePath];
+      if (!absolutePath) return;
+
+      const pending = (async (): Promise<string | undefined> => {
+        loadingFilesRef.current.add(relativePath);
+        try {
+          let content = "";
+          if (target.type === "image" || target.type === "font") {
+            const binaryData = await (
+              Neutralino as any
+            ).filesystem.readBinaryFile(absolutePath);
+            const bytes = toByteArray(binaryData);
+            if (bytes.length === 0) return;
+            const mime = mimeFromType(target.type, target.name);
+            const sourceBuffer = bytes.buffer;
+            const binaryBuffer: ArrayBuffer =
+              sourceBuffer instanceof ArrayBuffer
+                ? sourceBuffer.slice(
+                    bytes.byteOffset,
+                    bytes.byteOffset + bytes.byteLength,
+                  )
+                : (() => {
+                    const copy = new Uint8Array(bytes.byteLength);
+                    copy.set(bytes);
+                    return copy.buffer;
+                  })();
+            const blob = new Blob([binaryBuffer], { type: mime });
+            const previousUrl = binaryAssetUrlCacheRef.current[relativePath];
+            if (previousUrl && previousUrl.startsWith("blob:")) {
+              try {
+                URL.revokeObjectURL(previousUrl);
+              } catch {
+                // Ignore stale blob revocation errors.
+              }
+            }
+            content = URL.createObjectURL(blob);
+            binaryAssetUrlCacheRef.current[relativePath] = content;
+          } else {
+            const loaded = await (Neutralino as any).filesystem.readFile(
+              absolutePath,
+            );
+            content =
+              typeof loaded === "string" ? loaded : String(loaded || "");
+            if (content.length > 0) {
+              textFileCacheRef.current[relativePath] = content;
+            }
+          }
+
+          const existingRefEntry = filesRef.current[relativePath];
+          if (existingRefEntry) {
+            filesRef.current = {
+              ...filesRef.current,
+              [relativePath]: {
+                ...existingRefEntry,
+                content,
+              },
+            };
+          }
+
+          if (persistToState && content.length > 0) {
+            persistLoadedContentToState(relativePath, content);
+          }
+
+          return content;
+        } catch (error) {
+          console.warn(
+            `Failed loading file content for ${relativePath}:`,
+            error,
+          );
+        } finally {
+          loadingFilesRef.current.delete(relativePath);
+          delete loadingFilePromisesRef.current[relativePath];
+        }
+      })();
+
+      loadingFilePromisesRef.current[relativePath] = pending;
+      return pending;
+    },
+    [persistLoadedContentToState],
+  );
+  const persistProjectFontCache = useCallback(
+    async (fontFamilies: string[]) => {
+      const cacheVirtualPath = fontCachePathRef.current;
+      if (!cacheVirtualPath) return;
+      const cacheAbsolutePath = filePathIndexRef.current[cacheVirtualPath];
+      if (!cacheAbsolutePath) return;
+      const payload: FontCachePayload = {
+        version: FONT_CACHE_VERSION,
+        source: "presentation.css",
+        generatedAt: new Date().toISOString(),
+        fonts: dedupeFontFamilies(fontFamilies),
+      };
+      const serialized = JSON.stringify(payload, null, 2);
+      try {
+        await (Neutralino as any).filesystem.writeFile(
+          cacheAbsolutePath,
+          serialized,
+        );
+      } catch (error) {
+        console.warn("Failed to write font cache file:", error);
+        return;
+      }
+      setFiles((prev) => {
+        const existing = prev[cacheVirtualPath];
+        const name = cacheVirtualPath.includes("/")
+          ? cacheVirtualPath.slice(cacheVirtualPath.lastIndexOf("/") + 1)
+          : cacheVirtualPath;
+        if (existing) {
+          return {
+            ...prev,
+            [cacheVirtualPath]: {
+              ...existing,
+              content: serialized,
+            },
+          };
+        }
+        return {
+          ...prev,
+          [cacheVirtualPath]: {
+            path: cacheVirtualPath,
+            name,
+            type: inferFileType(name),
+            content: serialized,
+          },
+        };
+      });
+    },
+    [],
+  );
+  const handleAddFontToPresentationCss = useCallback(
+    async (rawFontPath: string) => {
+      const fontPath = normalizeProjectRelative(rawFontPath);
+      const file = filesRef.current[fontPath];
+      if (!file || file.type !== "font") return;
+      if (!fontPath.toLowerCase().startsWith(`${SHARED_FONT_VIRTUAL_DIR}/`)) {
+        window.alert(
+          `Font must be inside "${SHARED_FONT_VIRTUAL_DIR}" to register.`,
+        );
+        return;
+      }
+
+      const presentationPath =
+        presentationCssPathRef.current ??
+        findFilePathCaseInsensitive(
+          filesRef.current,
+          PRESENTATION_CSS_VIRTUAL_PATH,
+        );
+      if (!presentationPath) {
+        window.alert(
+          `presentation.css not found at "${PRESENTATION_CSS_VIRTUAL_PATH}".`,
+        );
+        return;
+      }
+      presentationCssPathRef.current = presentationPath;
+      const presentationAbsolutePath =
+        filePathIndexRef.current[presentationPath];
+      if (!presentationAbsolutePath) {
+        window.alert("Unable to resolve presentation.css absolute path.");
+        return;
+      }
+
+      let currentCss = "";
+      try {
+        const rawCss = await (Neutralino as any).filesystem.readFile(
+          presentationAbsolutePath,
+        );
+        currentCss = typeof rawCss === "string" ? rawCss : String(rawCss || "");
+      } catch (error) {
+        console.warn("Failed reading presentation.css:", error);
+        window.alert("Unable to read presentation.css.");
+        return;
+      }
+
+      const family = deriveFontFamilyFromFontFileName(file.name);
+      const existingFamilies = parsePresentationCssFontFamilies(currentCss);
+      const alreadyRegistered = existingFamilies.some(
+        (name) => name.toLowerCase() === family.toLowerCase(),
+      );
+      if (alreadyRegistered) {
+        setAvailableFonts(buildEditorFontOptions(existingFamilies));
+        await persistProjectFontCache(existingFamilies);
+        return;
+      }
+
+      const relativeFontPath = relativePathBetweenVirtualFiles(
+        presentationPath,
+        fontPath,
+      );
+      const fontFormat = fontFormatFromFileName(file.name);
+      const fontFaceBlock =
+        `@font-face {\n` +
+        `  font-family: '${family}';\n` +
+        `  src: url('${relativeFontPath}') format('${fontFormat}');\n` +
+        `  font-weight: normal;\n` +
+        `  font-style: normal;\n` +
+        `  font-display: swap;\n` +
+        `}`;
+      const nextCss = `${currentCss.trimEnd()}\n\n${fontFaceBlock}\n`;
+
+      try {
+        await (Neutralino as any).filesystem.writeFile(
+          presentationAbsolutePath,
+          nextCss,
+        );
+      } catch (error) {
+        console.warn("Failed writing presentation.css:", error);
+        window.alert("Unable to update presentation.css.");
+        return;
+      }
+
+      setFiles((prev) => {
+        const existing = prev[presentationPath];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [presentationPath]: {
+            ...existing,
+            content: nextCss,
+          },
+        };
+      });
+      const nextProjectFamilies = parsePresentationCssFontFamilies(nextCss);
+      setAvailableFonts(buildEditorFontOptions(nextProjectFamilies));
+      await persistProjectFontCache(nextProjectFamilies);
+    },
+    [persistProjectFontCache],
+  );
+  const shouldProcessPreviewPageSignal = useCallback((path: string) => {
+    if (!path) return false;
+
+    // GUARD: Ignore common system/bridge files that cause sync loops
+    const lower = path.toLowerCase();
+    if (
+      lower.includes("shared/index.html") ||
+      lower.includes("__bridge.html") ||
+      lower.includes("vibe-bridge.html")
+    ) {
+      return false;
+    }
+
+    const now = Date.now();
+    const last = lastPreviewPageSignalRef.current;
+    if (last && last.path === path && now - last.at < 700) {
+      return false;
+    }
+    lastPreviewPageSignalRef.current = { path, at: now };
+    return true;
+  }, []);
+  const hasUnsavedChangesForFile = useCallback(
+    (path: string | null): boolean => {
+      if (!path) return false;
+      if (typeof pendingPreviewWritesRef.current[path] === "string")
+        return true;
+      if (typeof codeDraftByPathRef.current[path] === "string") return true;
+      if (codeDirtyPathSetRef.current[path]) return true;
+      return dirtyFilesRef.current.includes(path);
+    },
+    [],
+  );
+  const commitPreviewActiveFileSync = useCallback(
+    (nextPath: string, source: PreviewSyncSource) => {
       if (!nextPath) return;
       setPreviewSyncedFile((prev) => (prev === nextPath ? prev : nextPath));
+      if (source === "navigate" || source === "explorer") {
+        setPreviewNavigationFile((prev) =>
+          prev === nextPath ? prev : nextPath,
+        );
+      }
 
-      if (source === "load" || source === "path_changed") {
-        if (interactionModeRef.current !== "preview") {
+      if (activeFileRef.current === nextPath) {
+        if (
+          interactionModeRef.current !== "preview" &&
+          (source === "load" || source === "path_changed")
+        ) {
           setInteractionMode("preview");
         }
         return;
       }
 
-      if (activeFileRef.current === nextPath) return;
-
       const now = Date.now();
       const last = lastPreviewSyncRef.current;
-      if (last && last.path === nextPath && last.source !== source && now - last.at < 1200) {
+      if (
+        last &&
+        last.path === nextPath &&
+        last.source !== source &&
+        now - last.at < 1200
+      ) {
         return;
       }
 
@@ -1253,6 +1313,38 @@ const App: React.FC = () => {
     },
     [setActiveFileStable],
   );
+  const syncPreviewActiveFile = useCallback(
+    (
+      nextPath: string,
+      source: PreviewSyncSource,
+      options?: { skipUnsavedPrompt?: boolean },
+    ) => {
+      if (!nextPath) return;
+      const currentPath = selectedPreviewHtmlRef.current;
+      const nextFile = filesRef.current[nextPath];
+      const shouldPrompt =
+        !options?.skipUnsavedPrompt &&
+        source !== "load" &&
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        Boolean(currentPath) &&
+        currentPath !== nextPath &&
+        nextFile?.type === "html" &&
+        hasUnsavedChangesForFile(currentPath);
+      if (shouldPrompt && currentPath) {
+        setPendingPageSwitch({
+          mode: "switch",
+          fromPath: currentPath,
+          nextPath,
+          source,
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
+      commitPreviewActiveFileSync(nextPath, source);
+    },
+    [commitPreviewActiveFileSync, hasUnsavedChangesForFile],
+  );
   useEffect(() => {
     console.log("Both panels open?", bothPanelsOpen, {
       isLeftPanelOpen,
@@ -1261,7 +1353,10 @@ const App: React.FC = () => {
     });
   }, [bothPanelsOpen, isLeftPanelOpen, isRightPanelOpen, deviceMode]);
   useLayoutEffect(() => {
-    if (bothPanelsOpen && scrollerRef.current) {
+    if (
+      (bothPanelsOpen || floatingHorizontalInset > 0) &&
+      scrollerRef.current
+    ) {
       const el = scrollerRef.current;
       const alignInitialScroll = () => {
         // Center default view; user can still scroll both sides manually.
@@ -1280,11 +1375,25 @@ const App: React.FC = () => {
     }
   }, [
     bothPanelsOpen,
+    floatingHorizontalInset,
     desktopResolution,
     deviceMode,
     isLeftPanelOpen,
     isRightPanelOpen,
   ]);
+  useLayoutEffect(() => {
+    if (!scrollerRef.current) return;
+    const el = scrollerRef.current;
+    const recenter = () => {
+      el.scrollLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
+    };
+    recenter();
+    requestAnimationFrame(() => {
+      recenter();
+      setTimeout(recenter, 120);
+      setTimeout(recenter, 260);
+    });
+  }, [frameZoom]);
 
   useEffect(() => {
     try {
@@ -1293,11 +1402,59 @@ const App: React.FC = () => {
       // Ignore storage errors.
     }
   }, [theme]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        PREVIEW_AUTOSAVE_STORAGE_KEY,
+        autoSaveEnabled ? "1" : "0",
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [autoSaveEnabled]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        RECENT_PROJECTS_STORAGE_KEY,
+        JSON.stringify(recentProjects.slice(0, 5)),
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [recentProjects]);
+  useEffect(() => {
+    const onClickOutside = (event: MouseEvent) => {
+      if (!saveMenuRef.current) return;
+      if (!saveMenuRef.current.contains(event.target as Node)) {
+        setIsSaveMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+  useEffect(
+    () => () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+      if (previewConsoleFlushTimerRef.current !== null) {
+        window.clearTimeout(previewConsoleFlushTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!appRootRef.current) return;
-    appRootRef.current.style.setProperty("--left-panel-width", `${leftPanelWidth}px`);
-  }, [leftPanelWidth]);
+    appRootRef.current.style.setProperty(
+      "--left-panel-width",
+      `${leftPanelWidth}px`,
+    );
+    appRootRef.current.style.setProperty(
+      "--right-panel-width",
+      `${rightPanelWidth}px`,
+    );
+  }, [leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
     if (!isResizingLeftPanel) return;
@@ -1306,7 +1463,10 @@ const App: React.FC = () => {
       const delta = event.clientX - leftPanelResizeStartXRef.current;
       leftPanelPendingWidthRef.current = Math.min(
         LEFT_PANEL_MAX_WIDTH,
-        Math.max(LEFT_PANEL_MIN_WIDTH, leftPanelResizeStartWidthRef.current + delta),
+        Math.max(
+          LEFT_PANEL_MIN_WIDTH,
+          leftPanelResizeStartWidthRef.current + delta,
+        ),
       );
       if (leftPanelResizeRafRef.current !== null) return;
       leftPanelResizeRafRef.current = requestAnimationFrame(() => {
@@ -1342,19 +1502,150 @@ const App: React.FC = () => {
     };
   }, [isResizingLeftPanel]);
 
-  const handleLeftPanelResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (!isLeftPanelOpen) return;
-    event.preventDefault();
-    leftPanelResizeStartXRef.current = event.clientX;
-    leftPanelResizeStartWidthRef.current = leftPanelWidth;
-    leftPanelPendingWidthRef.current = leftPanelWidth;
-    setIsResizingLeftPanel(true);
-  }, [isLeftPanelOpen, leftPanelWidth]);
+  useEffect(() => {
+    if (!isResizingRightPanel) return;
+
+    const onMouseMove = (event: MouseEvent) => {
+      const delta = rightPanelResizeStartXRef.current - event.clientX;
+      rightPanelPendingWidthRef.current = Math.min(
+        RIGHT_PANEL_MAX_WIDTH,
+        Math.max(
+          RIGHT_PANEL_MIN_WIDTH,
+          rightPanelResizeStartWidthRef.current + delta,
+        ),
+      );
+      if (rightPanelResizeRafRef.current !== null) return;
+      rightPanelResizeRafRef.current = requestAnimationFrame(() => {
+        rightPanelResizeRafRef.current = null;
+        if (appRootRef.current) {
+          appRootRef.current.style.setProperty(
+            "--right-panel-width",
+            `${rightPanelPendingWidthRef.current}px`,
+          );
+        }
+      });
+    };
+
+    const onMouseUp = () => {
+      if (rightPanelResizeRafRef.current !== null) {
+        cancelAnimationFrame(rightPanelResizeRafRef.current);
+        rightPanelResizeRafRef.current = null;
+      }
+      setRightPanelWidth(rightPanelPendingWidthRef.current);
+      setIsResizingRightPanel(false);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isResizingRightPanel]);
+
+  useEffect(() => {
+    if (!isDraggingRightPanel) return;
+
+    const onMouseMove = (event: MouseEvent) => {
+      const start = rightPanelDragStartRef.current;
+      if (!start) return;
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 1440;
+      const viewportHeight =
+        typeof window !== "undefined" ? window.innerHeight : 900;
+      const nextLeft = Math.max(
+        8,
+        Math.min(
+          Math.max(8, viewportWidth - rightPanelWidth - 8),
+          start.left + (event.clientX - start.pointerX),
+        ),
+      );
+      const nextTop = Math.max(
+        56,
+        Math.min(
+          Math.max(56, viewportHeight - 140),
+          start.top + (event.clientY - start.pointerY),
+        ),
+      );
+      setRightPanelFloatingPosition({ left: nextLeft, top: nextTop });
+    };
+
+    const onMouseUp = () => {
+      rightPanelDragStartRef.current = null;
+      setIsDraggingRightPanel(false);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isDraggingRightPanel, rightPanelWidth]);
+
+  const handleLeftPanelResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isLeftPanelOpen) return;
+      event.preventDefault();
+      leftPanelResizeStartXRef.current = event.clientX;
+      leftPanelResizeStartWidthRef.current = leftPanelWidth;
+      leftPanelPendingWidthRef.current = leftPanelWidth;
+      setIsResizingLeftPanel(true);
+    },
+    [isLeftPanelOpen, leftPanelWidth],
+  );
+  const handleLeftPanelStretchToggle = useCallback(() => {
+    setLeftPanelWidth((prev) =>
+      prev >= LEFT_PANEL_STRETCHED_WIDTH ? 256 : LEFT_PANEL_STRETCHED_WIDTH,
+    );
+  }, []);
+
+  const handleRightPanelResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isRightPanelOpen) return;
+      event.preventDefault();
+      rightPanelResizeStartXRef.current = event.clientX;
+      rightPanelResizeStartWidthRef.current = rightPanelWidth;
+      rightPanelPendingWidthRef.current = rightPanelWidth;
+      setIsResizingRightPanel(true);
+    },
+    [isRightPanelOpen, rightPanelWidth],
+  );
+
+  const handleRightPanelDragStart = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!isFloatingPanels || !isRightPanelOpen) return;
+      if (
+        (event.target as HTMLElement).closest("button, input, select, textarea")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      rightPanelDragStartRef.current = {
+        pointerX: event.clientX,
+        pointerY: event.clientY,
+        left: rightPanelFloatingPosition.left,
+        top: rightPanelFloatingPosition.top,
+      };
+      setIsDraggingRightPanel(true);
+    },
+    [isFloatingPanels, isRightPanelOpen, rightPanelFloatingPosition],
+  );
 
   // --- History Management ---
   const pushHistory = useCallback((newState: VirtualElement) => {
     setHistory((curr) => ({
-      past: [...curr.past, curr.present],
+      past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
       present: newState,
       future: [],
     }));
@@ -1382,57 +1673,984 @@ const App: React.FC = () => {
       const newFuture = curr.future.slice(1);
       setRoot(next);
       return {
-        past: [...curr.past, curr.present],
+        past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
         present: next,
         future: newFuture,
       };
     });
   }, []);
+  const pushPreviewHistory = useCallback(
+    (filePath: string, nextHtml: string, previousHtml?: string) => {
+      const current = previewHistoryRef.current[filePath];
+      if (!current) {
+        const baseline = typeof previousHtml === "string" ? previousHtml : "";
+        previewHistoryRef.current[filePath] =
+          baseline && baseline !== nextHtml
+            ? {
+                past: [baseline],
+                present: nextHtml,
+                future: [],
+              }
+            : {
+                past: [],
+                present: nextHtml,
+                future: [],
+              };
+        return;
+      }
+      if (current.present === nextHtml) return;
+      previewHistoryRef.current[filePath] = {
+        past: [
+          ...current.past.slice(-(MAX_PREVIEW_HISTORY - 1)),
+          current.present,
+        ],
+        present: nextHtml,
+        future: [],
+      };
+    },
+    [],
+  );
 
-  // --- Keyboard Shortcuts ---
+  const markPreviewPathDirty = useCallback(
+    (filePath: string, elementPath: number[]) => {
+      if (!elementPath || elementPath.length === 0) return;
+      const key = elementPath.join(".");
+      setDirtyPathKeysByFile((prev) => {
+        const curr = prev[filePath] || [];
+        if (curr.includes(key)) return prev;
+        return { ...prev, [filePath]: [...curr, key] };
+      });
+
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument?.body) return;
+      const liveTarget = readElementByPath(frameDocument.body, elementPath);
+      if (liveTarget instanceof HTMLElement) {
+        liveTarget.classList.add("__nx-preview-dirty");
+      }
+    },
+    [],
+  );
+  const flushPendingPreviewSaves = useCallback(async () => {
+    const entries = Object.entries(pendingPreviewWritesRef.current);
+    if (entries.length === 0) return;
+
+    const savedPaths: string[] = [];
+    for (const [filePath, content] of entries) {
+      const absolutePath = filePathIndexRef.current[filePath];
+      if (!absolutePath) continue;
+      try {
+        await (Neutralino as any).filesystem.writeFile(absolutePath, content);
+        delete pendingPreviewWritesRef.current[filePath];
+        savedPaths.push(filePath);
+      } catch (error) {
+        console.warn(`Failed to save ${filePath}:`, error);
+      }
+    }
+    if (savedPaths.length === 0) return;
+
+    dirtyFilesRef.current = dirtyFilesRef.current.filter(
+      (path) => !savedPaths.includes(path),
+    );
+    setDirtyFiles((prev) => prev.filter((path) => !savedPaths.includes(path)));
+    setDirtyPathKeysByFile((prev) => {
+      const next = { ...prev };
+      for (const path of savedPaths) {
+        delete next[path];
+      }
+      return next;
+    });
+
+    const activePath = selectedPreviewHtmlRef.current;
+    if (activePath && savedPaths.includes(activePath)) {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (frameDocument) {
+        Array.from(
+          frameDocument.querySelectorAll<HTMLElement>(".__nx-preview-dirty"),
+        ).forEach((el) => {
+          if (el instanceof HTMLElement) {
+            el.classList.remove("__nx-preview-dirty");
+          }
+        });
+      }
+    }
+  }, []);
+  const schedulePreviewAutoSave = useCallback(() => {
+    if (!autoSaveEnabled) return;
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void flushPendingPreviewSaves();
+    }, 1200);
+  }, [autoSaveEnabled, flushPendingPreviewSaves]);
+  const discardUnsavedChangesForFile = useCallback(
+    async (path: string) => {
+      if (!path) return;
+      const hadCodeDraft =
+        typeof codeDraftByPath[path] === "string" ||
+        Boolean(codeDirtyPathSet[path]);
+      if (hadCodeDraft) {
+        delete codeDraftByPathRef.current[path];
+        delete codeDirtyPathSetRef.current[path];
+        setCodeDraftByPath((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setCodeDirtyPathSet((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+      }
+      const hadPreviewDraft =
+        typeof pendingPreviewWritesRef.current[path] === "string";
+      if (!hadPreviewDraft) {
+        if (hadCodeDraft) {
+          dirtyFilesRef.current = dirtyFilesRef.current.filter(
+            (entry) => entry !== path,
+          );
+          setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+        }
+        return;
+      }
+
+      const absolutePath = filePathIndexRef.current[path];
+      if (!absolutePath) return;
+      let diskContent = "";
+      try {
+        diskContent = await (Neutralino as any).filesystem.readFile(
+          absolutePath,
+        );
+      } catch (error) {
+        console.warn(`Failed discarding unsaved changes for ${path}:`, error);
+        window.alert("Could not discard changes. Please try again.");
+        return;
+      }
+
+      delete pendingPreviewWritesRef.current[path];
+      textFileCacheRef.current[path] = diskContent;
+      setFiles((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content: diskContent,
+          },
+        };
+      });
+      dirtyFilesRef.current = dirtyFilesRef.current.filter(
+        (entry) => entry !== path,
+      );
+      setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+      setDirtyPathKeysByFile((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      previewHistoryRef.current[path] = {
+        past: [],
+        present: diskContent,
+        future: [],
+      };
+      invalidatePreviewDocCache(path);
+
+      const currentEntry = filesRef.current[path];
+      if (currentEntry) {
+        const previewSnapshot: FileMap = {
+          ...filesRef.current,
+          [path]: {
+            ...currentEntry,
+            content: diskContent,
+          },
+        };
+        const previewDoc = createPreviewDocument(
+          previewSnapshot,
+          path,
+          previewDependencyIndexRef.current[path],
+        );
+        cachePreviewDoc(path, previewDoc);
+        if (selectedPreviewHtmlRef.current === path) {
+          setSelectedPreviewDoc(previewDoc);
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+      }
+    },
+    [
+      cachePreviewDoc,
+      codeDirtyPathSet,
+      codeDraftByPath,
+      invalidatePreviewDocCache,
+    ],
+  );
+  const requestPreviewRefreshWithUnsavedGuard = useCallback(() => {
+    const candidate =
+      previewSyncedFile && filesRef.current[previewSyncedFile]?.type === "html"
+        ? previewSyncedFile
+        : selectedPreviewHtmlRef.current &&
+            filesRef.current[selectedPreviewHtmlRef.current]?.type === "html"
+          ? selectedPreviewHtmlRef.current
+          : null;
+    if (!candidate) {
+      setPreviewRefreshNonce((prev) => prev + 1);
+      return;
+    }
+    if (hasUnsavedChangesForFile(candidate)) {
+      setPendingPageSwitch({
+        mode: "refresh",
+        fromPath: candidate,
+        nextPath: candidate,
+        source: "navigate",
+      });
+      setIsPageSwitchPromptOpen(true);
+      return;
+    }
+    setPreviewNavigationFile((prev) => (prev === candidate ? prev : candidate));
+    setPreviewRefreshNonce((prev) => prev + 1);
+  }, [hasUnsavedChangesForFile, previewSyncedFile]);
+  const handleOpenConfigModal = useCallback(() => {
+    setConfigModalInitialTab("references");
+    setIsConfigModalSlidesOnly(false);
+    if (!projectPath) {
+      setConfigModalConfigPath(null);
+      setConfigModalPortfolioPath(null);
+      setIsConfigModalOpen(true);
+      return;
+    }
+    const pickBestPath = async (
+      suffix: "config.json" | "portfolioconfig.json",
+      kind: "config" | "portfolio",
+    ): Promise<string> => {
+      const candidates = getConfigPathCandidates(filesRef.current, suffix);
+      const fallback =
+        resolveConfigPathFromFiles(filesRef.current, suffix) ||
+        (suffix === "config.json" ? CONFIG_JSON_PATH : PORTFOLIO_CONFIG_PATH);
+      if (candidates.length === 0) return fallback;
+
+      let bestPath = fallback;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (const path of candidates) {
+        const loaded = await loadFileContent(path, { persistToState: true });
+        const score = scoreConfigContent(String(loaded || ""), kind);
+        console.info("[ConfigModal] Candidate score", { kind, path, score });
+        if (score > bestScore) {
+          bestScore = score;
+          bestPath = path;
+        }
+      }
+      return bestPath;
+    };
+
+    void (async () => {
+      const [configPath, portfolioPath] = await Promise.all([
+        pickBestPath("config.json", "config"),
+        pickBestPath("portfolioconfig.json", "portfolio"),
+      ]);
+      const refineConfigPath = async (initialPath: string | null) => {
+        if (!initialPath) return initialPath;
+        const initialContent = await loadFileContent(initialPath, {
+          persistToState: true,
+        });
+        const initialScore = scoreConfigContent(
+          String(initialContent || ""),
+          "config",
+        );
+        if (initialScore >= 20) return initialPath;
+        const pattern = /(^|\/)(?:mtconfig|config)\.(?:js|json)$/i;
+        const candidates = Object.keys(filesRef.current).filter((path) =>
+          pattern.test(path),
+        );
+        let bestPath = initialPath;
+        let bestScore = initialScore;
+        for (const candidate of candidates) {
+          const loaded = await loadFileContent(candidate, {
+            persistToState: false,
+          });
+          const score = scoreConfigContent(String(loaded || ""), "config");
+          if (score > bestScore) {
+            bestScore = score;
+            bestPath = candidate;
+          }
+        }
+        return bestPath;
+      };
+      const refinedConfigPath = await refineConfigPath(configPath);
+      setConfigModalConfigPath(refinedConfigPath);
+      setConfigModalPortfolioPath(portfolioPath);
+      console.groupCollapsed("[ConfigModal] Open");
+      console.info("[ConfigModal] Chosen config path:", refinedConfigPath);
+      console.info("[ConfigModal] Chosen portfolio path:", portfolioPath);
+      console.groupEnd();
+      await Promise.all([
+        refinedConfigPath
+          ? loadFileContent(refinedConfigPath, { persistToState: true })
+          : Promise.resolve(),
+        loadFileContent(portfolioPath, { persistToState: true }),
+      ]);
+      for (const [path, entry] of Object.entries(filesRef.current)) {
+        if (
+          entry?.type === "image" &&
+          /(^|\/)thumb\.(png|jpg|jpeg|webp|gif|svg)$/i.test(path)
+        ) {
+          void loadFileContent(path, { persistToState: true });
+        }
+      }
+      setIsConfigModalOpen(true);
+    })();
+  }, [loadFileContent, projectPath]);
+  const handleChooseFolderCloneSource = useCallback(() => {
+    setConfigModalInitialTab("slides");
+    setIsConfigModalSlidesOnly(true);
+    setIsConfigModalOpen(true);
+  }, []);
+  const handleSidebarLoadImage = useCallback(
+    (path: string) => {
+      void loadFileContent(path, { persistToState: true });
+    },
+    [loadFileContent],
+  );
+
+  const handleSaveConfig = useCallback(
+    async (newConfig: string, newPortfolio: string) => {
+      try {
+        const configPath =
+          configModalConfigPathRef.current ||
+          resolveConfigPathFromFiles(filesRef.current, "config.json") ||
+          CONFIG_JSON_PATH;
+        const portfolioPath =
+          configModalPortfolioPathRef.current ||
+          resolveConfigPathFromFiles(
+            filesRef.current,
+            "portfolioconfig.json",
+          ) ||
+          PORTFOLIO_CONFIG_PATH;
+
+        if (filesRef.current[configPath]) {
+          filesRef.current = {
+            ...filesRef.current,
+            [configPath]: {
+              ...filesRef.current[configPath],
+              content: newConfig,
+            },
+          };
+          setFiles(filesRef.current);
+
+          // mark dirty
+          if (!dirtyFilesRef.current.includes(configPath)) {
+            dirtyFilesRef.current.push(configPath);
+            setDirtyFiles((prev) => [...prev, configPath]);
+          }
+
+          if (filePathIndexRef.current[configPath]) {
+            await (Neutralino as any).filesystem.writeFile(
+              filePathIndexRef.current[configPath],
+              newConfig,
+            );
+
+            // mark clean
+            dirtyFilesRef.current = dirtyFilesRef.current.filter(
+              (entry) => entry !== configPath,
+            );
+            setDirtyFiles((prev) =>
+              prev.filter((entry) => entry !== configPath),
+            );
+          }
+        }
+
+        if (filesRef.current[portfolioPath]) {
+          filesRef.current = {
+            ...filesRef.current,
+            [portfolioPath]: {
+              ...filesRef.current[portfolioPath],
+              content: newPortfolio,
+            },
+          };
+          setFiles(filesRef.current);
+
+          // mark dirty
+          if (!dirtyFilesRef.current.includes(portfolioPath)) {
+            dirtyFilesRef.current.push(portfolioPath);
+            setDirtyFiles((prev) => [...prev, portfolioPath]);
+          }
+
+          if (filePathIndexRef.current[portfolioPath]) {
+            await (Neutralino as any).filesystem.writeFile(
+              filePathIndexRef.current[portfolioPath],
+              newPortfolio,
+            );
+
+            // mark clean
+            dirtyFilesRef.current = dirtyFilesRef.current.filter(
+              (entry) => entry !== portfolioPath,
+            );
+            setDirtyFiles((prev) =>
+              prev.filter((entry) => entry !== portfolioPath),
+            );
+          }
+        }
+
+        requestPreviewRefreshWithUnsavedGuard();
+      } catch (err) {
+        console.error("Failed to save config:", err);
+        alert("Failed to save configuration files.");
+      }
+    },
+    [requestPreviewRefreshWithUnsavedGuard],
+  );
+
+  const requestSwitchToPreviewMode = useCallback(() => {
+    if (interactionModeRef.current === "preview") {
+      const currentPath = selectedPreviewHtmlRef.current;
+      if (
+        previewModeRef.current === "edit" &&
+        currentPath &&
+        hasUnsavedChangesForFile(currentPath)
+      ) {
+        setPendingPageSwitch({
+          mode: "preview_mode",
+          fromPath: currentPath,
+          nextPath: currentPath,
+          source: "navigate",
+          nextPreviewMode: "preview",
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
+      setPreviewMode("preview");
+      return;
+    }
+    if (interactionModeRef.current !== "edit") {
+      setInteractionMode("preview");
+      setPreviewMode("preview");
+      return;
+    }
+    const currentPath = selectedPreviewHtmlRef.current;
+    if (currentPath && hasUnsavedChangesForFile(currentPath)) {
+      setPendingPageSwitch({
+        mode: "preview",
+        fromPath: currentPath,
+        nextPath: currentPath,
+        source: "navigate",
+      });
+      setIsPageSwitchPromptOpen(true);
+      return;
+    }
+    setInteractionMode("preview");
+    setPreviewMode("preview");
+  }, [hasUnsavedChangesForFile]);
+  const resolvePendingPageSwitchWithSave = useCallback(async () => {
+    if (!pendingPageSwitch) return;
+    setIsPageSwitchPromptBusy(true);
+    const pending = pendingPageSwitch;
+    const waitForStateFlush = () =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
+    try {
+      await saveCodeDraftsRef.current?.();
+      await flushPendingPreviewSaves();
+      // React state cleanup for dirty flags may settle one tick later.
+      await waitForStateFlush();
+      let stillUnsaved = hasUnsavedChangesForFile(pending.fromPath);
+      if (stillUnsaved) {
+        await waitForStateFlush();
+        stillUnsaved = hasUnsavedChangesForFile(pending.fromPath);
+      }
+      if (stillUnsaved) {
+        window.alert("Some changes could not be saved. Please retry.");
+        return;
+      }
+      setIsPageSwitchPromptOpen(false);
+      setPendingPageSwitch(null);
+      if (pending.mode === "refresh") {
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewRefreshNonce((prev) => prev + 1);
+      } else if (pending.mode === "preview_mode") {
+        setActiveFileStable(pending.fromPath);
+        setPreviewSyncedFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewMode(pending.nextPreviewMode ?? "preview");
+      } else if (pending.mode === "preview") {
+        setInteractionMode("preview");
+      } else {
+        commitPreviewActiveFileSync(pending.nextPath, pending.source);
+      }
+    } finally {
+      setIsPageSwitchPromptBusy(false);
+    }
+  }, [
+    commitPreviewActiveFileSync,
+    flushPendingPreviewSaves,
+    hasUnsavedChangesForFile,
+    pendingPageSwitch,
+  ]);
+  const resolvePendingPageSwitchWithDiscard = useCallback(async () => {
+    if (!pendingPageSwitch) return;
+    setIsPageSwitchPromptBusy(true);
+    const pending = pendingPageSwitch;
+    try {
+      await discardUnsavedChangesForFile(pending.fromPath);
+      setIsPageSwitchPromptOpen(false);
+      setPendingPageSwitch(null);
+      if (pending.mode === "refresh") {
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewRefreshNonce((prev) => prev + 1);
+      } else if (pending.mode === "preview_mode") {
+        setActiveFileStable(pending.fromPath);
+        setPreviewSyncedFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewNavigationFile((prev) =>
+          prev === pending.fromPath ? prev : pending.fromPath,
+        );
+        setPreviewMode(pending.nextPreviewMode ?? "preview");
+      } else if (pending.mode === "preview") {
+        setInteractionMode("preview");
+      } else {
+        commitPreviewActiveFileSync(pending.nextPath, pending.source);
+      }
+    } finally {
+      setIsPageSwitchPromptBusy(false);
+    }
+  }, [
+    commitPreviewActiveFileSync,
+    discardUnsavedChangesForFile,
+    pendingPageSwitch,
+  ]);
+  const closePendingPageSwitchPrompt = useCallback(() => {
+    if (isPageSwitchPromptBusy) return;
+    setIsPageSwitchPromptOpen(false);
+    setPendingPageSwitch(null);
+  }, [isPageSwitchPromptBusy]);
+
+  const handlePreviewUndo = useCallback(async () => {
+    const filePath = selectedPreviewHtmlRef.current;
+    if (!filePath) return;
+    const current = previewHistoryRef.current[filePath];
+    if (!current || current.past.length === 0) return;
+    const previous = current.past[current.past.length - 1];
+    previewHistoryRef.current[filePath] = {
+      past: current.past.slice(0, -1),
+      present: previous,
+      future: [current.present, ...current.future],
+    };
+    textFileCacheRef.current[filePath] = previous;
+    setFiles((prev) => {
+      const existing = prev[filePath];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [filePath]: {
+          ...existing,
+          content: previous,
+        },
+      };
+    });
+    pendingPreviewWritesRef.current[filePath] = previous;
+    setDirtyFiles((prev) =>
+      prev.includes(filePath) ? prev : [...prev, filePath],
+    );
+    setDirtyPathKeysByFile((prev) => ({
+      ...prev,
+      [filePath]: [],
+    }));
+    const currentEntry = filesRef.current[filePath];
+    if (currentEntry) {
+      const previewSnapshot: FileMap = {
+        ...filesRef.current,
+        [filePath]: {
+          ...currentEntry,
+          content: previous,
+        },
+      };
+      const previewDoc = createPreviewDocument(
+        previewSnapshot,
+        filePath,
+        previewDependencyIndexRef.current[filePath],
+      );
+      cachePreviewDoc(filePath, previewDoc);
+      setSelectedPreviewDoc(previewDoc);
+    }
+    await flushPendingPreviewSaves();
+    setPreviewRefreshNonce((prev) => prev + 1);
+    schedulePreviewAutoSave();
+  }, [cachePreviewDoc, flushPendingPreviewSaves, schedulePreviewAutoSave]);
+
+  const handlePreviewRedo = useCallback(async () => {
+    const filePath = selectedPreviewHtmlRef.current;
+    if (!filePath) return;
+    const current = previewHistoryRef.current[filePath];
+    if (!current || current.future.length === 0) return;
+    const next = current.future[0];
+    previewHistoryRef.current[filePath] = {
+      past: [
+        ...current.past.slice(-(MAX_PREVIEW_HISTORY - 1)),
+        current.present,
+      ],
+      present: next,
+      future: current.future.slice(1),
+    };
+    textFileCacheRef.current[filePath] = next;
+    setFiles((prev) => {
+      const existing = prev[filePath];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [filePath]: {
+          ...existing,
+          content: next,
+        },
+      };
+    });
+    pendingPreviewWritesRef.current[filePath] = next;
+    setDirtyFiles((prev) =>
+      prev.includes(filePath) ? prev : [...prev, filePath],
+    );
+    setDirtyPathKeysByFile((prev) => ({
+      ...prev,
+      [filePath]: [],
+    }));
+    const currentEntry = filesRef.current[filePath];
+    if (currentEntry) {
+      const previewSnapshot: FileMap = {
+        ...filesRef.current,
+        [filePath]: {
+          ...currentEntry,
+          content: next,
+        },
+      };
+      const previewDoc = createPreviewDocument(
+        previewSnapshot,
+        filePath,
+        previewDependencyIndexRef.current[filePath],
+      );
+      cachePreviewDoc(filePath, previewDoc);
+      setSelectedPreviewDoc(previewDoc);
+    }
+    await flushPendingPreviewSaves();
+    setPreviewRefreshNonce((prev) => prev + 1);
+    schedulePreviewAutoSave();
+  }, [cachePreviewDoc, flushPendingPreviewSaves, schedulePreviewAutoSave]);
+
+  const runUndo = useCallback(() => {
+    if (
+      interactionModeRef.current === "preview" &&
+      selectedPreviewHtmlRef.current
+    ) {
+      void handlePreviewUndo();
+      return;
+    }
+    handleUndo();
+  }, [handlePreviewUndo, handleUndo]);
+
+  const runRedo = useCallback(() => {
+    if (
+      interactionModeRef.current === "preview" &&
+      selectedPreviewHtmlRef.current
+    ) {
+      void handlePreviewRedo();
+      return;
+    }
+    handleRedo();
+  }, [handlePreviewRedo, handleRedo]);
+
+  const toggleZenMode = useCallback(() => {
+    setIsZenMode((prev) => {
+      if (!prev) {
+        zenRestoreRef.current = {
+          isLeftPanelOpen,
+          isRightPanelOpen,
+          showTerminal,
+          isCodePanelOpen,
+          interactionMode,
+        };
+        setIsLeftPanelOpen(false);
+        setIsRightPanelOpen(false);
+        setShowTerminal(false);
+        setIsCodePanelOpen(false);
+        setInteractionMode("preview");
+        return true;
+      }
+
+      const restore = zenRestoreRef.current;
+      if (restore) {
+        setIsLeftPanelOpen(restore.isLeftPanelOpen);
+        setIsRightPanelOpen(restore.isRightPanelOpen);
+        setShowTerminal(restore.showTerminal);
+        setIsCodePanelOpen(restore.isCodePanelOpen);
+        setInteractionMode(restore.interactionMode);
+      }
+      zenRestoreRef.current = null;
+      return false;
+    });
+  }, [
+    interactionMode,
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    isCodePanelOpen,
+    showTerminal,
+  ]); // --- Keyboard Shortcuts ---
   useEffect(() => {
+    if (isCodePanelOpen) {
+      return;
+    }
+
+    if (interactionMode === "preview") {
+      rightPanelManualClosedRef.current = false;
+      setIsRightPanelOpen(false);
+      return;
+    }
+
+    if (interactionMode !== "edit") {
+      return;
+    }
+
+    if (rightPanelRestorePendingRef.current) {
+      rightPanelRestorePendingRef.current = false;
+      return;
+    }
+
+    if (selectedId !== lastEditSelectionRef.current) {
+      lastEditSelectionRef.current = selectedId;
+      rightPanelManualClosedRef.current = false;
+    }
+
+    if (!selectedId) {
+      setIsRightPanelOpen(false);
+      return;
+    }
+
+    if (!rightPanelManualClosedRef.current) {
+      setIsRightPanelOpen(true);
+    }
+  }, [interactionMode, isCodePanelOpen, selectedId]);
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        target.isContentEditable ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT"
+      );
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-
       const key = e.key.toLowerCase();
+      const hasModifier = e.ctrlKey || e.metaKey;
+      const editableTarget = isEditableTarget(e.target);
 
-      // Ctrl+K — Command Palette
+      if (hasModifier && editableTarget) {
+        if (key === "s") {
+          e.preventDefault();
+          void saveCodeDraftsRef.current?.();
+          void flushPendingPreviewSaves();
+          return;
+        }
+        if (key === "t") {
+          e.preventDefault();
+          requestPreviewRefreshWithUnsavedGuard();
+          return;
+        }
+        if (key === "p") {
+          e.preventDefault();
+          requestSwitchToPreviewMode();
+          return;
+        }
+        if (key === "f") {
+          e.preventDefault();
+          setIsLeftPanelOpen(true);
+          setIsRightPanelOpen(true);
+          setIsCodePanelOpen(false);
+          return;
+        }
+        if (key === "b") {
+          e.preventDefault();
+          setIsLeftPanelOpen(true);
+          return;
+        }
+        if (key === "i" && interactionModeRef.current === "edit") {
+          e.preventDefault();
+          rightPanelManualClosedRef.current = !isRightPanelOpen;
+          setIsRightPanelOpen((prev) => {
+            if (prev) return false;
+            return Boolean(selectedId);
+          });
+          return;
+        }
+        if (key === "e") {
+          e.preventDefault();
+          setSidebarToolMode("edit");
+          setInteractionMode("preview");
+          setPreviewMode("edit");
+          return;
+        }
+        if (key === "k") {
+          e.preventDefault();
+          setIsCommandPaletteOpen((prev) => !prev);
+          return;
+        }
+        if (e.code === "Backquote") {
+          e.preventDefault();
+          setShowTerminal((prev) => !prev);
+        }
+        // Let native editor undo/redo work inside inputs/contentEditable.
+        return;
+      }
+      if (
+        key === "escape" &&
+        isPageSwitchPromptOpen &&
+        !isPageSwitchPromptBusy
+      ) {
+        e.preventDefault();
+        closePendingPageSwitchPrompt();
+        return;
+      }
+
+      if (key === "escape" && isZenMode) {
+        e.preventDefault();
+        toggleZenMode();
+        return;
+      }
+
+      if (!hasModifier && !e.altKey && !editableTarget) {
+        if (key === "w") {
+          e.preventDefault();
+          if (!e.repeat) {
+            setIsLeftPanelOpen(true);
+          }
+          return;
+        }
+        if (key === "e") {
+          e.preventDefault();
+          if (!e.repeat) {
+            setIsRightPanelOpen((prev) => {
+              const next = !prev;
+              if (next) setIsCodePanelOpen(false);
+              return next;
+            });
+          }
+          return;
+        }
+      }
+
+      if (!hasModifier) return;
+
       if (key === "k") {
         e.preventDefault();
         setIsCommandPaletteOpen((prev) => !prev);
+        return;
       }
-      // Ctrl+A — Toggle Left Panel
-      if (key === "a") {
-        e.preventDefault();
-        setIsLeftPanelOpen((prev) => !prev);
-      }
-      // Ctrl+B — Toggle Right Panel
-      if (key === "b") {
-        e.preventDefault();
-        setIsRightPanelOpen((prev) => !prev);
-      }
-      // Ctrl+F — Toggle Both Panels (open both, or close both if already open)
       if (key === "f") {
         e.preventDefault();
-        const shouldOpen = !(isLeftPanelOpen && isRightPanelOpen);
-        setIsLeftPanelOpen(shouldOpen);
-        setIsRightPanelOpen(shouldOpen);
+        setIsLeftPanelOpen(true);
+        setIsRightPanelOpen(true);
+        setIsCodePanelOpen(false);
+        return;
       }
-      // Ctrl+` — Toggle Terminal
+      if (key === "b") {
+        e.preventDefault();
+        setIsLeftPanelOpen(true);
+        return;
+      }
+      if (key === "i" && interactionModeRef.current === "edit") {
+        e.preventDefault();
+        rightPanelManualClosedRef.current = !isRightPanelOpen;
+        setIsRightPanelOpen((prev) => {
+          if (prev) return false;
+          return Boolean(selectedId);
+        });
+        return;
+      }
+      if (key === "p") {
+        e.preventDefault();
+        requestSwitchToPreviewMode();
+        return;
+      }
+      if (key === "e") {
+        e.preventDefault();
+        setSidebarToolMode("edit");
+        setInteractionMode("preview");
+        setPreviewMode("edit");
+        return;
+      }
       if (key === "`") {
         e.preventDefault();
         setShowTerminal((prev) => !prev);
+        return;
+      }
+      if (key === "j") {
+        e.preventDefault();
+        toggleZenMode();
+        return;
+      }
+      if (key === "s") {
+        e.preventDefault();
+        void saveCodeDraftsRef.current?.();
+        void flushPendingPreviewSaves();
+        return;
+      }
+      if (key === "t") {
+        e.preventDefault();
+        requestPreviewRefreshWithUnsavedGuard();
+        return;
+      }
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        runUndo();
+        return;
+      }
+      if (key === "u" || key === "y" || (key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        runRedo();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLeftPanelOpen, isRightPanelOpen]);
+  }, [
+    closePendingPageSwitchPrompt,
+    flushPendingPreviewSaves,
+    isPageSwitchPromptBusy,
+    isPageSwitchPromptOpen,
+    isZenMode,
+    previewSyncedFile,
+    requestPreviewRefreshWithUnsavedGuard,
+    requestSwitchToPreviewMode,
+    runRedo,
+    runUndo,
+    selectedId,
+    toggleZenMode,
+    isRightPanelOpen,
+  ]);
 
   // --- Actions ---
   const handleSelect = useCallback(
     (id: string) => {
       setSelectedId(id);
-      if (deviceMode === "tablet") {
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+      if (deviceMode === "tablet" && interactionModeRef.current === "edit") {
+        setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
       }
     },
@@ -1452,11 +2670,23 @@ const App: React.FC = () => {
   );
 
   const handleUpdateContent = useCallback(
-    (data: { content?: string; src?: string; href?: string }) => {
+    (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
       if (!selectedId) return;
+      const normalizedData =
+        typeof data.html === "string" && typeof data.content !== "string"
+          ? {
+              ...data,
+              content: extractTextFromHtmlFragment(data.html),
+            }
+          : data;
       const newRoot = updateElementInTree(root, selectedId, (el) => ({
         ...el,
-        ...data,
+        ...normalizedData,
       }));
       pushHistory(newRoot);
     },
@@ -1478,9 +2708,15 @@ const App: React.FC = () => {
   const handleUpdateAnimation = useCallback(
     (animation: string) => {
       if (!selectedId) return;
+      const nextAnimation =
+        typeof animation === "string" ? animation.trim() : "";
       const newRoot = updateElementInTree(root, selectedId, (el) => ({
         ...el,
-        animation,
+        animation: nextAnimation,
+        styles: {
+          ...el.styles,
+          animation: nextAnimation,
+        },
       }));
       pushHistory(newRoot);
     },
@@ -1493,6 +2729,29 @@ const App: React.FC = () => {
       if (!draggedEl) return;
       let newRoot = deleteElementFromTree(root, draggedId);
       newRoot = addElementToTree(newRoot, targetId, draggedEl, "inside");
+      pushHistory(newRoot);
+    },
+    [root, pushHistory],
+  );
+
+  const handleMoveElementByPosition = useCallback(
+    (id: string, styles: Partial<React.CSSProperties>) => {
+      const target = findElementById(root, id);
+      if (!target) return;
+      let changed = false;
+      for (const [key, value] of Object.entries(styles)) {
+        if (
+          String((target.styles as any)?.[key] ?? "") !== String(value ?? "")
+        ) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return;
+      const newRoot = updateElementInTree(root, id, (el) => ({
+        ...el,
+        styles: { ...el.styles, ...styles },
+      }));
       pushHistory(newRoot);
     },
     [root, pushHistory],
@@ -1511,27 +2770,18 @@ const App: React.FC = () => {
 
   const handleAddElement = useCallback(
     (type: string, position: "inside" | "before" | "after" = "inside") => {
-      const newId = `${type}-${Date.now()}`;
-      const newElement: VirtualElement = {
-        id: newId,
-        type: type as ElementType,
-        name: type.charAt(0).toUpperCase() + type.slice(1),
-        styles: { padding: "10px", minHeight: "20px" },
-        children: [],
-        content: ["p", "h1", "h2", "h3", "button", "span"].includes(type)
-          ? "New Text"
-          : undefined,
-      };
-      if (type === "img") {
-        newElement.src = "https://picsum.photos/200/300";
-        newElement.name = "Image";
-      }
+      const idFor = createPresetIdFactory(type);
+      const newElement =
+        buildPresetElementV2(type, idFor) ??
+        buildStandardElement(type, idFor("element"));
       const targetId = selectedId || root.id;
       const newRoot = addElementToTree(root, targetId, newElement, position);
       pushHistory(newRoot);
-      setSelectedId(newId);
+      setSelectedId(newElement.id);
+      setIsRightPanelOpen(true);
+      requestPropertiesPanelTab("content");
     },
-    [root, selectedId, pushHistory],
+    [root, selectedId, pushHistory, requestPropertiesPanelTab],
   );
 
   const handleDeleteElement = useCallback(() => {
@@ -1540,14 +2790,423 @@ const App: React.FC = () => {
     pushHistory(newRoot);
     setSelectedId(null);
   }, [root, selectedId, pushHistory]);
+  const handleSidebarAddElement = useCallback(
+    (type: string) => {
+      if (
+        interactionModeRef.current === "preview" &&
+        selectedPreviewHtmlRef.current
+      ) {
+        const frameRect = previewFrameRef.current?.getBoundingClientRect();
+        const clientX = frameRect
+          ? Math.round(frameRect.left + frameRect.width / 2)
+          : Math.round(window.innerWidth / 2);
+        const clientY = frameRect
+          ? Math.round(frameRect.top + frameRect.height / 2)
+          : Math.round(window.innerHeight / 2);
+        setSidebarToolMode("edit");
+        setInteractionMode("preview");
+        setPreviewMode("edit");
+        void applyPreviewDropCreateRef.current?.(type, clientX, clientY);
+        return;
+      }
+      handleAddElement(type, "inside");
+    },
+    [handleAddElement],
+  );
+  const handleSidebarAddFontToPresentationCss = useCallback(
+    (path: string) => {
+      void handleAddFontToPresentationCss(path);
+    },
+    [handleAddFontToPresentationCss],
+  );
+  const handlePreviewRefresh = useCallback(() => {
+    requestPreviewRefreshWithUnsavedGuard();
+  }, [requestPreviewRefreshWithUnsavedGuard]);
+  const appendPdfAnnotationLog = useCallback(
+    (message: string, level: "info" | "warn" | "error" = "info") => {
+      dispatch(
+        addProcessingLog({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString(),
+          message,
+          level,
+        }),
+      );
+    },
+    [dispatch],
+  );
+  const runPdfAnnotationMapping = useCallback(
+    async (pdfPath: string, useCache: boolean) => {
+      if (!projectPath || isPdfAnnotationLoading) return;
+      const normalizedPdfPath = normalizePath(pdfPath);
+      const normalizedProject = normalizePath(projectPath);
+      dispatch(clearProcessingLogs());
+      appendPdfAnnotationLog("Starting PDF annotation mapping.");
+      if (useCache) {
+        appendPdfAnnotationLog("Checking local cache for previous results.");
+        const cache = readPdfAnnotationCache();
+        const cachedEntry =
+          cache?.projects?.[normalizedProject]?.entries?.[normalizedPdfPath];
+        if (cachedEntry) {
+          const cachedRecords = cachedEntry.records || [];
+          dispatch(setRecords(cachedRecords));
+          const metrics = evaluateAnnotationTypeClassifier(cachedRecords).micro;
+          dispatch(setClassifierMetrics(metrics as any));
+          dispatch(setFileName(cachedEntry.fileName || ""));
+          dispatch(setSourcePath(normalizedPdfPath));
+          dispatch(setError(null));
+          dispatch(setIsOpen(true));
+          dispatch(setFocusedAnnotation(null));
+          appendPdfAnnotationLog(
+            `Cache hit. Loaded ${cachedRecords.length} annotations.`,
+          );
+          return;
+        }
+        appendPdfAnnotationLog("Cache miss. Running full extraction.");
+      }
+
+      dispatch(setIsLoading(true));
+      dispatch(setError(null));
+      dispatch(setIsOpen(true));
+      dispatch(setFocusedAnnotation(null));
+      dispatch(setRecords([]));
+      try {
+        appendPdfAnnotationLog("Reading PDF file into memory.");
+        const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
+          normalizedPdfPath,
+        );
+        const pdfData = toByteArray(binaryData);
+        appendPdfAnnotationLog("Preparing PDF data for extraction.");
+        let preExtractedAnnotations: PdfAnnotationRecord[] | null = null;
+        try {
+          appendPdfAnnotationLog("Running background extractor script.");
+          const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+          const workerScriptPath = appRoot
+            ? `${appRoot}/scripts/pdf_annotation_worker.mjs`
+            : "";
+          const workerOutputPath = projectPath
+            ? `${normalizePath(projectPath)}/.nx_tmp_pdf_annotations_${Date.now()}.json`
+            : "";
+          if (workerScriptPath && workerOutputPath) {
+            const command = `node "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
+            const execResult = await (Neutralino as any).os.execCommand(
+              command,
+            );
+            if ((execResult?.exitCode ?? 1) === 0) {
+              appendPdfAnnotationLog("Parsing extractor output.");
+              const workerRaw = await (Neutralino as any).filesystem.readFile(
+                workerOutputPath,
+              );
+              const parsed = JSON.parse(String(workerRaw || "{}"));
+              if (Array.isArray(parsed?.annotations)) {
+                preExtractedAnnotations = parsed.annotations;
+                appendPdfAnnotationLog(
+                  `Extractor produced ${preExtractedAnnotations.length} annotations.`,
+                );
+              }
+            }
+            try {
+              await (Neutralino as any).filesystem.removeFile(workerOutputPath);
+            } catch {}
+          }
+        } catch (workerError) {
+          console.warn("Background PDF extraction failed:", workerError);
+          appendPdfAnnotationLog(
+            "Background extractor failed. No annotations returned.",
+            "warn",
+          );
+        }
+        if (!preExtractedAnnotations || preExtractedAnnotations.length === 0) {
+          throw new Error(
+            "Background PDF extractor failed or returned no annotations. In-app PDF worker fallback is disabled.",
+          );
+        }
+        appendPdfAnnotationLog("Mapping annotations to project files.");
+        const details = await buildMappedPdfAnnotations({
+          pdfData,
+          files,
+          absolutePathIndex: filePathIndexRef.current,
+          preExtractedAnnotations,
+          readBinaryFile: async (absolutePath: string) => {
+            const nextBinary = await (
+              Neutralino as any
+            ).filesystem.readBinaryFile(normalizePath(absolutePath));
+            const bytes = toByteArray(nextBinary);
+            const copy = new Uint8Array(bytes.byteLength);
+            copy.set(bytes);
+            return copy.buffer;
+          },
+        });
+        const fileName =
+          normalizePath(normalizedPdfPath)
+            .split("/")
+            .filter(Boolean)
+            .slice(-1)[0] || normalizedPdfPath;
+        dispatch(setRecords(details));
+        appendPdfAnnotationLog("Scoring annotation types.");
+        const metrics = evaluateAnnotationTypeClassifier(details).micro;
+        dispatch(setClassifierMetrics(metrics as any));
+        dispatch(setFileName(fileName));
+        dispatch(setSourcePath(normalizedPdfPath));
+        appendPdfAnnotationLog(
+          `Mapping complete. ${details.length} annotations ready.`,
+        );
+        appendPdfAnnotationLog("Caching results locally.");
+        writePdfAnnotationCache(
+          normalizedProject,
+          normalizedPdfPath,
+          fileName,
+          details,
+        );
+        appendPdfAnnotationLog("Results cached for faster reloads.");
+
+        // --- DEBUG EXPORT: Save mapping JSON to project root ---
+        try {
+          const debugOutputPath = `${normalizePath(projectPath)}/pdf_mapping_debug.json`;
+          await (Neutralino as any).filesystem.writeFile(
+            debugOutputPath,
+            JSON.stringify(details, null, 2),
+          );
+          console.log(
+            `[NX-DEBUG] Mapping JSON exported to: ${debugOutputPath}`,
+          );
+        } catch (exportError) {
+          console.warn(
+            "[NX-DEBUG] Failed to export mapping JSON:",
+            exportError,
+          );
+          appendPdfAnnotationLog(
+            "Debug export failed (non-blocking).",
+            "warn",
+          );
+        }
+      } catch (error) {
+        console.error("Failed to analyze annotated PDF:", error);
+        dispatch(setRecords([]));
+        dispatch(setClassifierMetrics(null));
+        dispatch(
+          setError(
+            error instanceof Error
+              ? error.message
+              : "Could not analyze this PDF inside the app.",
+          ),
+        );
+        appendPdfAnnotationLog(
+          error instanceof Error
+            ? `Error: ${error.message}`
+            : "Error: Could not analyze this PDF inside the app.",
+          "error",
+        );
+      } finally {
+        dispatch(setIsLoading(false));
+        appendPdfAnnotationLog("Processing finished.");
+      }
+    },
+    [
+      files,
+      isPdfAnnotationLoading,
+      projectPath,
+      readPdfAnnotationCache,
+      writePdfAnnotationCache,
+      dispatch,
+      appendPdfAnnotationLog,
+    ],
+  );
+  const handleOpenPdfAnnotationsPicker = useCallback(async () => {
+    if (!projectPath || isPdfAnnotationLoading) return;
+    if (pdfAnnotationRecords.length > 0) {
+      dispatch(setIsOpen(true));
+      return;
+    }
+
+    try {
+      const selections = await (Neutralino as any).os.showOpenDialog(
+        "Select annotated PDF",
+        {
+          multiSelections: false,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        },
+      );
+      const pdfPath = Array.isArray(selections) ? selections[0] : null;
+      if (!pdfPath) return;
+      await runPdfAnnotationMapping(pdfPath, true);
+    } catch (error) {
+      console.error("Failed to analyze annotated PDF:", error);
+      dispatch(setRecords([]));
+      dispatch(
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Could not analyze this PDF inside the app.",
+        ),
+      );
+    } finally {
+      // Loading handled by mapping helper.
+    }
+  }, [
+    isPdfAnnotationLoading,
+    pdfAnnotationRecords.length,
+    projectPath,
+    runPdfAnnotationMapping,
+    dispatch,
+  ]);
+  const handleRefreshPdfAnnotationMapping = useCallback(async () => {
+    if (!projectPath || isPdfAnnotationLoading) return;
+    try {
+      const selections = await (Neutralino as any).os.showOpenDialog(
+        "Select annotated PDF",
+        {
+          multiSelections: false,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        },
+      );
+      const pdfPath = Array.isArray(selections) ? selections[0] : null;
+      if (!pdfPath) return;
+      await runPdfAnnotationMapping(pdfPath, false);
+    } catch (error) {
+      console.error("Failed to refresh annotated PDF:", error);
+    }
+  }, [isPdfAnnotationLoading, projectPath, runPdfAnnotationMapping]);
+  const handleJumpToPdfAnnotation = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      if (!annotation.mappedFilePath) return;
+
+      const currentSlide = selectedPreviewHtmlRef.current;
+      const targetPath = normalizePath(annotation.mappedFilePath);
+      const normalizedCurrent = currentSlide ? normalizePath(currentSlide) : "";
+
+      const isTargetingCurrentSlide =
+        normalizedCurrent && targetPath === normalizedCurrent;
+      const hasInvocation = !!annotation.popupInvocation;
+
+      const isSharedPopup =
+        annotation.mappedFilePath.includes("/shared/") ||
+        annotation.detectedPageType === "Child/Popup" ||
+        hasInvocation;
+
+      console.log(`[NX-DEBUG] Jump Triggered:
+        Target: ${annotation.mappedFilePath}
+        Current: ${currentSlide}
+        Match: ${isTargetingCurrentSlide}
+        Type: ${annotation.detectedPageType}
+        Invocation: ${hasInvocation}
+      `);
+
+      // --- FIX: Logic for staying on context vs navigating ---
+      const isTargetingSlideButNotCurrent =
+        !isTargetingCurrentSlide &&
+        !annotation.mappedFilePath.includes("/shared/");
+
+      // If we are targeting the CURRENT slide OR it's a popup that belongs here, STAY.
+      if (isTargetingCurrentSlide) {
+        console.log(`[NX] Staying on current context. Same slide match.`);
+        dispatch(setFocusedAnnotation({ ...annotation }));
+        setPreviewMode("preview");
+        setInteractionMode("preview");
+        return;
+      }
+
+      // If it's a shared popup trigger BUT we are on some slide,
+      // check if we should navigate to the target slide first.
+      if (!isTargetingCurrentSlide && isTargetingSlideButNotCurrent) {
+        console.log(
+          `[NX] Navigating to target slide: ${annotation.mappedFilePath}`,
+        );
+        // Let it fall through to the navigation logic below
+      } else if (currentSlide && isSharedPopup) {
+        // This case handles truly "shared" resources that have no slide parent (legacy fallback)
+        console.log(`[NX] Shared popup case - staying on context.`);
+        dispatch(setFocusedAnnotation({ ...annotation }));
+        setPreviewMode("preview");
+        setInteractionMode("preview");
+        return;
+      }
+
+      dispatch(setFocusedAnnotation({ ...annotation }));
+      setSelectedId(null);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+      setSidebarToolMode("edit");
+      setPreviewMode("preview");
+      setInteractionMode("preview");
+      setActiveFileStable(annotation.mappedFilePath || "");
+      setPreviewSyncedFile(annotation.mappedFilePath);
+      setPreviewNavigationFile(annotation.mappedFilePath);
+      dispatch(setIsOpen(true));
+    },
+    [setActiveFileStable, dispatch],
+  );
+  const openCodePanel = useCallback(() => {
+    const currentPreview = selectedPreviewHtmlRef.current;
+    if (currentPreview && filesRef.current[currentPreview]?.type === "html") {
+      setActiveFileStable(currentPreview);
+      setPreviewSyncedFile((prev) =>
+        prev === currentPreview ? prev : currentPreview,
+      );
+      setPreviewNavigationFile((prev) =>
+        prev === currentPreview ? prev : currentPreview,
+      );
+    }
+    setIsDetachedEditorOpen(true);
+  }, [setActiveFileStable]);
+  const closeCodePanel = useCallback(() => {
+    setIsDetachedEditorOpen(false);
+    setIsCodePanelOpen(false);
+  }, []);
+  const toggleThemeWithTransition = useCallback(() => {
+    if (themeTransitionInFlightRef.current) return;
+    themeTransitionInFlightRef.current = true;
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    const rootEl = document.documentElement;
+    rootEl.classList.add("theme-transitioning");
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cleanupTransitionVars = () => {
+      const rootStyle = document.documentElement.style;
+      rootStyle.removeProperty("--theme-transition-x");
+      rootStyle.removeProperty("--theme-transition-y");
+      rootStyle.removeProperty("--theme-transition-radius");
+      rootEl.classList.remove("theme-transitioning");
+      themeTransitionInFlightRef.current = false;
+    };
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty("--theme-transition-x", `${window.innerWidth}px`);
+    rootStyle.setProperty("--theme-transition-y", "0px");
+    rootStyle.setProperty(
+      "--theme-transition-radius",
+      `${Math.hypot(window.innerWidth, window.innerHeight)}px`,
+    );
+
+    if (prefersReducedMotion) {
+      setTheme(nextTheme);
+      cleanupTransitionVars();
+      return;
+    }
+
+    const doc = document as MaybeViewTransitionDocument;
+    if (typeof doc.startViewTransition !== "function") {
+      setTheme(nextTheme);
+      cleanupTransitionVars();
+      return;
+    }
+
+    const transition = doc.startViewTransition(() => {
+      flushSync(() => {
+        setTheme(nextTheme);
+      });
+    });
+    void transition.finished.finally(cleanupTransitionVars);
+  }, [theme]);
 
   const handleCommandAction = (actionId: string, payload?: any) => {
     switch (actionId) {
       case "undo":
-        handleUndo();
+        runUndo();
         break;
       case "redo":
-        handleRedo();
+        runRedo();
         break;
       case "view-desktop":
         setDeviceMode("desktop");
@@ -1556,7 +3215,13 @@ const App: React.FC = () => {
         setDeviceMode("mobile");
         break;
       case "toggle-preview":
-        setInteractionMode((prev) => (prev === "preview" ? "edit" : "preview"));
+        if (interactionModeRef.current === "preview") {
+          setSidebarToolMode("edit");
+          setPreviewMode("edit");
+        } else {
+          setSidebarToolMode("edit");
+          requestSwitchToPreviewMode();
+        }
         break;
       case "clear-selection":
         setSelectedId(null);
@@ -1566,68 +3231,14 @@ const App: React.FC = () => {
     }
   };
 
-  const loadFileContent = useCallback(
-    async (relativePath: string) => {
-      const target = filesRef.current[relativePath];
-      if (!target) return;
-      if (typeof target.content === "string" && target.content.length > 0) {
-        return target.content;
-      }
-      if (loadingFilePromisesRef.current[relativePath]) {
-        return loadingFilePromisesRef.current[relativePath];
-      }
-
-      const absolutePath = filePathIndexRef.current[relativePath];
-      if (!absolutePath) return;
-
-      const pending = (async () => {
-        loadingFilesRef.current.add(relativePath);
-        try {
-          let content: string | Blob = "";
-          if (target.type === "image" || target.type === "font") {
-            const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
-              absolutePath,
-            );
-            const bytes = toByteArray(binaryData);
-            const base64 = toBase64(bytes);
-            const mime = mimeFromType(target.type, target.name);
-            content = `data:${mime};base64,${base64}`;
-          } else {
-            content = await (Neutralino as any).filesystem.readFile(absolutePath);
-          }
-
-          setFiles((prev) => {
-            const current = prev[relativePath];
-            if (!current) return prev;
-            if (
-              typeof current.content === "string" &&
-              current.content.length > 0
-            ) {
-              return prev;
-            }
-            return { ...prev, [relativePath]: { ...current, content } };
-          });
-          return content;
-        } catch (error) {
-          console.warn(`Failed loading file content for ${relativePath}:`, error);
-        } finally {
-          loadingFilesRef.current.delete(relativePath);
-          delete loadingFilePromisesRef.current[relativePath];
-        }
-      })();
-
-      loadingFilePromisesRef.current[relativePath] = pending;
-      return pending;
-    },
-    [],
-  );
-
   // --- Neutralino File System Integration ---
-  const handleOpenFolder = async () => {
+  const handleOpenFolder = async (preselectedFolder?: string | null) => {
     try {
-      const selectedFolder = await (Neutralino as any).os.showFolderDialog(
-        "Select project folder",
-      );
+      const selectedFolder =
+        preselectedFolder ||
+        (await (Neutralino as any).os.showFolderDialog(
+          "Select project folder",
+        ));
       if (!selectedFolder) return;
 
       setIsLeftPanelOpen(true);
@@ -1682,13 +3293,18 @@ const App: React.FC = () => {
         }
       };
 
-      const indexSharedDirectory = async (sharedRoot: string): Promise<void> => {
+      const indexSharedDirectory = async (
+        sharedRoot: string,
+      ): Promise<void> => {
         const sharedBase = normalizePath(sharedRoot);
         const walkShared = async (directoryPath: string): Promise<void> => {
           const entries = await (Neutralino as any).filesystem.readDirectory(
             directoryPath,
           );
-          for (const entry of entries as Array<{ entry: string; type: string }>) {
+          for (const entry of entries as Array<{
+            entry: string;
+            type: string;
+          }>) {
             if (!entry?.entry || entry.entry === "." || entry.entry === "..") {
               continue;
             }
@@ -1708,6 +3324,7 @@ const App: React.FC = () => {
         };
         await walkShared(sharedBase);
       };
+
       const patchMtVeevaCheck = async (sharedRoot: string): Promise<void> => {
         const mtPath = joinPath(sharedRoot, "js/mt.js");
         let raw = "";
@@ -1720,80 +3337,91 @@ const App: React.FC = () => {
           );
           return;
         }
-
         if (typeof raw !== "string" || raw.length === 0) return;
 
         const markerStart = "// nocode-x-veeva-bypass:start";
         const markerEnd = "// nocode-x-veeva-bypass:end";
+        const markerVersion = "// nocode-x-veeva-bypass:v4";
+
         const markerBlock = `
-        ${markerStart}
-        try {
-            var host = (window.location && window.location.hostname) ? window.location.hostname : "";
-            var isLocalPreviewHost = (host === "127.0.0.1" || host === "localhost");
-            var isInIframe = window.parent && window.parent !== window;
-            if (isLocalPreviewHost && isInIframe) {
-                try {
-                    if (!window.__nocodeXPreviewConsoleBridge) {
-                        window.__nocodeXPreviewConsoleBridge = true;
-                        var toText = function(v) {
-                            if (typeof v === "string") return v;
-                            try { return JSON.stringify(v); } catch (_e) { return String(v); }
-                        };
-                        var postToHost = function(level, args, source) {
-                            if (typeof window.parent.postMessage !== "function") return;
-                            var msg = Array.prototype.map.call(args || [], toText).join(" ");
-                            window.parent.postMessage({
-                                type: "PREVIEW_CONSOLE",
-                                level: level,
-                                source: source || "preview",
-                                message: msg
-                            }, "*");
-                        };
-                        ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-                            if (!window.console || typeof window.console[level] !== "function") return;
-                            var original = window.console[level].bind(window.console);
-                            window.console[level] = function() {
-                                try { postToHost(level, arguments, "console"); } catch (_e) {}
-                                return original.apply(window.console, arguments);
-                            };
-                        });
-                        window.addEventListener("error", function(ev) {
-                            try {
-                                postToHost("error", [ev.message, ev.filename + ":" + ev.lineno + ":" + ev.colno], "window.onerror");
-                            } catch (_e) {}
-                        });
-                        window.addEventListener("unhandledrejection", function(ev) {
-                            try {
-                                var reason = ev && ev.reason ? ev.reason : "Unhandled promise rejection";
-                                postToHost("error", [reason], "unhandledrejection");
-                            } catch (_e) {}
-                        });
-                    }
-                } catch (e) {}
-                try {
-                    if (window.com && com.veeva && com.veeva.clm && typeof com.veeva.clm.isEngage === "function") {
-                        com.veeva.clm.isEngage = function() { return false; };
-                    }
-                } catch (e) {}
-                if (typeof window.parent.postMessage === "function") {
-                    window.parent.postMessage({
-                        type: "PREVIEW_PATH_CHANGED",
-                        path: window.location.pathname || ""
-                    }, "*");
-                }
-                try { console.log("[NoCodeX] Preview Veeva bypass active"); } catch (e) {}
-                return false;
-            }
-        } catch (e) {}
-        ${markerEnd}
+  ${markerStart}
+  ${markerVersion}
+  try {
+    var host = (window.location && window.location.hostname) ? window.location.hostname : "";
+    var isLocalPreviewHost = (host === "127.0.0.1" || host === "localhost");
+    var isInIframe = window.parent && window.parent !== window;
+    if (isLocalPreviewHost && isInIframe) {
+      try {
+        if (!window.__nocodeXPreviewConsoleBridge) {
+          window.__nocodeXPreviewConsoleBridge = true;
+          var toText = function(v) {
+            if (typeof v === "string") return v;
+            try { return JSON.stringify(v); } catch (_e) { return String(v); }
+          };
+          var postToHost = function(level, args, source) {
+            if (typeof window.parent.postMessage !== "function") return;
+            var msg = Array.prototype.map.call(args || [], toText).join(" ");
+            window.parent.postMessage({
+              type: "PREVIEW_CONSOLE",
+              level: level,
+              source: source || "preview",
+              message: msg
+            }, "*");
+          };
+          ["log", "info", "warn", "error", "debug"].forEach(function(level) {
+            if (!window.console || typeof window.console[level] !== "function") return;
+            var original = window.console[level].bind(window.console);
+            window.console[level] = function() {
+              try { postToHost(level, arguments, "console"); } catch (_e) {}
+              return original.apply(window.console, arguments);
+            };
+          });
+          window.addEventListener("error", function(ev) {
+            try {
+              postToHost("error", [ev.message, ev.filename + ":" + ev.lineno + ":" + ev.colno], "window.onerror");
+            } catch (_e) {}
+          });
+          window.addEventListener("unhandledrejection", function(ev) {
+            try {
+              var reason = ev && ev.reason ? ev.reason : "Unhandled promise rejection";
+              postToHost("error", [reason], "unhandledrejection");
+            } catch (_e) {}
+          });
+        }
+      } catch (e) {}
+      try {
+        if (window.com && com.veeva && com.veeva.clm && typeof com.veeva.clm.isEngage === "function") {
+          com.veeva.clm.isEngage = function() { return false; };
+        }
+      } catch (e) {}
+      if (typeof window.parent.postMessage === "function") {
+        window.parent.postMessage({
+          type: "PREVIEW_PATH_CHANGED",
+          path: window.location.pathname || ""
+        }, "*");
+      }
+      try { console.log("[NoCodeX] Preview Veeva bypass active"); } catch (e) {}
+      return false;
+    }
+  } catch (e) {}
+  ${markerEnd}
 `;
+
         const patchTargetRegex = /isVeevaEnvironment:\s*function\s*\(\)\s*\{/;
         let patched = raw;
 
         if (raw.includes(markerStart) && raw.includes(markerEnd)) {
           const startIndex = raw.indexOf(markerStart);
-          const endMarkerIndex = raw.indexOf(markerEnd, startIndex);
-          const endLineIndex = raw.indexOf("\n", endMarkerIndex);
+          const endIndex = raw.indexOf(markerEnd, startIndex);
+          const existingBlock =
+            startIndex >= 0 && endIndex > startIndex
+              ? raw.slice(startIndex, endIndex + markerEnd.length)
+              : "";
+          const isCurrent = existingBlock.includes(markerVersion);
+          if (isCurrent) {
+            return;
+          }
+          const endLineIndex = raw.indexOf("\n", endIndex);
           const afterEnd = endLineIndex >= 0 ? endLineIndex + 1 : raw.length;
           patched = `${raw.slice(0, startIndex)}${markerBlock}${raw.slice(afterEnd)}`;
         } else if (patchTargetRegex.test(raw)) {
@@ -1809,6 +3437,7 @@ const App: React.FC = () => {
         }
 
         if (patched === raw) return;
+
         try {
           await (Neutralino as any).filesystem.writeFile(mtPath, patched);
           console.log("[Preview] Applied mt.js Veeva bypass patch:", mtPath);
@@ -1843,6 +3472,114 @@ const App: React.FC = () => {
         await patchMtVeevaCheck(sharedDirectoryPath);
       }
 
+      const presentationCssVirtualPath = findFilePathCaseInsensitive(
+        fsFiles,
+        PRESENTATION_CSS_VIRTUAL_PATH,
+      );
+      presentationCssPathRef.current = presentationCssVirtualPath;
+
+      let fontCacheVirtualPath: string | null = null;
+      let fontCacheAbsolutePath: string | null = null;
+      if (sharedDirectoryPath) {
+        const existingCachePath = findFilePathCaseInsensitive(
+          fsFiles,
+          FONT_CACHE_VIRTUAL_PATH,
+        );
+        if (existingCachePath) {
+          fontCacheVirtualPath = existingCachePath;
+          fontCacheAbsolutePath = absolutePathIndex[existingCachePath] || null;
+        } else {
+          fontCacheVirtualPath = FONT_CACHE_VIRTUAL_PATH;
+          fontCacheAbsolutePath = normalizePath(
+            joinPath(sharedDirectoryPath, "js/nocodex-fonts.json"),
+          );
+          absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
+        }
+      }
+      fontCachePathRef.current = fontCacheVirtualPath;
+
+      let projectFontFamilies: string[] = [];
+      let loadedFromCache = false;
+      if (fontCacheVirtualPath && fontCacheAbsolutePath) {
+        try {
+          const cacheRaw = await (Neutralino as any).filesystem.readFile(
+            fontCacheAbsolutePath,
+          );
+          if (typeof cacheRaw === "string" && cacheRaw.trim().length > 0) {
+            const cachedFamilies = parseFontCacheFamilies(cacheRaw);
+            if (cachedFamilies.length > 0) {
+              projectFontFamilies = cachedFamilies;
+              loadedFromCache = true;
+            }
+          }
+        } catch {
+          // Cache file may not exist yet for first-time projects.
+        }
+      }
+
+      if (!loadedFromCache && presentationCssVirtualPath) {
+        const presentationAbsolutePath =
+          absolutePathIndex[presentationCssVirtualPath];
+        if (presentationAbsolutePath) {
+          try {
+            const presentationCss = await (
+              Neutralino as any
+            ).filesystem.readFile(presentationAbsolutePath);
+            if (
+              typeof presentationCss === "string" &&
+              presentationCss.length > 0
+            ) {
+              projectFontFamilies =
+                parsePresentationCssFontFamilies(presentationCss);
+            }
+          } catch {
+            // Ignore missing presentation.css reads and fall back to fonts folder.
+          }
+        }
+      }
+
+      if (projectFontFamilies.length === 0) {
+        projectFontFamilies = collectSharedFontFamiliesFromFileMap(fsFiles);
+      }
+      setAvailableFonts(buildEditorFontOptions(projectFontFamilies));
+
+      if (
+        !loadedFromCache &&
+        projectFontFamilies.length > 0 &&
+        fontCacheVirtualPath &&
+        fontCacheAbsolutePath
+      ) {
+        const cachePayload: FontCachePayload = {
+          version: FONT_CACHE_VERSION,
+          source: "presentation.css",
+          generatedAt: new Date().toISOString(),
+          fonts: dedupeFontFamilies(projectFontFamilies),
+        };
+        const serializedCache = JSON.stringify(cachePayload, null, 2);
+        try {
+          await (Neutralino as any).filesystem.writeFile(
+            fontCacheAbsolutePath,
+            serializedCache,
+          );
+          if (!fsFiles[fontCacheVirtualPath]) {
+            fsFiles[fontCacheVirtualPath] = {
+              path: fontCacheVirtualPath,
+              name: "nocodex-fonts.json",
+              type: inferFileType("nocodex-fonts.json"),
+              content: serializedCache,
+            };
+            absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
+          } else {
+            fsFiles[fontCacheVirtualPath] = {
+              ...fsFiles[fontCacheVirtualPath],
+              content: serializedCache,
+            };
+          }
+        } catch (error) {
+          console.warn("Failed writing initial font cache:", error);
+        }
+      }
+
       const mountBasePath = nearestSharedParent || rootPath;
       const mountBaseName =
         normalizePath(mountBasePath).split("/").filter(Boolean).pop() || "";
@@ -1864,7 +3601,10 @@ const App: React.FC = () => {
         if (mounts?.[PREVIEW_MOUNT_PATH]) {
           await (Neutralino as any).server.unmount(PREVIEW_MOUNT_PATH);
         }
-        await (Neutralino as any).server.mount(PREVIEW_MOUNT_PATH, mountBasePath);
+        await (Neutralino as any).server.mount(
+          PREVIEW_MOUNT_PATH,
+          mountBasePath,
+        );
         if (
           previewRootAliasPath &&
           previewRootAliasPath !== PREVIEW_MOUNT_PATH &&
@@ -1892,7 +3632,9 @@ const App: React.FC = () => {
             sharedDirectoryPath,
           );
           if (mounts?.[SHARED_MOUNT_PATH_IN_PREVIEW]) {
-            await (Neutralino as any).server.unmount(SHARED_MOUNT_PATH_IN_PREVIEW);
+            await (Neutralino as any).server.unmount(
+              SHARED_MOUNT_PATH_IN_PREVIEW,
+            );
           }
           await (Neutralino as any).server.mount(
             SHARED_MOUNT_PATH_IN_PREVIEW,
@@ -1901,22 +3643,47 @@ const App: React.FC = () => {
         } else if (mounts?.[SHARED_MOUNT_PATH]) {
           await (Neutralino as any).server.unmount(SHARED_MOUNT_PATH);
           if (mounts?.[SHARED_MOUNT_PATH_IN_PREVIEW]) {
-            await (Neutralino as any).server.unmount(SHARED_MOUNT_PATH_IN_PREVIEW);
+            await (Neutralino as any).server.unmount(
+              SHARED_MOUNT_PATH_IN_PREVIEW,
+            );
           }
         }
 
         mountReady = true;
       } catch (error) {
-        console.warn("Virtual host mount failed. Falling back to srcDoc preview.", error);
+        console.warn(
+          "Virtual host mount failed. Falling back to srcDoc preview.",
+          error,
+        );
       }
 
       filePathIndexRef.current = absolutePathIndex;
       loadingFilesRef.current.clear();
       loadingFilePromisesRef.current = {};
+      textFileCacheRef.current = {};
+      revokeBinaryAssetUrls();
       previewConsoleSeqRef.current = 0;
+      previewConsoleBufferRef.current = [];
+      if (previewConsoleFlushTimerRef.current !== null) {
+        window.clearTimeout(previewConsoleFlushTimerRef.current);
+        previewConsoleFlushTimerRef.current = null;
+      }
       setPreviewConsoleEntries([]);
+      pendingPreviewWritesRef.current = {};
+      previewHistoryRef.current = {};
+      previewDependencyIndexRef.current = {};
+      previewDocCacheRef.current = {};
+      previewDocCacheOrderRef.current = [];
+      setDirtyFiles([]);
+      setDirtyPathKeysByFile({});
       setFiles(fsFiles);
       setProjectPath(rootPath);
+      setRecentProjects((prev) =>
+        [
+          rootPath,
+          ...prev.filter((entry) => normalizePath(entry) !== rootPath),
+        ].slice(0, 5),
+      );
       setPreviewMountBasePath(mountBasePath);
       setIsPreviewMountReady(mountReady);
 
@@ -1927,71 +3694,2058 @@ const App: React.FC = () => {
       const initialFile = defaultHtmlFile ?? firstOpenableFile?.path ?? null;
       setActiveFileStable(initialFile);
       setPreviewSyncedFile(initialFile);
-      if (initialFile && fsFiles[initialFile]?.type === "html") {
-        setInteractionMode("preview");
-      }
+      setPreviewNavigationFile(initialFile);
+      selectedPreviewHtmlRef.current =
+        initialFile && fsFiles[initialFile]?.type === "html"
+          ? initialFile
+          : null;
+      setSidebarToolMode("edit");
+      setPreviewMode("preview");
+      setInteractionMode("preview");
     } catch (error) {
       console.error("Failed to open folder:", error);
       alert("Could not open folder. Please try again.");
     }
   };
+  useEffect(() => {
+    if (!projectPath) {
+      dispatch(setRecords([]));
+      dispatch(setFileName(""));
+      dispatch(setSourcePath(null));
+      dispatch(setClassifierMetrics(null));
+      dispatch(setError(null));
+      dispatch(setIsOpen(false));
+      dispatch(setIsLoading(false));
+      dispatch(setFocusedAnnotation(null));
+      return;
+    }
+    const cache = readPdfAnnotationCache();
+    const normalizedProject = normalizePath(projectPath);
+    const cachedProject = cache?.projects?.[normalizedProject];
+    const cachedPath = cachedProject?.lastPdfPath || null;
+    if (cachedPath && cachedProject?.entries?.[cachedPath]) {
+      const cachedEntry = cachedProject.entries[cachedPath];
+      const cachedRecords = cachedEntry.records || [];
+      dispatch(setRecords(cachedRecords));
+      const metrics = evaluateAnnotationTypeClassifier(cachedRecords).micro;
+      dispatch(setClassifierMetrics(metrics as any));
+      dispatch(setFileName(cachedEntry.fileName || ""));
+      dispatch(setSourcePath(cachedPath));
+      dispatch(setIsOpen(false));
+    } else {
+      dispatch(setRecords([]));
+      dispatch(setFileName(""));
+      dispatch(setSourcePath(null));
+      dispatch(setClassifierMetrics(null));
+    }
+    dispatch(setError(null));
+    dispatch(setIsLoading(false));
+    dispatch(setFocusedAnnotation(null));
+  }, [projectPath, readPdfAnnotationCache, dispatch]);
+  useEffect(() => {
+    if (!focusedPdfAnnotation) return;
+    const timer = window.setTimeout(() => {
+      dispatch(setFocusedAnnotation(null));
+    }, 4500);
+    return () => window.clearTimeout(timer);
+  }, [focusedPdfAnnotation]);
+  useEffect(() => {
+    const handlePointer = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        quickTextEditRef.current &&
+        target &&
+        quickTextEditRef.current.contains(target)
+      ) {
+        return;
+      }
+      hideQuickTextEdit();
+    };
+    window.addEventListener("mousedown", handlePointer);
+    return () => window.removeEventListener("mousedown", handlePointer);
+  }, [hideQuickTextEdit]);
+  const ensureDirectoryTree = useCallback(async (absolutePath: string) => {
+    const normalized = normalizePath(absolutePath).replace(/[\\/]$/, "");
+    if (!normalized) return;
+    const parts = normalized.split("/");
+    if (parts.length === 0) return;
+    let current = "";
+    let startIndex = 0;
+    if (/^[A-Za-z]:$/.test(parts[0])) {
+      current = `${parts[0]}/`;
+      startIndex = 1;
+    } else if (parts[0] === "") {
+      current = "/";
+      startIndex = 1;
+    } else {
+      current = parts[0];
+      startIndex = 1;
+    }
+    for (let index = startIndex; index < parts.length; index += 1) {
+      const segment = parts[index];
+      if (!segment) continue;
+      current = current.replace(/[\\/]$/, "");
+      current = `${current}/${segment}`;
+      try {
+        await (Neutralino as any).filesystem.createDirectory(current);
+      } catch {
+        // Ignore "already exists" and permission rejections for existing roots.
+      }
+    }
+  }, []);
+  const ensureDirectoryForFile = useCallback(
+    async (absoluteFilePath: string) => {
+      const parent = getParentPath(normalizePath(absoluteFilePath));
+      if (!parent) return;
+      await ensureDirectoryTree(parent);
+    },
+    [ensureDirectoryTree],
+  );
+  const dataUrlToBytes = useCallback((dataUrl: string): Uint8Array => {
+    const base64 = dataUrl.split(",")[1] || "";
+    const binary = window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }, []);
+  const resolveScreenshotIndexPath = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${SCREENSHOT_INDEX_FILE}`;
+  }, [projectPath]);
+  const resolveScreenshotDir = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${SCREENSHOT_DIR}`;
+  }, [projectPath]);
+  const resolvePdfExportDir = useCallback(() => {
+    if (!projectPath) return null;
+    return `${normalizePath(projectPath)}/${PDF_EXPORT_DIR}`;
+  }, [projectPath]);
+  const resolvePreviewAssetUrl = useCallback(
+    (rawUrl: string | null | undefined) => {
+      if (!rawUrl) return rawUrl || null;
+      if (isExternalUrl(rawUrl)) return rawUrl;
+      if (!projectPath || !previewMountBasePath) return rawUrl;
+      const cleaned = rawUrl.split("#")[0].split("?")[0];
+      const basePath = selectedPreviewHtmlRef.current || "";
+      const normalizedRelative = cleaned.startsWith("/")
+        ? normalizeProjectRelative(cleaned.slice(1))
+        : resolveProjectRelativePath(basePath, cleaned) || cleaned;
+      const absolutePath =
+        filePathIndexRef.current[normalizedRelative] ||
+        normalizePath(joinPath(projectPath, normalizedRelative));
+      const relativePath = toMountRelativePath(
+        previewMountBasePath,
+        absolutePath,
+      );
+      if (!relativePath) return rawUrl;
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
+      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
+      return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
+    },
+    [projectPath, previewMountBasePath],
+  );
+  const loadScreenshotIndex = useCallback(async () => {
+    const indexPath = resolveScreenshotIndexPath();
+    if (!indexPath) return [];
+    try {
+      const raw = await (Neutralino as any).filesystem.readFile(indexPath);
+      const parsed = JSON.parse(String(raw || "[]"));
+      if (Array.isArray(parsed)) {
+        return parsed as ScreenshotMetadata[];
+      }
+    } catch {
+      // Ignore missing or malformed index.
+    }
+    return [];
+  }, [resolveScreenshotIndexPath]);
+  const writeScreenshotIndex = useCallback(
+    async (items: ScreenshotMetadata[]) => {
+      const indexPath = resolveScreenshotIndexPath();
+      if (!indexPath) return;
+      await ensureDirectoryForFile(indexPath);
+      await (Neutralino as any).filesystem.writeFile(
+        indexPath,
+        JSON.stringify(items, null, 2),
+      );
+    },
+    [ensureDirectoryForFile, resolveScreenshotIndexPath],
+  );
+  const findVisiblePopupInDoc = useCallback((doc: Document | null) => {
+    if (!doc) return null;
+    const selectors = [
+      "[data-popup-id]",
+      ".modal",
+      ".dialog",
+      "[role='dialog']",
+      ".popup",
+    ];
+    const candidates = selectors
+      .flatMap((selector) =>
+        Array.from(doc.querySelectorAll(selector)) as HTMLElement[],
+      )
+      .filter(Boolean);
+    for (const el of candidates) {
+      const style = doc.defaultView?.getComputedStyle(el);
+      if (!style) continue;
+      if (style.display === "none" || style.visibility === "hidden") continue;
+      if (Number.parseFloat(style.opacity || "1") <= 0.05) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      const popupId = el.getAttribute("data-popup-id") || el.id || null;
+      const popupSelector = el.getAttribute("data-popup-id")
+        ? `[data-popup-id="${el.getAttribute("data-popup-id")}"]`
+        : el.id
+          ? `#${el.id}`
+          : null;
+      return { popupId, popupSelector };
+    }
+    return null;
+  }, []);
+  const openPopupInPreview = useCallback(
+    (selector: string | null, popupId: string | null) => {
+      const doc =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!doc) return false;
+      let target: HTMLElement | null = null;
+      if (selector) {
+        target = doc.querySelector(selector) as HTMLElement | null;
+      }
+      if (!target && popupId) {
+        target = doc.querySelector(
+          `[data-popup-id="${popupId}"], #${popupId}`,
+        ) as HTMLElement | null;
+      }
+      if (!target) return false;
+      target.style.display = target.style.display || "block";
+      target.style.visibility = "visible";
+      target.style.opacity = target.style.opacity || "1";
+      target.classList.add("open", "active", "show");
+      target.classList.remove("hidden", "is-hidden", "closed");
+      target.removeAttribute("hidden");
+      target.setAttribute("aria-hidden", "false");
+      target.style.pointerEvents = "auto";
+      target.scrollIntoView({ block: "center", inline: "center" });
+      return true;
+    },
+    [],
+  );
+  const handleScreenshotCapture = useCallback(async () => {
+    if (!projectPath || screenshotCaptureBusy) return;
+    const doc =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!doc?.body) return;
+    setScreenshotCaptureBusy(true);
+    try {
+      const popupInfo = findVisiblePopupInDoc(doc);
+      const createdAt = new Date();
+      const slidePath = selectedPreviewHtmlRef.current || null;
+      const slideId = slidePath
+        ? normalizePath(slidePath).split("/").filter(Boolean).slice(-2)[0] ||
+          null
+        : null;
+      const timestamp = createdAt.getTime();
+      const randTag = Math.random().toString(36).slice(2, 8);
+      // Keep filenames short to avoid Windows path length limits.
+      const baseName = `screenshot-${timestamp}-${randTag}`;
+      const imageRelPath = `${SCREENSHOT_DIR}/${baseName}.png`;
+      const jsonRelPath = `${SCREENSHOT_DIR}/${baseName}.json`;
+      const absImagePath = `${normalizePath(projectPath)}/${imageRelPath}`;
+      const absJsonPath = `${normalizePath(projectPath)}/${jsonRelPath}`;
+      await ensureDirectoryForFile(absImagePath);
+      const canvas = await html2canvas(doc.body, {
+        backgroundColor: null,
+        useCORS: true,
+        scale: Math.max(1, window.devicePixelRatio || 1),
+        onclone: (clonedDoc) => {
+          const images = clonedDoc.querySelectorAll("img");
+          images.forEach((img) => {
+            const next = resolvePreviewAssetUrl(img.getAttribute("src"));
+            if (next) img.setAttribute("src", next);
+          });
+          const sources = clonedDoc.querySelectorAll("source");
+          sources.forEach((source) => {
+            const next = resolvePreviewAssetUrl(source.getAttribute("src"));
+            if (next) source.setAttribute("src", next);
+          });
+          const links = clonedDoc.querySelectorAll("link[rel='stylesheet']");
+          links.forEach((link) => {
+            const next = resolvePreviewAssetUrl(link.getAttribute("href"));
+            if (next) link.setAttribute("href", next);
+          });
+        },
+      });
+      const dataUrl = canvas.toDataURL("image/png");
+      const bytes = dataUrlToBytes(dataUrl);
+      await (Neutralino as any).filesystem.writeBinaryFile(
+        absImagePath,
+        bytes,
+      );
+      const metadata: ScreenshotMetadata = {
+        id: `${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: createdAt.toISOString(),
+        projectPath: normalizePath(projectPath),
+        slidePath,
+        slideId,
+        popupId: popupInfo?.popupId || null,
+        popupSelector: popupInfo?.popupSelector || null,
+        deviceMode,
+        tabletModel,
+        tabletOrientation,
+        frameZoom,
+        viewportWidth: doc.body.scrollWidth,
+        viewportHeight: doc.body.scrollHeight,
+        previewMode,
+        interactionMode,
+        imagePath: imageRelPath,
+        imageFileName: `${baseName}.png`,
+      };
+      await ensureDirectoryForFile(absJsonPath);
+      await (Neutralino as any).filesystem.writeFile(
+        absJsonPath,
+        JSON.stringify(metadata, null, 2),
+      );
+      const existing = await loadScreenshotIndex();
+      const nextIndex = [metadata, ...existing];
+      await writeScreenshotIndex(nextIndex);
+      setScreenshotItems(nextIndex);
+    } catch (error) {
+      console.error("Screenshot capture failed:", error);
+      window.alert("Screenshot capture failed. Check console for details.");
+    } finally {
+      setScreenshotCaptureBusy(false);
+    }
+  }, [
+    projectPath,
+    screenshotCaptureBusy,
+    deviceMode,
+    tabletModel,
+    tabletOrientation,
+    frameZoom,
+    previewMode,
+    interactionMode,
+    dataUrlToBytes,
+    ensureDirectoryForFile,
+    findVisiblePopupInDoc,
+    loadScreenshotIndex,
+    resolvePreviewAssetUrl,
+    writeScreenshotIndex,
+  ]);
+  const loadGalleryItems = useCallback(async () => {
+    const items = await loadScreenshotIndex();
+    setScreenshotItems(items);
+    if (!projectPath) return items;
+    const nextUrls: Record<string, string> = {};
+    await Promise.all(
+      items.map(async (item) => {
+        const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
+        try {
+          const binary = await (Neutralino as any).filesystem.readBinaryFile(
+            absImage,
+          );
+          const bytes = toByteArray(binary);
+          const arrayBuffer = bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+          ) as ArrayBuffer;
+          const blob = new Blob([arrayBuffer], { type: "image/png" });
+          nextUrls[item.id] = URL.createObjectURL(blob);
+        } catch (error) {
+          console.warn("Failed to read screenshot image:", error);
+        }
+      }),
+    );
+    setScreenshotPreviewUrls((prev) => {
+      Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
+      return nextUrls;
+    });
+    return items;
+  }, [loadScreenshotIndex, projectPath]);
+  const openScreenshotGallery = useCallback(
+    async (captureNow: boolean) => {
+      if (!SHOW_SCREENSHOT_FEATURES) return;
+      if (!projectPath) return;
+      if (!screenshotSessionRestore) {
+        setScreenshotSessionRestore({
+          leftOpen: isLeftPanelOpen,
+          rightOpen: isRightPanelOpen,
+          rightMode: rightPanelMode,
+        });
+      }
+      setIsLeftPanelOpen(false);
+      setIsRightPanelOpen(true);
+      setRightPanelMode("gallery");
+      setIsScreenshotGalleryOpen(true);
+      await loadGalleryItems();
+      if (captureNow) {
+        void handleScreenshotCapture();
+      }
+    },
+    [
+      projectPath,
+      screenshotSessionRestore,
+      isLeftPanelOpen,
+      isRightPanelOpen,
+      rightPanelMode,
+      loadGalleryItems,
+      handleScreenshotCapture,
+      SHOW_SCREENSHOT_FEATURES,
+    ],
+  );
+  const closeScreenshotGallery = useCallback(() => {
+    setIsScreenshotGalleryOpen(false);
+    if (screenshotSessionRestore) {
+      setIsLeftPanelOpen(screenshotSessionRestore.leftOpen);
+      setIsRightPanelOpen(screenshotSessionRestore.rightOpen);
+      setRightPanelMode(screenshotSessionRestore.rightMode);
+      setScreenshotSessionRestore(null);
+      return;
+    }
+    setRightPanelMode("inspector");
+  }, [screenshotSessionRestore]);
+  useEffect(() => {
+    if (rightPanelMode === "gallery" && !isRightPanelOpen) {
+      closeScreenshotGallery();
+    }
+  }, [rightPanelMode, isRightPanelOpen, closeScreenshotGallery]);
+  useEffect(() => {
+    if (isScreenshotGalleryOpen) {
+      void loadGalleryItems();
+    }
+  }, [isScreenshotGalleryOpen, loadGalleryItems]);
+  useEffect(() => {
+    if (!isScreenshotGalleryOpen && rightPanelMode === "gallery") {
+      setRightPanelMode("inspector");
+    }
+  }, [isScreenshotGalleryOpen, rightPanelMode, SHOW_SCREENSHOT_FEATURES]);
+  useEffect(() => {
+    if (!SHOW_SCREENSHOT_FEATURES) {
+      if (isScreenshotGalleryOpen) {
+        setIsScreenshotGalleryOpen(false);
+      }
+      if (rightPanelMode === "gallery") {
+        setRightPanelMode("inspector");
+      }
+    }
+  }, [isScreenshotGalleryOpen, rightPanelMode]);
+  const handleOpenScreenshotItem = useCallback(
+    async (item: ScreenshotMetadata) => {
+      if (!item.slidePath) return;
+      setPreviewMode("preview");
+      setInteractionMode("preview");
+      setSelectedId(null);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+      setPreviewNavigationFile(item.slidePath);
+      pendingPopupOpenRef.current = {
+        selector: item.popupSelector,
+        popupId: item.popupId,
+      };
+      window.setTimeout(() => {
+        if (!pendingPopupOpenRef.current) return;
+        const success = openPopupInPreview(
+          pendingPopupOpenRef.current.selector,
+          pendingPopupOpenRef.current.popupId,
+        );
+        if (success) {
+          pendingPopupOpenRef.current = null;
+        }
+      }, 700);
+    },
+    [openPopupInPreview],
+  );
+  const handleDeleteScreenshotItem = useCallback(
+    async (item: ScreenshotMetadata) => {
+      if (!projectPath) return;
+      const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
+      const absJson = absImage.replace(/\.png$/i, ".json");
+      try {
+        await (Neutralino as any).filesystem.remove(absImage);
+      } catch {}
+      try {
+        await (Neutralino as any).filesystem.remove(absJson);
+      } catch {}
+      const nextItems = screenshotItems.filter((entry) => entry.id !== item.id);
+      setScreenshotItems(nextItems);
+      setScreenshotPreviewUrls((prev) => {
+        const next = { ...prev };
+        if (next[item.id]) {
+          URL.revokeObjectURL(next[item.id]);
+          delete next[item.id];
+        }
+        return next;
+      });
+      await writeScreenshotIndex(nextItems);
+    },
+    [projectPath, screenshotItems, writeScreenshotIndex],
+  );
+  const handleRevealScreenshotsFolder = useCallback(async () => {
+    const folderPath = resolveScreenshotDir();
+    if (!folderPath) return;
+    try {
+      await (Neutralino as any).os.open({ url: folderPath });
+    } catch (error) {
+      console.warn("Failed to open screenshots folder:", error);
+    }
+  }, [resolveScreenshotDir]);
+  const handleExportEditablePdf = useCallback(async () => {
+    if (!projectPath || isPdfExporting) return;
+    const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+    const scriptPath = appRoot
+      ? `${appRoot}/scripts/export_slides_pdf.mjs`
+      : "";
+    if (!scriptPath) return;
+    const exportDir = resolvePdfExportDir();
+    if (!exportDir) return;
+    setIsPdfExporting(true);
+    setPdfExportLogs(["Starting editable PDF export..."]);
+    try {
+      await ensureDirectoryTree(exportDir);
+      const command = `node "${scriptPath}" "${normalizePath(
+        projectPath,
+      )}" "${exportDir}"`;
+      const execResult = await (Neutralino as any).os.execCommand(command);
+      const output = String(execResult?.stdOut || "").trim();
+      const errorOutput = String(execResult?.stdErr || "").trim();
+      const nextLogs: string[] = [];
+      if (output) nextLogs.push(...output.split(/\r?\n/));
+      if (errorOutput) nextLogs.push(...errorOutput.split(/\r?\n/));
+      if ((execResult?.exitCode ?? 1) !== 0) {
+        nextLogs.push("Export failed. See logs above.");
+      } else if (nextLogs.length === 0) {
+        nextLogs.push("Export finished.");
+      }
+      setPdfExportLogs((prev) => [...prev, ...nextLogs]);
+    } catch (error) {
+      console.error("Editable PDF export failed:", error);
+      setPdfExportLogs((prev) => [
+        ...prev,
+        "Export failed. Check console for details.",
+      ]);
+    } finally {
+      setIsPdfExporting(false);
+    }
+  }, [projectPath, isPdfExporting, ensureDirectoryTree, resolvePdfExportDir]);
+  const clearPdfExportLogs = useCallback(() => {
+    setPdfExportLogs([]);
+  }, []);
+  const refreshProjectFiles = useCallback(async () => {
+    if (!projectPath) return;
+    if (isRefreshingFilesRef.current) return;
+    isRefreshingFilesRef.current = true;
+    try {
+      const rootPath = normalizePath(projectPath);
+      const nextFiles: FileMap = {};
+      const absolutePathIndex: Record<string, string> = {};
+      const upsertFile = (virtualPath: string, absolutePath: string) => {
+        const normalizedVirtual = normalizeProjectRelative(virtualPath);
+        if (!normalizedVirtual) return;
+        const existing = nextFiles[normalizedVirtual];
+        if (existing) return;
+        const name = normalizedVirtual.includes("/")
+          ? normalizedVirtual.slice(normalizedVirtual.lastIndexOf("/") + 1)
+          : normalizedVirtual;
+        const oldEntry = filesRef.current[normalizedVirtual];
+        const cachedText = textFileCacheRef.current[normalizedVirtual];
+        const cachedBinary = binaryAssetUrlCacheRef.current[normalizedVirtual];
+        let content: string | Blob = "";
+        if (
+          oldEntry &&
+          typeof oldEntry.content === "string" &&
+          oldEntry.content.length > 0
+        ) {
+          content = oldEntry.content;
+        } else if (typeof cachedText === "string" && cachedText.length > 0) {
+          content = cachedText;
+        } else if (
+          typeof cachedBinary === "string" &&
+          cachedBinary.length > 0
+        ) {
+          content = cachedBinary;
+        }
+        nextFiles[normalizedVirtual] = {
+          path: normalizedVirtual,
+          name,
+          type: inferFileType(name),
+          content,
+        };
+        absolutePathIndex[normalizedVirtual] = normalizePath(absolutePath);
+      };
+
+      const walkDirectory = async (directoryPath: string): Promise<void> => {
+        const entries = await (Neutralino as any).filesystem.readDirectory(
+          directoryPath,
+        );
+        for (const entry of entries as Array<{ entry: string; type: string }>) {
+          if (!entry?.entry || entry.entry === "." || entry.entry === "..")
+            continue;
+          const absolutePath = joinPath(directoryPath, entry.entry);
+          if (entry.type === "DIRECTORY") {
+            if (IGNORED_FOLDERS.has(entry.entry.toLowerCase())) continue;
+            await walkDirectory(absolutePath);
+            continue;
+          }
+          if (entry.type !== "FILE") continue;
+          const normalizedAbsolute = normalizePath(absolutePath);
+          const relativePath = normalizedAbsolute
+            .replace(`${rootPath}/`, "")
+            .replace(rootPath, "")
+            .replace(/^\/+/, "");
+          if (!relativePath) continue;
+          upsertFile(relativePath, normalizedAbsolute);
+        }
+      };
+
+      await walkDirectory(rootPath);
+
+      for (const [virtualPath, absolutePath] of Object.entries(
+        filePathIndexRef.current,
+      )) {
+        if (!virtualPath.toLowerCase().startsWith("shared/")) continue;
+        if (absolutePathIndex[virtualPath]) continue;
+        try {
+          await (Neutralino as any).filesystem.getStats(absolutePath);
+          upsertFile(virtualPath, absolutePath);
+        } catch {
+          // Removed shared file; ignore.
+        }
+      }
+
+      filePathIndexRef.current = absolutePathIndex;
+      setFiles(nextFiles);
+      setCodeDraftByPath((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(
+            ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
+          ),
+        ),
+      );
+      setCodeDirtyPathSet(
+        (prev) =>
+          Object.fromEntries(
+            Object.entries(prev).filter(
+              ([path]) =>
+                nextFiles[path] && isTextFileType(nextFiles[path].type),
+            ),
+          ) as Record<string, true>,
+      );
+      setDirtyFiles((prev) => prev.filter((path) => Boolean(nextFiles[path])));
+
+      const existingActive = activeFileRef.current;
+      const preferredPreview = selectedPreviewHtmlRef.current;
+      if (!existingActive || !nextFiles[existingActive]) {
+        const fallback =
+          (preferredPreview && nextFiles[preferredPreview]
+            ? preferredPreview
+            : null) ??
+          pickDefaultHtmlFile(nextFiles) ??
+          Object.keys(nextFiles).find((path) =>
+            isTextFileType(nextFiles[path].type),
+          ) ??
+          null;
+        setActiveFileStable(fallback);
+        setPreviewSyncedFile(fallback);
+        setPreviewNavigationFile(fallback);
+      }
+    } catch (error) {
+      console.warn("Failed to refresh file index:", error);
+    } finally {
+      isRefreshingFilesRef.current = false;
+    }
+  }, [projectPath, setActiveFileStable]);
+  const handleCreateFileAtPath = useCallback(
+    async (parentPath: string) => {
+      if (!projectPath) return;
+      const defaultName = "new-file.html";
+      const nextName = window.prompt("New file name", defaultName);
+      if (!nextName) return;
+      const cleanedName = normalizeProjectRelative(nextName);
+      if (!cleanedName) return;
+
+      const baseVirtual = normalizeProjectRelative(parentPath || "");
+      const nextVirtual = normalizeProjectRelative(
+        baseVirtual ? `${baseVirtual}/${cleanedName}` : cleanedName,
+      );
+      if (!nextVirtual) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("A file with the same path already exists.");
+        return;
+      }
+
+      const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
+      const absoluteParent = getParentPath(absolutePath);
+      if (absoluteParent) {
+        await ensureDirectoryTree(absoluteParent);
+      }
+      try {
+        await (Neutralino as any).filesystem.writeFile(absolutePath, "");
+      } catch (error) {
+        console.warn("Failed to create file:", error);
+        window.alert("Could not create file.");
+        return;
+      }
+      await refreshProjectFiles();
+      setActiveFileStable(nextVirtual);
+      setPreviewSyncedFile((prev) =>
+        prev === nextVirtual ? prev : nextVirtual,
+      );
+      setPreviewNavigationFile((prev) =>
+        prev === nextVirtual ? prev : nextVirtual,
+      );
+      setIsLeftPanelOpen(true);
+    },
+    [
+      ensureDirectoryTree,
+      projectPath,
+      refreshProjectFiles,
+      setActiveFileStable,
+    ],
+  );
+  const handleCreateFolderAtPath = useCallback(
+    async (parentPath: string) => {
+      if (!projectPath) return;
+      if (!selectedFolderCloneSource) {
+        setIsConfigModalOpen(true);
+        return;
+      }
+      const nextName = window.prompt("New folder name", "new-folder");
+      if (!nextName) return;
+      const cleanedName = normalizeProjectRelative(nextName);
+      if (!cleanedName) return;
+      const baseVirtual = normalizeProjectRelative(parentPath || "");
+      const nextVirtual = normalizeProjectRelative(
+        baseVirtual ? `${baseVirtual}/${cleanedName}` : cleanedName,
+      );
+      if (!nextVirtual) return;
+      const absoluteSource = normalizePath(
+        joinPath(projectPath, selectedFolderCloneSource),
+      );
+      const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
+      try {
+        await (Neutralino as any).filesystem.copy(
+          absoluteSource,
+          absolutePath,
+          {
+            recursive: true,
+            overwrite: false,
+            skip: false,
+          },
+        );
+      } catch (error) {
+        console.warn("Failed to clone directory:", error);
+        window.alert("Could not clone folder.");
+        return;
+      }
+      await refreshProjectFiles();
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, selectedFolderCloneSource],
+  );
+  const handleRenamePath = useCallback(
+    async (path: string) => {
+      if (!projectPath) return;
+      if (!path) return;
+      const currentName = path.includes("/")
+        ? path.slice(path.lastIndexOf("/") + 1)
+        : path;
+      const nextName = window.prompt("Rename to", currentName);
+      if (!nextName) return;
+      const normalizedName = normalizeProjectRelative(nextName);
+      if (!normalizedName) return;
+      const parentVirtual = getParentPath(path) || "";
+      const nextVirtual = normalizeProjectRelative(
+        parentVirtual ? `${parentVirtual}/${normalizedName}` : normalizedName,
+      );
+      if (!nextVirtual || nextVirtual === path) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("Another item with the same name already exists.");
+        return;
+      }
+      const absoluteSource =
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
+      const absoluteParent = getParentPath(absoluteSource);
+      if (!absoluteParent) return;
+      const absoluteDestination = normalizePath(
+        joinPath(absoluteParent, normalizedName),
+      );
+      try {
+        await (Neutralino as any).filesystem.move(
+          absoluteSource,
+          absoluteDestination,
+        );
+      } catch (error) {
+        console.warn("Rename failed:", error);
+        window.alert("Could not rename item.");
+        return;
+      }
+      await refreshProjectFiles();
+      if (activeFileRef.current === path) {
+        setActiveFileStable(nextVirtual);
+      }
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  const handleDeletePath = useCallback(
+    async (path: string, kind: "file" | "folder") => {
+      if (!projectPath || !path) return;
+      const label = kind === "folder" ? "folder" : "file";
+      const ok = window.confirm(`Delete ${label} "${path}"?`);
+      if (!ok) return;
+      const absoluteTarget =
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
+      try {
+        await (Neutralino as any).filesystem.remove(absoluteTarget);
+      } catch (error) {
+        console.warn("Delete failed:", error);
+        window.alert("Could not delete item.");
+        return;
+      }
+      if (
+        activeFileRef.current &&
+        (activeFileRef.current === path ||
+          activeFileRef.current.startsWith(`${path}/`))
+      ) {
+        setActiveFileStable(null);
+      }
+      await refreshProjectFiles();
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  const handleDuplicateFile = useCallback(
+    async (path: string) => {
+      if (!projectPath || !path) return;
+      const absoluteSource =
+        filePathIndexRef.current[path] ||
+        normalizePath(joinPath(projectPath, path));
+      const currentName = path.includes("/")
+        ? path.slice(path.lastIndexOf("/") + 1)
+        : path;
+      const dotIndex = currentName.lastIndexOf(".");
+      const stem = dotIndex > 0 ? currentName.slice(0, dotIndex) : currentName;
+      const ext = dotIndex > 0 ? currentName.slice(dotIndex) : "";
+      const defaultName = `${stem}-copy${ext}`;
+      const nextName = window.prompt("Duplicate as", defaultName);
+      if (!nextName) return;
+      const normalizedName = normalizeProjectRelative(nextName);
+      if (!normalizedName) return;
+      const parentVirtual = getParentPath(path) || "";
+      const nextVirtual = normalizeProjectRelative(
+        parentVirtual ? `${parentVirtual}/${normalizedName}` : normalizedName,
+      );
+      if (!nextVirtual) return;
+      if (filesRef.current[nextVirtual]) {
+        window.alert("A file with this name already exists.");
+        return;
+      }
+      const absoluteParent = getParentPath(absoluteSource);
+      if (!absoluteParent) return;
+      const absoluteDestination = normalizePath(
+        joinPath(absoluteParent, normalizedName),
+      );
+      try {
+        await (Neutralino as any).filesystem.copy(
+          absoluteSource,
+          absoluteDestination,
+          {
+            recursive: false,
+            overwrite: false,
+            skip: false,
+          },
+        );
+      } catch (error) {
+        console.warn("Duplicate failed:", error);
+        window.alert("Could not duplicate file.");
+        return;
+      }
+      await refreshProjectFiles();
+      setActiveFileStable(nextVirtual);
+      setIsLeftPanelOpen(true);
+    },
+    [projectPath, refreshProjectFiles, setActiveFileStable],
+  );
+  useEffect(() => {
+    if (!projectPath) return;
+    const timer = window.setInterval(() => {
+      void refreshProjectFiles();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [projectPath, refreshProjectFiles]);
+  const resolveAdjacentSlidePath = useCallback(
+    (fromPath: string, dir: "next" | "prev"): string | null => {
+      const normalizedFrom = normalizeProjectRelative(String(fromPath || ""));
+      const fromMatch = normalizePath(normalizedFrom).match(
+        /^(.*_)([0-9]{3,})\/index\.html$/i,
+      );
+      if (!fromMatch) return null;
+      const familyPrefix = fromMatch[1].toLowerCase();
+      const currentNorm = normalizedFrom.toLowerCase();
+      const slides = Object.keys(filesRef.current)
+        .filter((path) => filesRef.current[path]?.type === "html")
+        .map((path) => {
+          const match = normalizePath(path).match(
+            /^(.*_)([0-9]{3,})\/index\.html$/i,
+          );
+          if (!match || match[1].toLowerCase() !== familyPrefix) {
+            return null;
+          }
+          return {
+            path,
+            normalized: normalizeProjectRelative(path).toLowerCase(),
+            num: Number.parseInt(match[2], 10),
+          };
+        })
+        .filter(
+          (entry): entry is { path: string; normalized: string; num: number } =>
+            Boolean(entry),
+        )
+        .sort((a, b) =>
+          a.num !== b.num ? a.num - b.num : a.path.localeCompare(b.path),
+        );
+      if (slides.length === 0) return null;
+      const index = slides.findIndex((item) => item.normalized === currentNorm);
+      if (index < 0) return null;
+      const nextIndex = dir === "next" ? index + 1 : index - 1;
+      if (nextIndex < 0 || nextIndex >= slides.length) return null;
+      return slides[nextIndex].path;
+    },
+    [],
+  );
+  const resolveExplorerHtmlPath = useCallback(
+    (rawPath: string): string | null => {
+      const normalized = normalizeProjectRelative(String(rawPath || ""));
+      if (!normalized) return null;
+
+      const direct =
+        findFilePathCaseInsensitive(filesRef.current, normalized) || normalized;
+      const directFile = filesRef.current[direct];
+      if (directFile?.type === "html") return direct;
+
+      const baseFolder = direct.replace(/\/+$/, "");
+      const directIndex = findFilePathCaseInsensitive(
+        filesRef.current,
+        `${baseFolder}/index.html`,
+      );
+      if (directIndex && filesRef.current[directIndex]?.type === "html") {
+        return directIndex;
+      }
+
+      const htmlUnderFolder = Object.keys(filesRef.current)
+        .filter((path) => {
+          const normalizedPath = normalizeProjectRelative(path);
+          if (!normalizedPath.startsWith(`${baseFolder}/`)) return false;
+          return filesRef.current[path]?.type === "html";
+        })
+        .sort((a, b) => a.localeCompare(b));
+      if (htmlUnderFolder.length === 0) return null;
+      return htmlUnderFolder[0];
+    },
+    [],
+  );
   const handleSelectFile = useCallback(
     (path: string) => {
-      console.log("[Preview] Current page:", path);
-      if (activeFileRef.current === path) {
-        setIsLeftPanelOpen(true);
+      const resolvedPath = resolveExplorerHtmlPath(path) || path;
+      console.log("[Preview] Current page:", resolvedPath);
+
+      const currentPath = selectedPreviewHtmlRef.current;
+      const targetIsHtml = filesRef.current[resolvedPath]?.type === "html";
+
+      if (targetIsHtml) {
+        // THE FIX: Tag the exact time of the user's manual click
+        (window as any).__explorerNavTime = Date.now();
+      }
+
       if (
-          files[path]?.type === "html" &&
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        targetIsHtml &&
+        currentPath &&
+        currentPath !== resolvedPath &&
+        hasUnsavedChangesForFile(currentPath)
+      ) {
+        setPendingPageSwitch({
+          mode: "switch",
+          fromPath: currentPath,
+          nextPath: resolvedPath,
+          source: "explorer",
+        });
+        setIsPageSwitchPromptOpen(true);
+        setIsLeftPanelOpen(true);
+        return;
+      }
+
+      if (activeFileRef.current === resolvedPath) {
+        setIsLeftPanelOpen(true);
+        if (
+          filesRef.current[resolvedPath]?.type === "html" &&
           interactionModeRef.current !== "preview"
         ) {
           setInteractionMode("preview");
         }
         return;
       }
-      syncPreviewActiveFile(path, "explorer");
+
+      if (targetIsHtml) {
+        explorerSelectionLockRef.current = resolvedPath;
+        explorerSelectionLockUntilRef.current =
+          Date.now() + EXPLORER_LOCK_TTL_MS;
+      }
+      syncPreviewActiveFile(resolvedPath, "explorer");
       setIsLeftPanelOpen(true);
     },
-    [files, syncPreviewActiveFile],
+    [
+      EXPLORER_LOCK_TTL_MS,
+      hasUnsavedChangesForFile,
+      resolveExplorerHtmlPath,
+      syncPreviewActiveFile,
+    ],
   );
   const selectedElement = selectedId ? findElementById(root, selectedId) : null;
-  const selectedPreviewHtml = useMemo(() => {
-    if (!projectPath) return null;
-    if (activeFile && files[activeFile]?.type === "html") return activeFile;
-    return pickDefaultHtmlFile(files);
-  }, [activeFile, files, projectPath]);
-  const selectedPreviewSrc = useMemo(() => {
-    if (!selectedPreviewHtml || !isPreviewMountReady || !previewMountBasePath) {
+  const selectedPathIds = useMemo(
+    () => collectPathIdsToElement(root, selectedId),
+    [root, selectedId],
+  );
+  const previewLayerSelectedId = useMemo(() => {
+    if (
+      interactionMode !== "preview" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
       return null;
     }
-    const absolutePath = filePathIndexRef.current[selectedPreviewHtml];
+    return toPreviewLayerId(previewSelectedPath);
+  }, [interactionMode, previewSelectedPath]);
+  const previewLayersRoot = useMemo<VirtualElement>(() => {
+    if (interactionMode !== "preview") return root;
+    const emptyPreviewRoot: VirtualElement = {
+      id: "preview-live-root",
+      type: "body",
+      name: "Body",
+      content: "",
+      html: "",
+      styles: {},
+      children: [],
+    };
+    const liveDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    const liveBody = liveDocument?.body ?? null;
+    if (liveBody) {
+      return {
+        id: "preview-live-root",
+        type: "body",
+        name: "Body",
+        content: "",
+        html: liveBody.innerHTML || "",
+        styles: {},
+        children: Array.from(liveBody.children).map((child, index) =>
+          buildPreviewLayerTreeFromElement(child, [index]),
+        ),
+      };
+    }
+    const activeHtmlPath = selectedPreviewHtmlRef.current;
+    const activeHtmlFile =
+      activeHtmlPath && files[activeHtmlPath] ? files[activeHtmlPath] : null;
+    const activeHtmlContent =
+      activeHtmlFile && typeof activeHtmlFile.content === "string"
+        ? activeHtmlFile.content
+        : "";
+    const fallbackHtml =
+      activeHtmlPath &&
+      typeof textFileCacheRef.current[activeHtmlPath] === "string"
+        ? textFileCacheRef.current[activeHtmlPath]
+        : "";
+    const sourceHtml =
+      activeHtmlContent && activeHtmlContent.trim().length > 0
+        ? activeHtmlContent
+        : fallbackHtml && fallbackHtml.trim().length > 0
+          ? fallbackHtml
+          : selectedPreviewDoc;
+    if (!sourceHtml || sourceHtml.trim().length === 0) return emptyPreviewRoot;
+    try {
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const body = parsed.body;
+      return {
+        id: "preview-live-root",
+        type: "body",
+        name: "Body",
+        content: "",
+        html: body?.innerHTML || "",
+        styles: {},
+        children: body
+          ? Array.from(body.children).map((child, index) =>
+              buildPreviewLayerTreeFromElement(child, [index]),
+            )
+          : [],
+      };
+    } catch {
+      return emptyPreviewRoot;
+    }
+  }, [files, interactionMode, previewRefreshNonce, root, selectedPreviewDoc]);
+  const selectPreviewElementAtPath = useCallback((path: number[]) => {
+    if (
+      interactionModeRef.current !== "preview" ||
+      !Array.isArray(path) ||
+      path.length === 0
+    ) {
+      return;
+    }
+    const frameDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!frameDocument?.body) return;
+    const target = readElementByPath(frameDocument.body, path);
+    if (!target) return;
+    Array.from(
+      frameDocument.querySelectorAll<HTMLElement>(".__nx-preview-selected"),
+    ).forEach((el) => el.classList.remove("__nx-preview-selected"));
+    target.classList.add("__nx-preview-selected");
+    const inlineStyles = parseInlineStyleText(
+      target.getAttribute("style") || "",
+    );
+    const computedStyles = extractComputedStylesFromElement(target);
+    const mergedStyles: React.CSSProperties = {
+      ...(computedStyles || {}),
+      ...inlineStyles,
+    };
+    const nextElement: VirtualElement = {
+      id:
+        target.getAttribute("id") ||
+        `preview-${toPreviewLayerId(path)}-${Date.now()}`,
+      type: String(target.tagName || "div").toLowerCase(),
+      name: String(target.tagName || "div").toUpperCase(),
+      content: normalizeEditorMultilineText(extractTextWithBreaks(target)),
+      html: target instanceof HTMLElement ? target.innerHTML || "" : "",
+      ...(target.getAttribute("src")
+        ? { src: target.getAttribute("src") || "" }
+        : {}),
+      ...(target.getAttribute("href")
+        ? { href: target.getAttribute("href") || "" }
+        : {}),
+      ...(target.getAttribute("class")
+        ? { className: target.getAttribute("class") || "" }
+        : {}),
+      ...(extractCustomAttributesFromElement(target)
+        ? { attributes: extractCustomAttributesFromElement(target) || {} }
+        : {}),
+      styles: mergedStyles,
+      children: [],
+    };
+    setPreviewSelectedPath(path);
+    setPreviewSelectedElement(nextElement);
+    setPreviewSelectedComputedStyles(computedStyles);
+    setSelectedId(null);
+    setIsCodePanelOpen(false);
+    setIsRightPanelOpen(true);
+  }, []);
+  const handleSidebarSelectElement = useCallback(
+    (id: string) => {
+      const previewPath = fromPreviewLayerId(id);
+      if (previewPath) {
+        selectPreviewElementAtPath(previewPath);
+        return;
+      }
+      handleSelect(id);
+    },
+    [handleSelect, selectPreviewElementAtPath],
+  );
+  const inspectorElement = previewSelectedElement ?? selectedElement;
+  const selectedPreviewHtml = useMemo(() => {
+    if (!projectPath) return null;
+    if (previewSyncedFile && files[previewSyncedFile]?.type === "html") {
+      return previewSyncedFile;
+    }
+    if (activeFile && files[activeFile]?.type === "html") return activeFile;
+    return pickDefaultHtmlFile(files);
+  }, [activeFile, files, previewSyncedFile, projectPath]);
+  const currentPreviewSlideId = useMemo(() => {
+    if (!selectedPreviewHtml) return null;
+    const parts = normalizePath(selectedPreviewHtml).split("/").filter(Boolean);
+    return parts.length >= 2 ? parts[parts.length - 2] : null;
+  }, [selectedPreviewHtml]);
+  const unmappedPdfAnnotationCount = useMemo(
+    () =>
+      pdfAnnotationRecords.filter((record) => !record.mappedFilePath).length,
+    [pdfAnnotationRecords],
+  );
+
+  // Sync ref with reactive state for use in callbacks
+  useEffect(() => {
+    selectedPreviewHtmlRef.current = selectedPreviewHtml;
+  }, [selectedPreviewHtml]);
+
+  const resolveMappedLabelShort = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      const raw =
+        annotation.mappedSlideId ||
+        (annotation.mappedFilePath
+          ? annotation.mappedFilePath.split("/").filter(Boolean).slice(-2)[0]
+          : null);
+      if (!raw) return null;
+      const normalized = String(raw);
+      const match = normalized.match(/1\.\d/);
+      if (match) {
+        const index = normalized.lastIndexOf(match[0]);
+        if (index >= 0) {
+          const suffix = normalized.slice(index + match[0].length);
+          const cleaned = suffix
+            .replace(/^[\s._-]+/, "")
+            .replace(/[\s._-]+$/, "");
+          if (cleaned) {
+            const parts = cleaned.split(/[\s._-]+/).filter(Boolean);
+            if (parts.length > 0) return parts[parts.length - 1];
+          }
+        }
+      }
+      const parts = normalized.split(/[\s._-]+/).filter(Boolean);
+      return parts.length > 0 ? parts[parts.length - 1] : normalized;
+    },
+    [],
+  );
+  const visiblePdfAnnotations = useMemo(() => {
+    if (pdfAnnotationViewMode === "perSlide") {
+      if (!selectedPreviewHtml) return [];
+      return pdfAnnotationRecords.filter(
+        (record) => record.mappedFilePath === selectedPreviewHtml,
+      );
+    }
+    return pdfAnnotationRecords;
+  }, [pdfAnnotationRecords, pdfAnnotationViewMode, selectedPreviewHtml]);
+  const annotationsForCurrentSlide = useMemo(() => {
+    if (!selectedPreviewHtml) return [];
+    const normalizedCurrent = normalizePath(selectedPreviewHtml);
+    return pdfAnnotationRecords.filter((record) =>
+      record.mappedFilePath
+        ? normalizePath(record.mappedFilePath) === normalizedCurrent
+        : false,
+    );
+  }, [pdfAnnotationRecords, selectedPreviewHtml]);
+  const isPopupAnnotation = useCallback((annotation: PdfAnnotationUiRecord) => {
+    if (annotation.annotationStatus) {
+      return annotation.annotationStatus === "Popup";
+    }
+    if (annotation.detectedPageType === "Main") return false;
+    if (
+      annotation.subtype === "Popup" ||
+      annotation.detectedSubtype === "Popup"
+    ) {
+      return true;
+    }
+    if (annotation.detectedPageType === "Child/Popup") return true;
+    if (annotation.popupInvocation?.popupId) return true;
+    if (annotation.mappedFilePath?.includes("/shared/")) return true;
+    return false;
+  }, []);
+  const filteredAnnotationsForCurrentSlide = useMemo(() => {
+    if (pdfAnnotationTypeFilter === "all") return annotationsForCurrentSlide;
+    return annotationsForCurrentSlide.filter((annotation) => {
+      const isPopup = isPopupAnnotation(annotation);
+      return pdfAnnotationTypeFilter === "popup" ? isPopup : !isPopup;
+    });
+  }, [annotationsForCurrentSlide, pdfAnnotationTypeFilter, isPopupAnnotation]);
+  const focusedAnnotationForCurrentSlide = useMemo(() => {
+    if (!focusedPdfAnnotation || !selectedPreviewHtml) return null;
+    return focusedPdfAnnotation.mappedFilePath === selectedPreviewHtml
+      ? focusedPdfAnnotation
+      : null;
+  }, [focusedPdfAnnotation, selectedPreviewHtml]);
+  useEffect(() => {
+    const frame = previewFrameRef.current;
+    const doc = frame?.contentDocument;
+
+    const previous = previewFocusedPdfElementRef.current;
+    if (previous) {
+      previous.style.outline = "";
+      previous.style.boxShadow = "";
+      previous.style.transition = "";
+      previous.removeAttribute("data-nx-pdf-focus");
+      previewFocusedPdfElementRef.current = null;
+    }
+
+    if (!doc) return;
+
+    const previousHighlights = [
+      ...doc.querySelectorAll("[data-nx-pdf-anno]"),
+    ] as HTMLElement[];
+    for (const el of previousHighlights) {
+      el.style.outline = "";
+      el.style.boxShadow = "";
+      el.style.transition = "";
+      el.removeAttribute("data-nx-pdf-anno");
+    }
+
+    const normalizedCurrentPath = selectedPreviewHtml
+      ? normalizePath(selectedPreviewHtml)
+      : null;
+    const annotationsForCurrentSlide = normalizedCurrentPath
+      ? pdfAnnotationRecords.filter((record) =>
+          record.mappedFilePath
+            ? normalizePath(record.mappedFilePath) === normalizedCurrentPath
+            : false,
+        )
+      : [];
+
+    const resolveAnnotationTarget = (annotation: PdfAnnotationUiRecord) => {
+      const selectors = [
+        annotation.foundSelector,
+        annotation.popupInvocation?.triggerSelector,
+        annotation.popupInvocation?.containerSelector,
+      ].filter((entry): entry is string => Boolean(entry));
+      for (const selector of selectors) {
+        const node = doc.querySelector(selector) as HTMLElement | null;
+        if (node) return node;
+      }
+      return null;
+    };
+
+    const filteredAnnotations =
+      pdfAnnotationTypeFilter === "all"
+        ? annotationsForCurrentSlide
+        : annotationsForCurrentSlide.filter((annotation) => {
+            const isPopup = isPopupAnnotation(annotation);
+            return pdfAnnotationTypeFilter === "popup" ? isPopup : !isPopup;
+          });
+
+    for (const annotation of filteredAnnotations) {
+      const target = resolveAnnotationTarget(annotation);
+      if (!target) continue;
+      const isPopup = isPopupAnnotation(annotation);
+      target.setAttribute("data-nx-pdf-anno", "true");
+      target.style.transition = "outline 0.2s ease, box-shadow 0.2s ease";
+      target.style.outline = isPopup
+        ? "2px solid rgba(56,189,248,0.55)"
+        : "2px solid rgba(34,197,94,0.65)";
+      target.style.boxShadow = isPopup
+        ? "0 0 0 4px rgba(56,189,248,0.16)"
+        : "0 0 0 4px rgba(34,197,94,0.18)";
+    }
+
+    if (!focusedAnnotationForCurrentSlide) return;
+    const focusedIsPopup = isPopupAnnotation(focusedAnnotationForCurrentSlide);
+    if (
+      pdfAnnotationTypeFilter !== "all" &&
+      ((pdfAnnotationTypeFilter === "popup" && !focusedIsPopup) ||
+        (pdfAnnotationTypeFilter === "slide" && focusedIsPopup))
+    ) {
+      return;
+    }
+
+    // --- NEW: Close all existing dialogs first to ensure clean transition ---
+    try {
+      // 1. Click all obvious close buttons
+      const closeButtons = [
+        ...doc.querySelectorAll(
+          ".closeDialog, .close-dialog, .close, [data-dialog-close], .nx-close-overlay, .closePopup",
+        ),
+      ] as HTMLElement[];
+      for (const btn of closeButtons) {
+        try {
+          btn.click();
+        } catch {}
+      }
+
+      // 2. Force hide all common dialog containers
+      const containers = [
+        ...doc.querySelectorAll(
+          ".popup, .dialog, .modal, [role='dialog'], [data-popup-id], .nx-popup-overlay",
+        ),
+      ] as HTMLElement[];
+      for (const container of containers) {
+        container.style.display = "none";
+        container.style.visibility = "hidden";
+        container.classList.remove("open", "active", "show", "is-visible");
+        container.setAttribute("aria-hidden", "true");
+      }
+
+      // 3. Presentation Runtime Cleanup (GSK/Veeva specific)
+      const frameWindow = frame?.contentWindow as any;
+      if (frameWindow) {
+        if (frameWindow.com?.gsk?.mt?.closeDialog) {
+          try {
+            frameWindow.com.gsk.mt.closeDialog();
+          } catch {}
+        }
+        if (typeof frameWindow.$ === "function") {
+          try {
+            frameWindow
+              .$(".popup, .dialog, .modal")
+              .hide()
+              .removeClass("open active show");
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn("[NX] Failed to cleanup existing dialogs:", e);
+    }
+    // --------------------------------------------------------------------------
+
+    const focusedTarget = resolveAnnotationTarget(
+      focusedAnnotationForCurrentSlide,
+    );
+    if (focusedTarget) {
+      focusedTarget.setAttribute("data-nx-pdf-focus", "true");
+      focusedTarget.style.transition =
+        "outline 0.2s ease, box-shadow 0.2s ease";
+      focusedTarget.style.outline = "3px solid rgba(239,68,68,0.98)";
+      focusedTarget.style.boxShadow = "0 0 0 6px rgba(239,68,68,0.35)";
+      focusedTarget.scrollIntoView({ block: "center", inline: "center" });
+      previewFocusedPdfElementRef.current = focusedTarget;
+    }
+
+    return;
+
+    try {
+      const popupInvocation =
+        focusedAnnotationForCurrentSlide.popupInvocation || null;
+      const normalizePopupId = (value: string | null | undefined) => {
+        if (!value) return null;
+        const cleaned = String(value).trim();
+        if (!cleaned) return null;
+        return cleaned.replace(/^#/, "");
+      };
+      const extractPopupIdFromNode = (node: Element | null): string | null => {
+        if (!node) return null;
+        const direct =
+          normalizePopupId(node.getAttribute("data-dialog")) ||
+          normalizePopupId(node.getAttribute("data-target")) ||
+          normalizePopupId(node.getAttribute("href")) ||
+          normalizePopupId(node.getAttribute("data-popup-id")) ||
+          normalizePopupId((node as HTMLElement).id);
+        if (direct) return direct;
+        const onclick = node.getAttribute("onclick") || "";
+        const match = onclick.match(/dialog[\w-]*/i);
+        return normalizePopupId(match ? match[0] : null);
+      };
+      const getContainerSelectorFromElement = (
+        node: Element | null,
+      ): string | null => {
+        if (!node) return null;
+        const element = node as HTMLElement;
+        if (element.id) return `#${element.id}`;
+        const popupDataId = element.getAttribute("data-popup-id");
+        if (popupDataId) return `[data-popup-id="${popupDataId}"]`;
+        const role = element.getAttribute("role");
+        if (role === "dialog") return `[role="dialog"]`;
+        return null;
+      };
+      const overlapScore = (candidate: string, target: string) => {
+        const normalizedCandidate = candidate
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+        const normalizedTarget = target
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!normalizedCandidate || !normalizedTarget) return 0;
+        if (normalizedCandidate.includes(normalizedTarget)) return 120;
+        const candidateWords = normalizedCandidate
+          .split(/[^a-z0-9]+/i)
+          .filter((word) => word.length > 2);
+        const targetWords = new Set(
+          normalizedTarget
+            .split(/[^a-z0-9]+/i)
+            .filter((word) => word.length > 2),
+        );
+        if (!candidateWords.length || !targetWords.size) return 0;
+        let overlap = 0;
+        for (const word of candidateWords) {
+          if (targetWords.has(word)) overlap += 1;
+        }
+        if (overlap < 1) return 0;
+        return overlap * 14 + Math.min(candidateWords.length, 8);
+      };
+      const textHints = [
+        focusedAnnotationForCurrentSlide.annotationText,
+        focusedAnnotationForCurrentSlide.pdfContextText || "",
+        ...focusedAnnotationForCurrentSlide.threadEntries.map(
+          (entry) => entry.text,
+        ),
+      ]
+        .map((entry) => String(entry || "").trim())
+        .filter((entry) => entry.length > 0)
+        .slice(0, 8);
+      const triggerNodes = [
+        ...doc.querySelectorAll(
+          "[data-dialog], .openDialog[data-dialog], [data-target], [href^='#dialog'], [onclick*='dialog']",
+        ),
+      ] as HTMLElement[];
+      const containerNodes = [
+        ...doc.querySelectorAll(
+          ".popup, [data-popup-id], [role='dialog'], .modal, .dialog, [id*='dialog']",
+        ),
+      ] as HTMLElement[];
+      const containerById = new Map<string, HTMLElement>();
+      for (const containerNode of containerNodes) {
+        const popupId = extractPopupIdFromNode(containerNode);
+        if (!popupId || containerById.has(popupId)) continue;
+        containerById.set(popupId, containerNode);
+      }
+      const genericPopupContainers = [
+        ...doc.querySelectorAll(
+          "[id*='popup'], [id*='modal'], [id*='dialog'], [class*='popup'], [class*='modal'], [class*='dialog'], [data-popup], [data-modal], [aria-haspopup='dialog']",
+        ),
+      ] as HTMLElement[];
+      let runtimeResolvedPopup: {
+        popupId: string;
+        trigger: HTMLElement | null;
+        container: HTMLElement | null;
+      } | null = null;
+      let bestScore = 0;
+      for (const triggerNode of triggerNodes) {
+        const popupId = extractPopupIdFromNode(triggerNode);
+        if (!popupId) continue;
+        const containerNode = containerById.get(popupId) || null;
+        const candidateText = [
+          triggerNode.textContent || "",
+          containerNode?.textContent || "",
+          popupId,
+        ]
+          .join(" ")
+          .trim();
+        let score = 0;
+        for (const hint of textHints) {
+          score = Math.max(score, overlapScore(candidateText, hint));
+        }
+        if (popupInvocation?.popupId && popupInvocation.popupId === popupId)
+          score += 45;
+        if (
+          popupInvocation?.triggerSelector &&
+          popupInvocation.triggerSelector ===
+            (triggerNode.id
+              ? `#${triggerNode.id}`
+              : popupInvocation.triggerSelector)
+        ) {
+          score += 20;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          runtimeResolvedPopup = {
+            popupId,
+            trigger: triggerNode,
+            container: containerNode,
+          };
+        }
+      }
+      const isExplicitPopup =
+        focusedAnnotationForCurrentSlide.subtype === "Popup" ||
+        focusedAnnotationForCurrentSlide.detectedSubtype === "Popup";
+
+      const minRequiredScore = isExplicitPopup ? 20 : 65; // Non-popups need MUCH higher proof to trigger a dialog
+
+      if (bestScore < minRequiredScore) {
+        for (const [popupId, containerNode] of containerById.entries()) {
+          const candidateText = [containerNode.textContent || "", popupId]
+            .join(" ")
+            .trim();
+          let score = 0;
+          for (const hint of textHints) {
+            score = Math.max(score, overlapScore(candidateText, hint));
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            runtimeResolvedPopup = {
+              popupId,
+              trigger: null,
+              container: containerNode,
+            };
+          }
+        }
+      }
+      if (bestScore < minRequiredScore) {
+        for (const containerNode of genericPopupContainers) {
+          const popupId =
+            extractPopupIdFromNode(containerNode) ||
+            normalizePopupId(containerNode.id) ||
+            `runtime-${Math.random().toString(36).slice(2, 8)}`;
+          const candidateText = [
+            containerNode.textContent || "",
+            popupId,
+            containerNode.className || "",
+          ]
+            .join(" ")
+            .trim();
+          let score = 0;
+          for (const hint of textHints) {
+            score = Math.max(score, overlapScore(candidateText, hint));
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            runtimeResolvedPopup = {
+              popupId,
+              trigger: null,
+              container: containerNode,
+            };
+          }
+        }
+      }
+
+      // If after all scans the score is still below threshold, discard the runtime result
+      if (bestScore < minRequiredScore) {
+        runtimeResolvedPopup = null;
+      }
+
+      if (!runtimeResolvedPopup && popupInvocation?.popupId) {
+        const fallbackContainer =
+          containerById.get(popupInvocation.popupId) || null;
+        runtimeResolvedPopup = {
+          popupId: popupInvocation.popupId,
+          trigger: null,
+          container: fallbackContainer,
+        };
+      }
+      const primarySelector = focusedAnnotationForCurrentSlide.foundSelector;
+      const fallbackPopupTriggerSelector =
+        popupInvocation?.triggerSelector || null;
+      const target = ((primarySelector
+        ? doc.querySelector(primarySelector)
+        : null) ||
+        (fallbackPopupTriggerSelector
+          ? doc.querySelector(fallbackPopupTriggerSelector)
+          : null) ||
+        runtimeResolvedPopup?.trigger ||
+        runtimeResolvedPopup?.container) as HTMLElement | null;
+      if (target) {
+        target.setAttribute("data-nx-pdf-focus", "true");
+        target.style.transition = "outline 0.2s ease, box-shadow 0.2s ease";
+        target.style.outline = "3px solid rgba(34,211,238,0.95)";
+        target.style.boxShadow =
+          "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
+        target.scrollIntoView({ block: "center", inline: "center" });
+        previewFocusedPdfElementRef.current = target;
+      }
+
+      const isNavBottomSpecial = !!(
+        target &&
+        (target.id === "pi" ||
+          target.id === "si" ||
+          target.id === "references" ||
+          target.id === "objection" ||
+          target.id === "quickres" ||
+          target.classList.contains("gotoSlide") ||
+          target
+            .getAttribute("data-description")
+            ?.toLowerCase()
+            .includes("pi") ||
+          target
+            .getAttribute("data-description")
+            ?.toLowerCase()
+            .includes("reference"))
+      );
+
+      const intent = focusedAnnotationForCurrentSlide.annotationIntent;
+      const subtype = focusedAnnotationForCurrentSlide.annotationType;
+      const isExcludedIntent = intent === "flowChange" || intent === "notFound";
+
+      const shouldOpenSlidePopup = Boolean(
+        !isExcludedIntent &&
+        (isNavBottomSpecial ||
+          popupInvocation?.triggerSelector ||
+          popupInvocation?.containerSelector ||
+          popupInvocation?.popupId ||
+          runtimeResolvedPopup?.trigger ||
+          runtimeResolvedPopup?.container ||
+          runtimeResolvedPopup?.popupId ||
+          (target &&
+            (target.classList.contains("openDialog") ||
+              Boolean(target.getAttribute("data-dialog"))))),
+      );
+      if (shouldOpenSlidePopup && ALLOW_POPUP_OPEN_FROM_PDF) {
+        const popupTriggerCandidates: Array<HTMLElement | null> = [
+          primarySelector
+            ? (doc.querySelector(primarySelector) as HTMLElement | null)
+            : null, // HIGHEST PRIORITY
+          runtimeResolvedPopup?.trigger || null,
+          popupInvocation?.triggerSelector
+            ? (doc.querySelector(
+                popupInvocation.triggerSelector,
+              ) as HTMLElement | null)
+            : null,
+          popupInvocation?.popupId
+            ? (doc.querySelector(
+                `[data-dialog="#${popupInvocation.popupId}"], [data-dialog="${popupInvocation.popupId}"], .openDialog[data-dialog="#${popupInvocation.popupId}"], .openDialog[data-dialog="${popupInvocation.popupId}"]`,
+              ) as HTMLElement | null)
+            : null,
+          target,
+        ];
+        const popupTrigger =
+          popupTriggerCandidates.find((entry) => Boolean(entry)) || null;
+        if (popupTrigger) {
+          try {
+            popupTrigger.click();
+          } catch {
+            // ignore
+          }
+          popupTrigger.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true }),
+          );
+        }
+        const popupIdForOpen =
+          runtimeResolvedPopup?.popupId || popupInvocation?.popupId || null;
+        if (popupIdForOpen) {
+          const normalizedPopupId = popupIdForOpen.replace(/^#/, "");
+          const directDialogSelector = `#${normalizedPopupId}`;
+          const openViaMtRuntime = () => {
+            const nextFrameWindow = frame?.contentWindow as any;
+            const nextFrameJquery = nextFrameWindow?.$;
+            const nextFrameMt = nextFrameWindow?.com?.gsk?.mt;
+            if (
+              !nextFrameMt ||
+              typeof nextFrameMt.openDialog !== "function" ||
+              typeof nextFrameJquery !== "function"
+            ) {
+              return false;
+            }
+            try {
+              const directDialogNode = nextFrameJquery(directDialogSelector);
+              if (directDialogNode && directDialogNode.length > 0) {
+                nextFrameMt.openDialog(directDialogNode);
+                return true;
+              }
+            } catch {}
+            return false;
+          };
+          const frameWindow = frame?.contentWindow as any;
+          const frameJquery = frameWindow?.$;
+          const frameMt = frameWindow?.com?.gsk?.mt;
+          const frameReleaseEvent =
+            typeof frameMt?.releaseEvent === "string" && frameMt.releaseEvent
+              ? frameMt.releaseEvent
+              : "mouseup";
+          const mtOpenedImmediately = openViaMtRuntime();
+          if (!mtOpenedImmediately) {
+            window.setTimeout(openViaMtRuntime, 80);
+            window.setTimeout(openViaMtRuntime, 180);
+            window.setTimeout(openViaMtRuntime, 320);
+            window.setTimeout(openViaMtRuntime, 560);
+            window.setTimeout(openViaMtRuntime, 900);
+          }
+          const popupFunctionCandidates = [
+            "openDialog",
+            "showDialog",
+            "openPopup",
+            "showPopup",
+            "toggleDialog",
+            "togglePopup",
+          ];
+          for (const functionName of popupFunctionCandidates) {
+            const fn = frameWindow?.[functionName];
+            if (typeof fn !== "function") continue;
+            try {
+              fn(`#${popupIdForOpen}`);
+            } catch {}
+            try {
+              fn(popupIdForOpen);
+            } catch {}
+          }
+          const allPopupTriggers = [
+            ...doc.querySelectorAll(
+              `[data-dialog="#${popupIdForOpen}"], [data-dialog="${popupIdForOpen}"], .openDialog[data-dialog="#${popupIdForOpen}"], .openDialog[data-dialog="${popupIdForOpen}"], [data-target="#${popupIdForOpen}"], [href="#${popupIdForOpen}"]`,
+            ),
+          ] as HTMLElement[];
+          for (const triggerNode of allPopupTriggers) {
+            try {
+              triggerNode.click();
+            } catch {
+              // ignore
+            }
+            try {
+              if (typeof frameJquery === "function") {
+                frameJquery(triggerNode).trigger(frameReleaseEvent);
+              }
+            } catch {}
+            triggerNode.dispatchEvent(
+              new MouseEvent("click", { bubbles: true, cancelable: true }),
+            );
+            triggerNode.dispatchEvent(
+              new MouseEvent(frameReleaseEvent, {
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+          }
+        }
+        const resolvedContainerSelector = runtimeResolvedPopup?.container
+          ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
+          : null;
+        const dialogSelector =
+          resolvedContainerSelector ||
+          popupInvocation?.containerSelector ||
+          popupTrigger?.getAttribute("data-dialog") ||
+          (runtimeResolvedPopup?.popupId
+            ? `#${runtimeResolvedPopup.popupId}`
+            : popupInvocation?.popupId
+              ? `#${popupInvocation.popupId}`
+              : null);
+        const popupOpenSelectors = [
+          dialogSelector,
+          popupInvocation?.popupId
+            ? `[data-popup-id="${popupInvocation.popupId}"], #${popupInvocation.popupId}`
+            : null,
+          runtimeResolvedPopup?.popupId
+            ? `[data-popup-id="${runtimeResolvedPopup.popupId}"], #${runtimeResolvedPopup.popupId}`
+            : null,
+          runtimeResolvedPopup?.container
+            ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
+            : null,
+        ].filter((entry): entry is string => Boolean(entry));
+        if (popupOpenSelectors.length > 0 || runtimeResolvedPopup?.container) {
+          const applyPopupFocus = () => {
+            try {
+              let popupTarget: HTMLElement | null = null;
+              for (const selector of popupOpenSelectors) {
+                popupTarget = doc.querySelector(selector) as HTMLElement | null;
+                if (popupTarget) break;
+              }
+              if (!popupTarget) {
+                popupTarget = (runtimeResolvedPopup?.container ||
+                  null) as HTMLElement | null;
+              }
+              if (!popupTarget) return;
+              popupTarget.style.display = popupTarget.style.display || "block";
+              popupTarget.style.visibility = "visible";
+              popupTarget.style.opacity = popupTarget.style.opacity || "1";
+              popupTarget.classList.add("open");
+              popupTarget.classList.add("active");
+              popupTarget.classList.add("show");
+              popupTarget.classList.remove("hidden");
+              popupTarget.classList.remove("is-hidden");
+              popupTarget.classList.remove("closed");
+              popupTarget.setAttribute("aria-hidden", "false");
+              popupTarget.removeAttribute("hidden");
+              popupTarget.style.pointerEvents = "auto";
+              if (
+                previewFocusedPdfElementRef.current &&
+                previewFocusedPdfElementRef.current !== popupTarget
+              ) {
+                previewFocusedPdfElementRef.current.style.outline = "";
+                previewFocusedPdfElementRef.current.style.boxShadow = "";
+                previewFocusedPdfElementRef.current.style.transition = "";
+                previewFocusedPdfElementRef.current.removeAttribute(
+                  "data-nx-pdf-focus",
+                );
+              }
+              popupTarget.setAttribute("data-nx-pdf-focus", "true");
+              popupTarget.style.transition =
+                "outline 0.2s ease, box-shadow 0.2s ease";
+              popupTarget.style.outline = "3px solid rgba(34,211,238,0.95)";
+              popupTarget.style.boxShadow =
+                "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
+              popupTarget.scrollIntoView({ block: "center", inline: "center" });
+              previewFocusedPdfElementRef.current = popupTarget;
+            } catch (error) {
+              console.warn("Failed to focus popup container:", error);
+            }
+          };
+          window.setTimeout(applyPopupFocus, 40);
+          window.setTimeout(applyPopupFocus, 140);
+          window.setTimeout(applyPopupFocus, 280);
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to focus PDF annotation target:", error);
+    }
+  }, [
+    focusedAnnotationForCurrentSlide,
+    isPopupAnnotation,
+    pdfAnnotationRecords,
+    pdfAnnotationTypeFilter,
+    previewRefreshNonce,
+    previewFrameLoadNonce,
+    selectedPreviewHtml,
+  ]);
+
+  // --- NEW: Automatic Tablet Orientation Switching ---
+  useEffect(() => {
+    if (!selectedPreviewHtml) return;
+
+    const index = resourceScanner.getFullIndex();
+    // 1. Try to find the slide in the slides index
+    const slideId = currentPreviewSlideId;
+    if (!slideId) return;
+
+    const slideEntry = index.slides[slideId] || index.popups[slideId];
+    if (slideEntry?.orientation) {
+      if (slideEntry.orientation !== tabletOrientation) {
+        console.log(
+          `[NX] Auto-switching tablet orientation to ${slideEntry.orientation} for slide ${slideId}`,
+        );
+        setTabletOrientation(slideEntry.orientation);
+      }
+    } else {
+      // Fallback: If path contains "Vertical", force portrait
+      // Only check the last few segments of the path to avoid picking up parent folders
+      const pathParts = selectedPreviewHtml.toLowerCase().split(/[\\/]/);
+      const relevantSegments = pathParts.slice(-2).join("/"); // Just the file and its folder
+
+      if (
+        relevantSegments.includes("vertical") ||
+        relevantSegments.includes("portrait")
+      ) {
+        if (tabletOrientation !== "portrait") {
+          setTabletOrientation("portrait");
+        }
+      } else {
+        // Explicitly switch back to landscape for anything else if no entry found
+        if (tabletOrientation !== "landscape") {
+          setTabletOrientation("landscape");
+        }
+      }
+    }
+  }, [selectedPreviewHtml, currentPreviewSlideId, tabletOrientation]);
+  // ----------------------------------------------------
+
+  const selectedMountedPreviewHtml = useMemo(() => {
+    if (!projectPath) return null;
+    if (
+      previewNavigationFile &&
+      files[previewNavigationFile]?.type === "html"
+    ) {
+      return previewNavigationFile;
+    }
+    return selectedPreviewHtml;
+  }, [files, previewNavigationFile, projectPath, selectedPreviewHtml]);
+  const selectedPreviewSrc = useMemo(() => {
+    if (
+      !selectedMountedPreviewHtml ||
+      !isPreviewMountReady ||
+      !previewMountBasePath
+    ) {
+      return null;
+    }
+    const absolutePath = filePathIndexRef.current[selectedMountedPreviewHtml];
     if (!absolutePath) return null;
-    const relativePath = toMountRelativePath(previewMountBasePath, absolutePath);
+    const relativePath = toMountRelativePath(
+      previewMountBasePath,
+      absolutePath,
+    );
     if (!relativePath) return null;
     const nlPort = String((window as any).NL_PORT || "").trim();
     const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
     const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-    return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
+    const withRefresh = `${mountPath}${mountPath.includes("?") ? "&" : "?"}nx_refresh=${previewRefreshNonce}`;
+    return previewServerOrigin
+      ? `${previewServerOrigin}${withRefresh}`
+      : withRefresh;
   }, [
-    selectedPreviewHtml,
+    selectedMountedPreviewHtml,
     isPreviewMountReady,
     previewMountBasePath,
+    previewRefreshNonce,
     projectPath,
   ]);
-  const hasPreviewContent = Boolean(projectPath && (selectedPreviewSrc || selectedPreviewDoc));
+  const isMountedPreview = Boolean(
+    selectedPreviewSrc && interactionMode === "preview",
+  );
+  useEffect(() => {
+    if (isMountedPreview) return;
+    setPreviewNavigationFile((prev) =>
+      prev === selectedPreviewHtml ? prev : selectedPreviewHtml,
+    );
+  }, [isMountedPreview, selectedPreviewHtml]);
+  const shouldPrepareEditPreviewDoc = Boolean(
+    selectedPreviewHtml && !isMountedPreview,
+  );
+  const hasPreviewContent = Boolean(
+    projectPath && (selectedPreviewSrc || selectedPreviewDoc),
+  );
+  const shouldShowFrameWelcome = !projectPath;
+  useEffect(() => {
+    const setActive = (active: boolean) => setIsToolboxDragging(active);
+    const onToolboxDragState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean; type?: string }>)
+        .detail;
+      const isActive = Boolean(detail?.active);
+      const nextType = String(detail?.type || "").trim();
+      setActive(isActive);
+      if (isActive && nextType) {
+        toolboxDragTypeRef.current = nextType;
+      } else if (!isActive) {
+        toolboxDragTypeRef.current = "";
+      }
+    };
+    const onWindowDrop = () => {
+      setActive(false);
+      toolboxDragTypeRef.current = "";
+    };
+    const onWindowDragEnd = () => {
+      setActive(false);
+      toolboxDragTypeRef.current = "";
+    };
+    const onWindowDragOver = (event: DragEvent) => {
+      if (hasToolboxDragType(event.dataTransfer)) {
+        setActive(true);
+      }
+    };
+    window.addEventListener(
+      "nocodex-toolbox-drag-state",
+      onToolboxDragState as EventListener,
+    );
+    window.addEventListener("drop", onWindowDrop);
+    window.addEventListener("dragend", onWindowDragEnd);
+    window.addEventListener("dragover", onWindowDragOver);
+    return () => {
+      window.removeEventListener(
+        "nocodex-toolbox-drag-state",
+        onToolboxDragState as EventListener,
+      );
+      window.removeEventListener("drop", onWindowDrop);
+      window.removeEventListener("dragend", onWindowDragEnd);
+      window.removeEventListener("dragover", onWindowDragOver);
+    };
+  }, []);
+  useEffect(() => {
+    selectedPreviewHtmlRef.current = selectedPreviewHtml;
+    setPreviewSelectedPath(null);
+    setPreviewSelectedElement(null);
+    setPreviewSelectedComputedStyles(null);
+  }, [selectedPreviewHtml]);
+  const handlePreviewStageDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (
+        !selectedPreviewHtml ||
+        (!hasToolboxDragType(event.dataTransfer) && !toolboxDragTypeRef.current)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [selectedPreviewHtml],
+  );
 
   const resolveVirtualPathFromMountRelative = useCallback(
     (mountRelativePath: string): string | null => {
       if (!previewMountBasePath || !mountRelativePath) return null;
       const normalizedTarget = normalizeProjectRelative(
-        decodeURIComponent(mountRelativePath).replace(/^\/+/, ""),
+        decodeURIComponent(mountRelativePath).replace(/^\/+|\/+$/g, ""),
       ).toLowerCase();
       if (!normalizedTarget) return null;
 
       for (const virtualPath in filePathIndexRef.current) {
         const absolutePath = filePathIndexRef.current[virtualPath];
-        const relative = toMountRelativePath(previewMountBasePath, absolutePath);
+        const relative = toMountRelativePath(
+          previewMountBasePath,
+          absolutePath,
+        );
         if (!relative) continue;
-        if (relative.toLowerCase() === normalizedTarget) {
+        if (
+          relative.toLowerCase() === normalizedTarget ||
+          relative.toLowerCase() === `${normalizedTarget}/index.html`
+        ) {
           return virtualPath;
         }
       }
@@ -2000,115 +5754,3729 @@ const App: React.FC = () => {
     [previewMountBasePath],
   );
 
-  const extractMountRelativePath = useCallback((locationPath: string): string | null => {
-    if (!locationPath) return null;
-    if (locationPath.startsWith(`${PREVIEW_MOUNT_PATH}/`)) {
-      return locationPath.slice(PREVIEW_MOUNT_PATH.length + 1);
+  const extractMountRelativePath = useCallback(
+    (locationPath: string): string | null => {
+      if (!locationPath) return null;
+      if (locationPath.startsWith(`${PREVIEW_MOUNT_PATH}/`)) {
+        return locationPath.slice(PREVIEW_MOUNT_PATH.length + 1);
+      }
+      const aliasPath = previewRootAliasPathRef.current;
+      if (aliasPath && locationPath.startsWith(`${aliasPath}/`)) {
+        return locationPath.slice(aliasPath.length + 1);
+      }
+      return null;
+    },
+    [],
+  );
+  const injectMountedPreviewBridge = useCallback(
+    (frame: HTMLIFrameElement | null) => {
+      const frameWindow = frame?.contentWindow ?? null;
+      const frameDocument = frameWindow?.document ?? null;
+      if (!frameWindow || !frameDocument) return;
+      if (
+        frameDocument.documentElement?.getAttribute(
+          "data-nx-mounted-preview-bridge",
+        ) === "1"
+      ) {
+        return;
+      }
+      try {
+        const script = frameDocument.createElement("script");
+        script.type = "text/javascript";
+        script.text = MOUNTED_PREVIEW_BRIDGE_SCRIPT;
+        const target =
+          frameDocument.head ||
+          frameDocument.documentElement ||
+          frameDocument.body;
+        if (!target) return;
+        target.appendChild(script);
+        script.remove();
+      } catch {
+        try {
+          (frameWindow as any).eval(MOUNTED_PREVIEW_BRIDGE_SCRIPT);
+        } catch {
+          // Ignore bridge injection failures for locked-down page contexts.
+        }
+      }
+    },
+    [],
+  );
+  const postPreviewModeToFrame = useCallback(
+    (overrides?: {
+      mode?: "edit" | "preview";
+      selectionMode?: PreviewSelectionMode;
+      toolMode?: "edit" | "inspect" | "draw" | "move";
+      drawTag?: string;
+      force?: boolean;
+    }) => {
+      const frameWindow =
+        previewFrameRef.current?.contentWindow ??
+        previewFrameRef.current?.contentDocument?.defaultView ??
+        null;
+      if (!frameWindow) return;
+      const nextMode = overrides?.mode ?? previewMode;
+      const nextSelectionMode =
+        overrides?.selectionMode ?? previewSelectionMode;
+      const nextToolMode = overrides?.toolMode ?? sidebarToolMode;
+      const nextDrawTag = overrides?.drawTag ?? drawElementTag;
+      const shouldSend = overrides?.force
+        ? true
+        : interactionMode === "preview";
+      if (!shouldSend) return;
+      try {
+        (frameWindow as any).__nxPreviewHostMode = nextMode;
+        (frameWindow as any).__nxPreviewHostSelectionMode = nextSelectionMode;
+        (frameWindow as any).__nxPreviewHostToolMode = nextToolMode;
+        (frameWindow as any).__nxPreviewHostDrawTag = nextDrawTag;
+      } catch {
+        // Ignore host flag sync issues for transient frame reloads.
+      }
+      try {
+        frameWindow.postMessage(
+          JSON.stringify({
+            type: "PREVIEW_SET_MODE",
+            mode: nextMode,
+            selectionMode: nextSelectionMode,
+            toolMode: nextToolMode,
+            drawTag: nextDrawTag,
+          }),
+          "*",
+        );
+      } catch {
+        // Ignore postMessage failures for transient frame reloads.
+      }
+    },
+    [
+      drawElementTag,
+      interactionMode,
+      previewMode,
+      previewSelectionMode,
+      sidebarToolMode,
+    ],
+  );
+  const setPreviewModeWithSync = useCallback(
+    (
+      nextMode: "edit" | "preview",
+      options?: { skipUnsavedPrompt?: boolean },
+    ) => {
+      const currentPath = selectedPreviewHtmlRef.current;
+      const shouldPromptUnsaved =
+        !options?.skipUnsavedPrompt &&
+        interactionModeRef.current === "preview" &&
+        previewModeRef.current === "edit" &&
+        nextMode === "preview" &&
+        Boolean(currentPath) &&
+        hasUnsavedChangesForFile(currentPath);
+      if (shouldPromptUnsaved && currentPath) {
+        setPendingPageSwitch({
+          mode: "preview_mode",
+          fromPath: currentPath,
+          nextPath: currentPath,
+          source: "navigate",
+          nextPreviewMode: "preview",
+        });
+        setIsPageSwitchPromptOpen(true);
+        return;
+      }
+      setPreviewMode(nextMode);
+      if (interactionModeRef.current !== "preview") return;
+      postPreviewModeToFrame({ mode: nextMode, force: true });
+      window.setTimeout(() => {
+        postPreviewModeToFrame({ mode: nextMode, force: true });
+      }, 50);
+      window.setTimeout(() => {
+        postPreviewModeToFrame({ mode: nextMode, force: true });
+      }, 180);
+    },
+    [hasUnsavedChangesForFile, postPreviewModeToFrame],
+  );
+  const handleSidebarInteractionModeChange = useCallback(
+    (nextMode: "edit" | "preview" | "inspect" | "draw" | "move") => {
+      if (nextMode === "preview") {
+        setSidebarToolMode("edit");
+        setInteractionMode("preview");
+        return;
+      }
+      setSidebarToolMode(nextMode);
+      if (interactionModeRef.current === "preview") {
+        // Keep mounted project visible; only switch preview into edit sub-mode.
+        setPreviewModeWithSync("edit");
+        postPreviewModeToFrame({
+          mode: "edit",
+          toolMode: nextMode,
+          drawTag: drawElementTag,
+          force: true,
+        });
+        return;
+      }
+      if (projectPath) {
+        setPreviewMode("edit");
+        setInteractionMode("preview");
+        return;
+      }
+      setInteractionMode(nextMode);
+    },
+    [
+      drawElementTag,
+      postPreviewModeToFrame,
+      projectPath,
+      setPreviewModeWithSync,
+    ],
+  );
+  const sidebarInteractionMode = useMemo<
+    "edit" | "preview" | "inspect" | "draw" | "move"
+  >(() => {
+    if (interactionMode === "preview") {
+      return previewMode === "edit" ? sidebarToolMode : "preview";
     }
-    const aliasPath = previewRootAliasPathRef.current;
-    if (aliasPath && locationPath.startsWith(`${aliasPath}/`)) {
-      return locationPath.slice(aliasPath.length + 1);
+    return interactionMode;
+  }, [interactionMode, previewMode, sidebarToolMode]);
+  const resolvedConfigVirtualPath = useMemo(
+    () => resolveConfigPathFromFiles(files, "config.json") || CONFIG_JSON_PATH,
+    [files],
+  );
+  const resolvedPortfolioConfigVirtualPath = useMemo(
+    () =>
+      resolveConfigPathFromFiles(files, "portfolioconfig.json") ||
+      PORTFOLIO_CONFIG_PATH,
+    [files],
+  );
+  const configPathForModal = configModalConfigPath || resolvedConfigVirtualPath;
+  const portfolioPathForModal =
+    configModalPortfolioPath || resolvedPortfolioConfigVirtualPath;
+  const isActivePreviewMessageSource = useCallback(
+    (source: MessageEventSource | null): boolean => {
+      const activeWindow = previewFrameRef.current?.contentWindow ?? null;
+      if (!activeWindow || !source) return false;
+      return source === activeWindow;
+    },
+    [],
+  );
+  const getLivePreviewSelectedElement = useCallback(
+    (path?: number[] | null): Element | null => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument?.body) return null;
+      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
+      if (byMarker) return byMarker;
+      if (Array.isArray(path) && path.length > 0) {
+        const byPath = readElementByPath(frameDocument.body, path);
+        if (byPath) return byPath;
+      }
+      return null;
+    },
+    [],
+  );
+  const postPreviewPatchToFrame = useCallback(
+    (payload: Record<string, unknown>) => {
+      const frameWindow =
+        previewFrameRef.current?.contentWindow ??
+        previewFrameRef.current?.contentDocument?.defaultView ??
+        null;
+      if (!frameWindow) return;
+      try {
+        frameWindow.postMessage(JSON.stringify(payload), "*");
+      } catch {
+        // Ignore transient frame messaging errors.
+      }
+    },
+    [],
+  );
+
+  const handlePreviewFrameLoad = useCallback(
+    (event: React.SyntheticEvent<HTMLIFrameElement>) => {
+      const frame = event.currentTarget;
+      setPreviewFrameLoadNonce((prev) => prev + 1);
+
+      if (selectedPreviewSrc) {
+        injectMountedPreviewBridge(frame);
+      }
+
+      postPreviewModeToFrame();
+      window.setTimeout(postPreviewModeToFrame, 0);
+      window.setTimeout(postPreviewModeToFrame, 120);
+      window.setTimeout(postPreviewModeToFrame, 360);
+
+      if (!isPreviewMountReady) return;
+
+      const frameSrc = frame.getAttribute("src") || frame.src || "";
+      if (!frameSrc) return;
+
+      let locationPath = "";
+      try {
+        locationPath = new URL(frameSrc).pathname || "";
+      } catch {
+        return;
+      }
+      if (!locationPath) return;
+
+      const mountRelativePath = extractMountRelativePath(locationPath);
+      if (!mountRelativePath) return;
+
+      const resolvedVirtualPath =
+        resolveVirtualPathFromMountRelative(mountRelativePath);
+      if (!resolvedVirtualPath) return;
+
+      const lockPath = explorerSelectionLockRef.current;
+      const lockActive =
+        Boolean(lockPath) &&
+        Date.now() <= explorerSelectionLockUntilRef.current;
+      if (lockPath && !lockActive) {
+        explorerSelectionLockRef.current = null;
+        explorerSelectionLockUntilRef.current = 0;
+      }
+      if (lockPath && lockActive) {
+        const resolvedNorm =
+          normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
+        const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
+        if (resolvedNorm !== lockNorm) {
+          return;
+        }
+        explorerSelectionLockRef.current = null;
+        explorerSelectionLockUntilRef.current = 0;
+      }
+
+      const resolvedFile = filesRef.current[resolvedVirtualPath];
+      if (!resolvedFile || resolvedFile.type !== "html") return;
+
+      // THE FIX: Block rogue automated script redirects after manual click
+      const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
+      if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
+        return;
+      }
+
+      if (resolvedVirtualPath === activeFileRef.current) return;
+      if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
+
+      console.log("[Preview] Current page:", resolvedVirtualPath);
+
+      syncPreviewActiveFile(resolvedVirtualPath, "load", {
+        skipUnsavedPrompt: true,
+      });
+
+      if (pendingPopupOpenRef.current) {
+        const pending = pendingPopupOpenRef.current;
+        window.setTimeout(() => {
+          if (!pendingPopupOpenRef.current) return;
+          const opened = openPopupInPreview(
+            pending.selector,
+            pending.popupId,
+          );
+          if (opened) {
+            pendingPopupOpenRef.current = null;
+          }
+        }, 180);
+      }
+    },
+    [
+      extractMountRelativePath,
+      injectMountedPreviewBridge,
+      isPreviewMountReady,
+      postPreviewModeToFrame,
+      resolveVirtualPathFromMountRelative,
+      selectedPreviewSrc,
+      shouldProcessPreviewPageSignal,
+      syncPreviewActiveFile,
+      openPopupInPreview,
+    ],
+  );
+  useEffect(() => {
+    const frame = previewFrameRef.current;
+    const doc = frame?.contentDocument;
+    const win = frame?.contentWindow;
+    if (!doc || !win) return;
+
+    const handleContextMenu = (event: MouseEvent) => {
+      if (interactionModeRef.current !== "preview") return;
+      const selection = win.getSelection?.();
+      if (!selection || selection.isCollapsed) {
+        hideQuickTextEdit();
+        return;
+      }
+      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      if (!range) {
+        hideQuickTextEdit();
+        return;
+      }
+      quickTextRangeRef.current = range.cloneRange();
+      event.preventDefault();
+      event.stopPropagation();
+      positionQuickTextEditAtRange(range);
+    };
+
+    const handleSelectionChange = () => {
+      const selection = win.getSelection?.();
+      if (!selection || selection.rangeCount === 0) {
+        hideQuickTextEdit();
+        return;
+      }
+      if (selection.isCollapsed) {
+        hideQuickTextEdit();
+        return;
+      }
+      try {
+        const range = selection.getRangeAt(0);
+        quickTextRangeRef.current = range.cloneRange();
+        positionQuickTextEditAtRange(range);
+      } catch {}
+    };
+
+    doc.addEventListener("contextmenu", handleContextMenu);
+    doc.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      doc.removeEventListener("contextmenu", handleContextMenu);
+      doc.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [
+    previewFrameLoadNonce,
+    hideQuickTextEdit,
+    positionQuickTextEditAtRange,
+  ]);
+  useEffect(() => {
+    if (selectedPreviewSrc) {
+      injectMountedPreviewBridge(previewFrameRef.current);
     }
-    return null;
+    postPreviewModeToFrame();
+    const t0 = window.setTimeout(postPreviewModeToFrame, 0);
+    const t120 = window.setTimeout(postPreviewModeToFrame, 120);
+    const t360 = window.setTimeout(postPreviewModeToFrame, 360);
+    return () => {
+      window.clearTimeout(t0);
+      window.clearTimeout(t120);
+      window.clearTimeout(t360);
+    };
+  }, [
+    injectMountedPreviewBridge,
+    postPreviewModeToFrame,
+    selectedPreviewDoc,
+    selectedPreviewSrc,
+    previewMode,
+  ]);
+  const persistPreviewHtmlContent = useCallback(
+    async (
+      updatedPath: string,
+      serialized: string,
+      options?: {
+        refreshPreviewDoc?: boolean;
+        saveNow?: boolean;
+        skipAutoSave?: boolean;
+        elementPath?: number[];
+        pushToHistory?: boolean;
+      },
+    ) => {
+      const shouldRefreshPreviewDoc = options?.refreshPreviewDoc ?? false;
+      const shouldSaveNow = options?.saveNow ?? false;
+      const shouldSkipAutoSave = options?.skipAutoSave ?? false;
+      const shouldPushToHistory = options?.pushToHistory ?? true;
+      const previousSerialized =
+        typeof filesRef.current[updatedPath]?.content === "string"
+          ? (filesRef.current[updatedPath]?.content as string)
+          : typeof textFileCacheRef.current[updatedPath] === "string"
+            ? textFileCacheRef.current[updatedPath]
+            : "";
+
+      // CRITICAL SAFETY GUARD: Prevent accidental wiping of files
+      if (!serialized || serialized.trim().length === 0) {
+        console.error(
+          `[CRITICAL] Safety Guard: Blocked attempt to write empty content to ${updatedPath}`,
+        );
+        return;
+      }
+
+      if (
+        previousSerialized &&
+        previousSerialized.length > 500 &&
+        serialized.length < 100
+      ) {
+        console.error(
+          `[CRITICAL] Safety Guard: Blocked suspicious downsizing of ${updatedPath} (from ${previousSerialized.length} to ${serialized.length} bytes)`,
+        );
+        return;
+      }
+
+      // --- FIX: Scrub the bridge attribute and transient editor classes before saving ---
+      serialized = serialized
+        .replace(/\s*data-nx-mounted-preview-bridge=(["']?)1\1/gi, "")
+        .replace(/\s*__nx-preview-selected/g, "")
+        .replace(/\s*__nx-preview-dirty/g, "")
+        .replace(/\s*__nx-preview-editing/g, "")
+        .replace(/\s+class=(["'])\s*\1/g, ""); // Cleans up empty class attributes left behind
+
+      textFileCacheRef.current[updatedPath] = serialized;
+      setFiles((prev) => {
+        const current = prev[updatedPath];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [updatedPath]: {
+            ...current,
+            content: serialized,
+          },
+        };
+      });
+
+      // Also synchronously update the ref so any code that reads filesRef.current
+      // in the same tick (e.g. applyPreviewContentUpdate called right after draw)
+      // immediately sees the new HTML with the just-created element.
+      const existingRefEntry = filesRef.current[updatedPath];
+      if (existingRefEntry) {
+        filesRef.current = {
+          ...filesRef.current,
+          [updatedPath]: { ...existingRefEntry, content: serialized },
+        };
+      }
+      invalidatePreviewDocCache(updatedPath);
+      pendingPreviewWritesRef.current[updatedPath] = serialized;
+      setDirtyFiles((prev) =>
+        prev.includes(updatedPath) ? prev : [...prev, updatedPath],
+      );
+      if (options?.elementPath && options.elementPath.length > 0) {
+        markPreviewPathDirty(updatedPath, options.elementPath);
+      }
+      if (shouldPushToHistory) {
+        pushPreviewHistory(updatedPath, serialized, previousSerialized);
+      }
+
+      const currentEntry = filesRef.current[updatedPath];
+      if (shouldRefreshPreviewDoc && currentEntry) {
+        if (!isMountedPreview) {
+          const previewSnapshot: FileMap = {
+            ...filesRef.current,
+            [updatedPath]: {
+              ...currentEntry,
+              content: serialized,
+            },
+          };
+          setSelectedPreviewDoc(
+            createPreviewDocument(
+              previewSnapshot,
+              updatedPath,
+              previewDependencyIndexRef.current[updatedPath],
+            ),
+          );
+        } else if (!shouldSaveNow) {
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+      }
+
+      if (shouldSaveNow) {
+        await flushPendingPreviewSaves();
+        if (shouldRefreshPreviewDoc && isMountedPreview) {
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+        return;
+      }
+      if (!shouldSkipAutoSave) {
+        schedulePreviewAutoSave();
+      }
+    },
+    [
+      flushPendingPreviewSaves,
+      invalidatePreviewDocCache,
+      isMountedPreview,
+      markPreviewPathDirty,
+      pushPreviewHistory,
+      schedulePreviewAutoSave,
+    ],
+  );
+  const applyPreviewInlineEditDraft = useCallback(
+    async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
+      if (
+        !filePath ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return;
+      }
+      const sourceHtml =
+        typeof filesRef.current[filePath]?.content === "string"
+          ? (filesRef.current[filePath]?.content as string)
+          : typeof textFileCacheRef.current[filePath] === "string"
+            ? textFileCacheRef.current[filePath]
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      if (!target) return;
+      target.innerHTML = nextInnerHtml;
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(filePath, serialized, {
+        refreshPreviewDoc: false,
+        pushToHistory: false,
+      });
+    },
+    [persistPreviewHtmlContent],
+  );
+  const applyPreviewInlineEdit = useCallback(
+    async (elementPath: number[], nextInnerHtml: string) => {
+      if (
+        !selectedPreviewHtml ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return;
+      }
+
+      const normalizedPath = elementPath
+        .map((segment) => {
+          const numeric = Number(segment);
+          if (!Number.isFinite(numeric)) return -1;
+          return Math.max(0, Math.trunc(numeric));
+        })
+        .filter((segment) => segment >= 0);
+
+      if (normalizedPath.length !== elementPath.length) return;
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, normalizedPath);
+      if (!target) return;
+
+      target.innerHTML = nextInnerHtml;
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath: normalizedPath,
+      });
+      const liveElement = getLivePreviewSelectedElement(normalizedPath);
+      const snapshotElement =
+        liveElement instanceof HTMLElement
+          ? liveElement
+          : target instanceof HTMLElement
+            ? target
+            : null;
+      const snapshotNode: Element = snapshotElement || target;
+      const snapshotInlineStyle =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("style") || ""
+          : snapshotNode.getAttribute("style") || "";
+      const snapshotInlineStyles = parseInlineStyleText(snapshotInlineStyle);
+      const snapshotComputedStyles =
+        extractComputedStylesFromElement(snapshotElement || snapshotNode) ||
+        null;
+      const snapshotText = normalizeEditorMultilineText(
+        extractTextWithBreaks(snapshotNode),
+      );
+      const snapshotHtml =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.innerHTML || ""
+          : target.innerHTML || nextInnerHtml;
+      const snapshotAttributes =
+        extractCustomAttributesFromElement(snapshotElement || snapshotNode) ||
+        undefined;
+      const snapshotSrc =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("src") || undefined
+          : snapshotNode.getAttribute("src") || undefined;
+      const snapshotHref =
+        snapshotElement instanceof HTMLElement
+          ? snapshotElement.getAttribute("href") || undefined
+          : snapshotNode.getAttribute("href") || undefined;
+      const snapshotClassName =
+        snapshotElement && typeof snapshotElement.className === "string"
+          ? snapshotElement.className
+          : typeof snapshotNode.className === "string"
+            ? snapshotNode.className
+            : undefined;
+      const snapshotTag = String(snapshotNode.tagName || "div").toLowerCase();
+      const inlineAnimation =
+        typeof snapshotInlineStyles.animation === "string"
+          ? snapshotInlineStyles.animation.trim()
+          : "";
+      const computedAnimationCandidate =
+        snapshotComputedStyles &&
+        typeof snapshotComputedStyles.animation === "string"
+          ? snapshotComputedStyles.animation.trim()
+          : "";
+      const resolvedAnimation =
+        inlineAnimation ||
+        (computedAnimationCandidate &&
+        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+          ? computedAnimationCandidate
+          : "");
+      const mergedStyles: React.CSSProperties = {
+        ...(snapshotComputedStyles || {}),
+        ...snapshotInlineStyles,
+      };
+
+      setPreviewSelectedPath(normalizedPath);
+      setPreviewSelectedComputedStyles(snapshotComputedStyles);
+      setPreviewSelectedElement({
+        id:
+          snapshotElement?.id ||
+          snapshotNode.getAttribute("id") ||
+          `preview-${Date.now()}`,
+        type: snapshotTag,
+        name: snapshotTag.toUpperCase(),
+        content: snapshotText,
+        html: snapshotHtml,
+        ...(snapshotSrc ? { src: snapshotSrc } : {}),
+        ...(snapshotHref ? { href: snapshotHref } : {}),
+        ...(snapshotClassName ? { className: snapshotClassName } : {}),
+        ...(snapshotAttributes ? { attributes: snapshotAttributes } : {}),
+        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+        styles: mergedStyles,
+        children: [],
+      });
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewStyleUpdateAtPath = useCallback(
+    async (
+      elementPath: number[],
+      styles: Partial<React.CSSProperties>,
+      options?: { syncSelectedElement?: boolean },
+    ) => {
+      if (
+        !selectedPreviewHtml ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      const liveTarget = getLivePreviewSelectedElement(elementPath);
+      if (
+        !(target instanceof HTMLElement) &&
+        !(liveTarget instanceof HTMLElement)
+      )
+        return;
+      const previewStylePatch: Record<string, string> = {};
+
+      for (const [key, rawValue] of Object.entries(styles)) {
+        const cssKey = toCssPropertyName(key);
+        const valueRaw =
+          rawValue === undefined || rawValue === null ? "" : String(rawValue);
+        const value =
+          cssKey === "font-family"
+            ? normalizeFontFamilyCssValue(valueRaw)
+            : valueRaw;
+        previewStylePatch[key] = value;
+        if (!value) {
+          if (target instanceof HTMLElement) {
+            target.style.removeProperty(cssKey);
+          }
+          if (liveTarget instanceof HTMLElement) {
+            liveTarget.style.removeProperty(cssKey);
+          }
+          continue;
+        }
+        if (target instanceof HTMLElement) {
+          target.style.setProperty(
+            cssKey,
+            value,
+            cssKey === "font-family" ? "important" : "",
+          );
+        }
+        if (liveTarget instanceof HTMLElement) {
+          if (cssKey === "animation") {
+            liveTarget.style.setProperty("animation", "none");
+            // Force layout so the next assignment retriggers animation playback.
+            // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+            liveTarget.offsetWidth;
+          }
+          liveTarget.style.setProperty(
+            cssKey,
+            value,
+            cssKey === "font-family" ? "important" : "",
+          );
+        }
+      }
+      if (
+        target instanceof HTMLElement &&
+        !target.getAttribute("style")?.trim()
+      ) {
+        target.removeAttribute("style");
+      }
+      if (
+        liveTarget instanceof HTMLElement &&
+        !liveTarget.getAttribute("style")?.trim()
+      ) {
+        liveTarget.removeAttribute("style");
+      }
+      postPreviewPatchToFrame({
+        type: "PREVIEW_APPLY_STYLE",
+        path: elementPath,
+        styles: previewStylePatch,
+      });
+
+      if (target instanceof HTMLElement) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath,
+        });
+      }
+
+      const pathMatchesSelection =
+        Array.isArray(previewSelectedPath) &&
+        previewSelectedPath.length === elementPath.length &&
+        previewSelectedPath.every(
+          (segment, idx) => segment === elementPath[idx],
+        );
+      const shouldSyncSelected =
+        options?.syncSelectedElement ?? pathMatchesSelection;
+      if (!shouldSyncSelected) return;
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              styles: {
+                ...prev.styles,
+                ...Object.fromEntries(
+                  Object.entries(styles).map(([key, rawValue]) => {
+                    if (key !== "fontFamily") return [key, rawValue];
+                    return [
+                      key,
+                      typeof rawValue === "string"
+                        ? normalizeFontFamilyCssValue(rawValue)
+                        : rawValue,
+                    ];
+                  }),
+                ),
+              },
+            }
+          : prev,
+      );
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      postPreviewPatchToFrame,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewStyleUpdate = useCallback(
+    async (styles: Partial<React.CSSProperties>) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      await applyPreviewStyleUpdateAtPath(previewSelectedPath, styles, {
+        syncSelectedElement: true,
+      });
+    },
+    [applyPreviewStyleUpdateAtPath, previewSelectedPath],
+  );
+  const applyPreviewContentUpdate = useCallback(
+    async (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
+      let didChangeContent = false;
+      let didChangeSrc = false;
+      let didChangeHref = false;
+      let nextResolvedContent: string | null = null;
+      let nextResolvedHtml: string | null = null;
+
+      if (typeof data.html === "string") {
+        const nextHtml = data.html;
+        const currentHtml =
+          target instanceof HTMLElement
+            ? target.innerHTML
+            : liveTarget instanceof HTMLElement
+              ? liveTarget.innerHTML
+              : "";
+        if (currentHtml !== nextHtml) {
+          if (target instanceof HTMLElement) {
+            target.innerHTML = nextHtml;
+          }
+          if (liveTarget instanceof HTMLElement) {
+            liveTarget.innerHTML = nextHtml;
+          }
+          didChangeContent = true;
+        }
+        if (didChangeContent) {
+          const baselineElement =
+            (target instanceof HTMLElement && target) ||
+            (liveTarget instanceof HTMLElement && liveTarget) ||
+            null;
+          nextResolvedHtml =
+            baselineElement instanceof HTMLElement
+              ? baselineElement.innerHTML
+              : nextHtml;
+          nextResolvedContent = baselineElement
+            ? normalizeEditorMultilineText(
+                extractTextWithBreaks(baselineElement),
+              )
+            : normalizeEditorMultilineText(
+                extractTextFromHtmlFragment(nextHtml),
+              );
+        }
+      } else if (typeof data.content === "string") {
+        const normalizedText = data.content.replace(/\r\n?/g, "\n");
+        const baselineElement = target || liveTarget;
+        const currentText = extractTextWithBreaks(baselineElement);
+        const nextComparable = normalizeEditorMultilineText(normalizedText);
+        const currentComparable = normalizeEditorMultilineText(currentText);
+        if (nextComparable !== currentComparable) {
+          if (target) {
+            applyMultilineTextToElement(target, normalizedText);
+          }
+          if (liveTarget) {
+            applyMultilineTextToElement(liveTarget, normalizedText);
+          }
+          didChangeContent = true;
+        }
+        if (didChangeContent) {
+          const updatedElement = target || liveTarget;
+          nextResolvedContent = normalizeEditorMultilineText(
+            extractTextWithBreaks(updatedElement),
+          );
+          nextResolvedHtml =
+            updatedElement instanceof HTMLElement
+              ? updatedElement.innerHTML
+              : null;
+        }
+      }
+      if (
+        typeof data.src === "string" &&
+        (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
+      ) {
+        const sourceValue = data.src.trim();
+        const lowerTag =
+          target instanceof HTMLElement
+            ? target.tagName.toLowerCase()
+            : liveTarget instanceof HTMLElement
+              ? liveTarget.tagName.toLowerCase()
+              : "";
+        const isDirectImageTag =
+          lowerTag === "img" || lowerTag === "source" || lowerTag === "video";
+        if (isDirectImageTag) {
+          if (target instanceof HTMLElement) {
+            const previousSrc = target.getAttribute("src") || "";
+            if (previousSrc !== sourceValue) {
+              target.setAttribute("src", sourceValue);
+              didChangeSrc = true;
+            }
+          }
+          if (liveTarget instanceof HTMLElement) {
+            const previousSrc = liveTarget.getAttribute("src") || "";
+            if (previousSrc !== sourceValue) {
+              liveTarget.setAttribute("src", sourceValue);
+              didChangeSrc = true;
+            }
+          }
+        } else {
+          const nextBackground =
+            sourceValue.length === 0
+              ? ""
+              : /^url\(/i.test(sourceValue)
+                ? sourceValue
+                : `url("${sourceValue}")`;
+          if (nextBackground) {
+            if (target instanceof HTMLElement) {
+              const previous =
+                target.style.getPropertyValue("background-image");
+              if (previous !== nextBackground) {
+                target.style.setProperty("background-image", nextBackground);
+                didChangeSrc = true;
+              }
+            }
+            if (liveTarget instanceof HTMLElement) {
+              const previous =
+                liveTarget.style.getPropertyValue("background-image");
+              if (previous !== nextBackground) {
+                liveTarget.style.setProperty(
+                  "background-image",
+                  nextBackground,
+                );
+                didChangeSrc = true;
+              }
+            }
+          } else {
+            if (target instanceof HTMLElement) {
+              const previous =
+                target.style.getPropertyValue("background-image");
+              if (previous) {
+                target.style.removeProperty("background-image");
+                didChangeSrc = true;
+              }
+            }
+            if (liveTarget instanceof HTMLElement) {
+              const previous =
+                liveTarget.style.getPropertyValue("background-image");
+              if (previous) {
+                liveTarget.style.removeProperty("background-image");
+                didChangeSrc = true;
+              }
+            }
+          }
+        }
+      }
+      if (typeof data.href === "string") {
+        if (target instanceof HTMLElement) {
+          const previousHref = target.getAttribute("href") || "";
+          if (previousHref !== data.href) {
+            target.setAttribute("href", data.href);
+            didChangeHref = true;
+          }
+        }
+        if (liveTarget instanceof HTMLElement) {
+          const previousHref = liveTarget.getAttribute("href") || "";
+          if (previousHref !== data.href) {
+            liveTarget.setAttribute("href", data.href);
+            didChangeHref = true;
+          }
+        }
+      }
+
+      if (target && (didChangeContent || didChangeSrc || didChangeHref)) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
+
+      if (didChangeContent || didChangeSrc || didChangeHref) {
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                ...(didChangeContent
+                  ? {
+                      content:
+                        nextResolvedContent ??
+                        (typeof data.content === "string"
+                          ? data.content.replace(/\r\n?/g, "\n")
+                          : prev.content),
+                      ...(nextResolvedHtml !== null
+                        ? { html: nextResolvedHtml }
+                        : {}),
+                    }
+                  : {}),
+                ...(didChangeSrc && typeof data.src === "string"
+                  ? { src: data.src }
+                  : {}),
+                ...(didChangeHref && typeof data.href === "string"
+                  ? { href: data.href }
+                  : {}),
+              }
+            : prev,
+        );
+      }
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const sanitizeQuickEditDocument = useCallback((doc: Document) => {
+    const editables = doc.querySelectorAll<HTMLElement>("[contenteditable]");
+    editables.forEach((el) => el.removeAttribute("contenteditable"));
+    if (
+      doc.documentElement?.getAttribute("data-nx-mounted-preview-bridge") ===
+      "1"
+    ) {
+      doc.documentElement.removeAttribute("data-nx-mounted-preview-bridge");
+    }
+    const previewClasses = doc.querySelectorAll<HTMLElement>(
+      ".__nx-preview-editing, .__nx-preview-selected, .__nx-preview-dirty",
+    );
+    previewClasses.forEach((el) => {
+      el.classList.remove("__nx-preview-editing");
+      el.classList.remove("__nx-preview-selected");
+      el.classList.remove("__nx-preview-dirty");
+    });
+    const overlays = doc.querySelectorAll<HTMLElement>(
+      "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft]",
+    );
+    overlays.forEach((el) => el.remove());
   }, []);
+  const applyQuickTextWrapTag = useCallback(
+    async (tagName: "sup" | "sub") => {
+      const frame = previewFrameRef.current;
+      const win = frame?.contentWindow;
+      const doc = frame?.contentDocument;
+      if (!win || !doc) return;
+      if (!selectedPreviewHtml) return;
+      const selection = win.getSelection?.();
+      const activeRange =
+        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      const range =
+        activeRange && !activeRange.collapsed
+          ? activeRange
+          : quickTextRangeRef.current;
+      if (!range || range.collapsed) return;
 
-  const handlePreviewFrameLoad = useCallback((event: React.SyntheticEvent<HTMLIFrameElement>) => {
-    if (!isPreviewMountReady) return;
-    const frame = event.currentTarget;
-    const frameSrc = frame.getAttribute("src") || frame.src || "";
-    if (!frameSrc) return;
+      const workingRange = range.cloneRange();
+      const ancestor =
+        workingRange.commonAncestorContainer instanceof Element
+          ? workingRange.commonAncestorContainer
+          : workingRange.commonAncestorContainer?.parentElement;
+      const existing = ancestor?.closest?.(tagName) || null;
+      let updatedNode: Element | null = null;
 
-    let locationPath = "";
-    try {
-      locationPath = new URL(frameSrc).pathname || "";
-    } catch {
+      if (existing && existing.parentElement) {
+        const parent = existing.parentElement;
+        while (existing.firstChild) {
+          parent.insertBefore(existing.firstChild, existing);
+        }
+        parent.removeChild(existing);
+        updatedNode = parent;
+      } else {
+        const wrapper = doc.createElement(tagName);
+        try {
+          workingRange.surroundContents(wrapper);
+        } catch {
+          const frag = workingRange.extractContents();
+          wrapper.appendChild(frag);
+          workingRange.insertNode(wrapper);
+        }
+        updatedNode = wrapper;
+      }
+
+      const liveTarget =
+        previewSelectedPath && Array.isArray(previewSelectedPath)
+          ? getLivePreviewSelectedElement(previewSelectedPath)
+          : null;
+      if (liveTarget instanceof HTMLElement) {
+        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+      } else if (doc.documentElement) {
+        sanitizeQuickEditDocument(doc);
+        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+        });
+      }
+
+      if (selection) {
+        selection.removeAllRanges();
+        const nextRange = doc.createRange();
+        if (updatedNode) {
+          nextRange.selectNodeContents(updatedNode);
+        } else {
+          nextRange.selectNodeContents(doc.body);
+        }
+        selection.addRange(nextRange);
+        quickTextRangeRef.current = nextRange.cloneRange();
+      }
+    },
+    [
+      applyPreviewContentUpdate,
+      getLivePreviewSelectedElement,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      sanitizeQuickEditDocument,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyQuickTextStyle = useCallback(
+    async (styles: Record<string, string>) => {
+      const frame = previewFrameRef.current;
+      const win = frame?.contentWindow;
+      const doc = frame?.contentDocument;
+      if (!win || !doc) return;
+      if (!selectedPreviewHtml) return;
+      const selection = win.getSelection?.();
+      const activeRange =
+        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      const range =
+        activeRange && !activeRange.collapsed
+          ? activeRange
+          : quickTextRangeRef.current;
+      if (!range || range.collapsed) return;
+      if (selection && range) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      const toCssKey = (value: string) =>
+        value.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+      const span = doc.createElement("span");
+      for (const [key, value] of Object.entries(styles)) {
+        if (!value) continue;
+        span.style.setProperty(toCssKey(key), value);
+      }
+      const workingRange = range.cloneRange();
+      try {
+        workingRange.surroundContents(span);
+      } catch {
+        const frag = workingRange.extractContents();
+        span.appendChild(frag);
+        workingRange.insertNode(span);
+      }
+
+      const liveTarget =
+        previewSelectedPath && Array.isArray(previewSelectedPath)
+          ? getLivePreviewSelectedElement(previewSelectedPath)
+          : null;
+      if (liveTarget instanceof HTMLElement) {
+        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+      } else if (doc.documentElement) {
+        sanitizeQuickEditDocument(doc);
+        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+        });
+      }
+      if (selection) {
+        selection.removeAllRanges();
+        const nextRange = doc.createRange();
+        nextRange.selectNodeContents(span);
+        selection.addRange(nextRange);
+        quickTextRangeRef.current = nextRange.cloneRange();
+      }
+    },
+    [
+      applyPreviewContentUpdate,
+      getLivePreviewSelectedElement,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewTagUpdate = useCallback(
+    async (nextTag: string) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const safeTag = String(nextTag || "").toLowerCase();
+      if (!safeTag) return;
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+
+      const replaceTag = (node: Element, tagName: string) => {
+        if (!node || !node.ownerDocument) return null;
+        const doc = node.ownerDocument;
+        const next = doc.createElement(tagName);
+        for (const attr of Array.from(node.attributes)) {
+          next.setAttribute(attr.name, attr.value);
+        }
+        while (node.firstChild) {
+          next.appendChild(node.firstChild);
+        }
+        node.replaceWith(next);
+        return next;
+      };
+
+      let didChange = false;
+      if (target instanceof HTMLElement) {
+        const currentTag = target.tagName.toLowerCase();
+        if (currentTag !== safeTag) {
+          replaceTag(target, safeTag);
+          didChange = true;
+        }
+      }
+      if (liveTarget instanceof HTMLElement) {
+        const currentTag = liveTarget.tagName.toLowerCase();
+        if (currentTag !== safeTag) {
+          replaceTag(liveTarget, safeTag);
+        }
+      }
+
+      if (didChange) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                type: safeTag,
+                name: safeTag.toUpperCase(),
+              }
+            : prev,
+        );
+      }
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewAttributesUpdate = useCallback(
+    async (attributes: Record<string, string>) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
+
+      const reserved = new Set(["id", "class", "style", "src", "href"]);
+      if (target) {
+        const targetAttrs = target.attributes;
+        Array.from(targetAttrs).forEach((attr) => {
+          if (!reserved.has(attr.name.toLowerCase())) {
+            target.removeAttribute(attr.name);
+          }
+        });
+      }
+      if (liveTarget) {
+        const liveAttrs = liveTarget.attributes;
+        Array.from(liveAttrs).forEach((attr) => {
+          if (!reserved.has(attr.name.toLowerCase())) {
+            liveTarget.removeAttribute(attr.name);
+          }
+        });
+      }
+      Object.entries(attributes || {}).forEach(([key, value]) => {
+        if (!key) return;
+        if (target) {
+          target.setAttribute(key, value);
+        }
+        if (liveTarget) {
+          liveTarget.setAttribute(key, value);
+        }
+      });
+
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              attributes,
+            }
+          : prev,
+      );
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewDeleteSelected = useCallback(async () => {
+    if (
+      !selectedPreviewHtml ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
       return;
     }
 
-    if (!locationPath) return;
-    const mountRelativePath = extractMountRelativePath(locationPath);
-    if (!mountRelativePath) return;
-    const resolvedVirtualPath = resolveVirtualPathFromMountRelative(mountRelativePath);
-    if (!resolvedVirtualPath) return;
-    const resolvedFile = filesRef.current[resolvedVirtualPath];
-    if (!resolvedFile || resolvedFile.type !== "html") return;
-    if (resolvedVirtualPath === activeFileRef.current) return;
+    const loaded = await loadFileContent(selectedPreviewHtml);
+    const sourceHtml =
+      typeof loaded === "string" && loaded.length > 0
+        ? loaded
+        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+          ? (filesRef.current[selectedPreviewHtml]?.content as string)
+          : "";
+    if (!sourceHtml) return;
 
-    console.log("[Preview] Current page:", resolvedVirtualPath);
-    syncPreviewActiveFile(resolvedVirtualPath, "load");
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(sourceHtml, "text/html");
+    const target = readElementByPath(parsed.body, previewSelectedPath);
+    if (!target || !target.parentElement) return;
+
+    target.parentElement.removeChild(target);
+
+    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+    if (liveTarget && liveTarget.parentElement) {
+      liveTarget.parentElement.removeChild(liveTarget);
+    }
+
+    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    const parentPath = previewSelectedPath.slice(0, -1);
+    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+      refreshPreviewDoc: false,
+      ...(parentPath.length > 0 ? { elementPath: parentPath } : {}),
+    });
+
+    setPreviewSelectedPath(null);
+    setPreviewSelectedElement(null);
+    setPreviewSelectedComputedStyles(null);
+    setSelectedId(null);
   }, [
-    extractMountRelativePath,
-    isPreviewMountReady,
-    resolveVirtualPathFromMountRelative,
-    syncPreviewActiveFile,
+    getLivePreviewSelectedElement,
+    loadFileContent,
+    persistPreviewHtmlContent,
+    previewSelectedPath,
+    selectedPreviewHtml,
   ]);
+  const handlePreviewDuplicateSelected = useCallback(async () => {
+    if (
+      !selectedPreviewHtml ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return;
+    }
+
+    const loaded = await loadFileContent(selectedPreviewHtml);
+    const sourceHtml =
+      typeof loaded === "string" && loaded.length > 0
+        ? loaded
+        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+          ? (filesRef.current[selectedPreviewHtml]?.content as string)
+          : "";
+    if (!sourceHtml) return;
+
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(sourceHtml, "text/html");
+    const target = readElementByPath(parsed.body, previewSelectedPath);
+    if (!(target instanceof HTMLElement) || !target.parentElement) return;
+
+    const duplicate = target.cloneNode(true) as HTMLElement;
+    if (duplicate.id) {
+      duplicate.id = `${duplicate.id}-copy-${Date.now()}`;
+    }
+    target.parentElement.insertBefore(duplicate, target.nextSibling);
+    const newPath = [...previewSelectedPath];
+    newPath[newPath.length - 1] = newPath[newPath.length - 1] + 1;
+
+    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+    if (liveTarget instanceof HTMLElement && liveTarget.parentElement) {
+      const liveDuplicate = liveTarget.cloneNode(true) as HTMLElement;
+      if (liveDuplicate.id) {
+        liveDuplicate.id = `${liveDuplicate.id}-copy-${Date.now()}`;
+      }
+      liveTarget.parentElement.insertBefore(
+        liveDuplicate,
+        liveTarget.nextSibling,
+      );
+    }
+
+    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+      refreshPreviewDoc: false,
+      saveNow: false,
+      skipAutoSave: true,
+      elementPath: newPath,
+    });
+    if (selectedPreviewSrc && parsed.body) {
+      postPreviewPatchToFrame({
+        type: "PREVIEW_APPLY_HTML",
+        html: parsed.body.innerHTML,
+      });
+    }
+    selectPreviewElementAtPath(newPath);
+    setIsCodePanelOpen(false);
+    setIsRightPanelOpen(true);
+    setSidebarToolMode("edit");
+    setPreviewMode("edit");
+    setInteractionMode("preview");
+  }, [
+    getLivePreviewSelectedElement,
+    loadFileContent,
+    persistPreviewHtmlContent,
+    postPreviewPatchToFrame,
+    previewSelectedPath,
+    selectPreviewElementAtPath,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+  ]);
+  const handlePreviewNudgeZIndex = useCallback(
+    (delta: number) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      const styleValue =
+        previewSelectedElement?.styles?.zIndex ??
+        previewSelectedComputedStyles?.zIndex ??
+        (liveTarget instanceof HTMLElement
+          ? liveTarget.style.zIndex ||
+            liveTarget.ownerDocument.defaultView
+              ?.getComputedStyle(liveTarget)
+              .getPropertyValue("z-index")
+          : "");
+      const current = parseNumericCssValue(styleValue) ?? 0;
+      const next = Math.max(0, Math.round(current + delta));
+      void applyPreviewStyleUpdateAtPath(
+        previewSelectedPath,
+        { zIndex: String(next) },
+        { syncSelectedElement: true },
+      );
+    },
+    [
+      applyPreviewStyleUpdateAtPath,
+      getLivePreviewSelectedElement,
+      previewSelectedComputedStyles?.zIndex,
+      previewSelectedElement?.styles?.zIndex,
+      previewSelectedPath,
+    ],
+  );
+  const handlePreviewResizeNudge = useCallback(
+    (axis: "width" | "height", delta: number) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      const liveRect =
+        liveTarget instanceof HTMLElement
+          ? liveTarget.getBoundingClientRect()
+          : null;
+      const fallbackBase = axis === "width" ? 120 : 48;
+      const styleValue =
+        axis === "width"
+          ? (previewSelectedElement?.styles?.width ??
+            previewSelectedComputedStyles?.width)
+          : (previewSelectedElement?.styles?.height ??
+            previewSelectedComputedStyles?.height);
+      const parsedStyle = parseNumericCssValue(styleValue);
+      const liveValue =
+        axis === "width"
+          ? (liveRect?.width ?? null)
+          : (liveRect?.height ?? null);
+      const base = parsedStyle ?? liveValue ?? fallbackBase;
+      const next = Math.max(16, Math.round(base + delta));
+      const stylePatch: Partial<React.CSSProperties> =
+        axis === "width" ? { width: `${next}px` } : { height: `${next}px` };
+      void applyPreviewStyleUpdateAtPath(previewSelectedPath, stylePatch, {
+        syncSelectedElement: true,
+      });
+    },
+    [
+      applyPreviewStyleUpdateAtPath,
+      getLivePreviewSelectedElement,
+      previewSelectedComputedStyles?.height,
+      previewSelectedComputedStyles?.width,
+      previewSelectedElement?.styles?.height,
+      previewSelectedElement?.styles?.width,
+      previewSelectedPath,
+    ],
+  );
+  const updatePreviewSelectionBox = useCallback(() => {
+    if (
+      interactionMode !== "preview" ||
+      previewMode !== "edit" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const stage = previewStageRef.current;
+    const frame = previewFrameRef.current;
+    const frameDocument =
+      frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
+    if (!stage || !frame || !frameDocument?.body) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const target = readElementByPath(frameDocument.body, previewSelectedPath);
+    if (!(target instanceof HTMLElement)) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    const stageRect = stage.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const left = targetRect.left - stageRect.left;
+    const top = targetRect.top - stageRect.top;
+    const width = targetRect.width;
+    const height = targetRect.height;
+    if (
+      !Number.isFinite(left) ||
+      !Number.isFinite(top) ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    setPreviewSelectionBox({
+      left: Math.round(left),
+      top: Math.round(top),
+      width: Math.round(width),
+      height: Math.round(height),
+    });
+  }, [interactionMode, previewMode, previewSelectedPath]);
+  const handlePreviewResizeHandleMouseDown = useCallback(
+    (
+      direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
+      event: React.MouseEvent<HTMLButtonElement>,
+    ) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+      const frame = previewFrameRef.current;
+      const frameDocument =
+        frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
+      if (!frame || !frameDocument?.body) return;
+      const target = readElementByPath(frameDocument.body, previewSelectedPath);
+      if (!(target instanceof HTMLElement)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const frameRect = frame.getBoundingClientRect();
+      const frameClientWidth = Math.max(1, frame.clientWidth || 0);
+      const frameClientHeight = Math.max(1, frame.clientHeight || 0);
+      const scaleX = frameRect.width / frameClientWidth;
+      const scaleY = frameRect.height / frameClientHeight;
+      const targetRect = target.getBoundingClientRect();
+      const startWidth = Math.max(16, Math.round(targetRect.width));
+      const startHeight = Math.max(16, Math.round(targetRect.height));
+      const computedStyle =
+        target.ownerDocument.defaultView?.getComputedStyle(target);
+      const startLeft =
+        parseNumericCssValue(target.style.left) ??
+        parseNumericCssValue(computedStyle?.left) ??
+        0;
+      const startTop =
+        parseNumericCssValue(target.style.top) ??
+        parseNumericCssValue(computedStyle?.top) ??
+        0;
+      const positionMode = String(computedStyle?.position || "")
+        .trim()
+        .toLowerCase();
+      const canMoveLeft =
+        positionMode === "absolute" ||
+        positionMode === "fixed" ||
+        positionMode === "relative" ||
+        positionMode === "sticky";
+      const canMoveTop = canMoveLeft;
+
+      previewResizeDragRef.current = {
+        path: [...previewSelectedPath],
+        target,
+        direction,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft,
+        startTop,
+        startWidth,
+        startHeight,
+        scaleX: Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1,
+        scaleY: Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1,
+        canMoveLeft,
+        canMoveTop,
+      };
+      setIsPreviewResizing(true);
+
+      const onMove = (moveEvent: MouseEvent) => {
+        const drag = previewResizeDragRef.current;
+        if (!drag) return;
+        const deltaX = (moveEvent.clientX - drag.startX) / drag.scaleX;
+        const deltaY = (moveEvent.clientY - drag.startY) / drag.scaleY;
+        const affectsEast = drag.direction.includes("e");
+        const affectsWest = drag.direction.includes("w");
+        const affectsSouth = drag.direction.includes("s");
+        const affectsNorth = drag.direction.includes("n");
+        const widthDelta = affectsWest ? -deltaX : affectsEast ? deltaX : 0;
+        const heightDelta = affectsNorth ? -deltaY : affectsSouth ? deltaY : 0;
+        const width = Math.max(16, Math.round(drag.startWidth + widthDelta));
+        const height = Math.max(16, Math.round(drag.startHeight + heightDelta));
+        const consumedLeftDelta = affectsWest ? drag.startWidth - width : 0;
+        const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
+        const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
+        const nextTop = Math.round(drag.startTop + consumedTopDelta);
+        drag.target.style.setProperty("width", `${width}px`);
+        drag.target.style.setProperty("height", `${height}px`);
+        if (affectsWest && drag.canMoveLeft) {
+          drag.target.style.setProperty("left", `${nextLeft}px`);
+        }
+        if (affectsNorth && drag.canMoveTop) {
+          drag.target.style.setProperty("top", `${nextTop}px`);
+        }
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                styles: {
+                  ...prev.styles,
+                  width: `${width}px`,
+                  height: `${height}px`,
+                  ...(affectsWest && drag.canMoveLeft
+                    ? { left: `${nextLeft}px` }
+                    : {}),
+                  ...(affectsNorth && drag.canMoveTop
+                    ? { top: `${nextTop}px` }
+                    : {}),
+                },
+              }
+            : prev,
+        );
+        updatePreviewSelectionBox();
+      };
+      const onUp = () => {
+        const drag = previewResizeDragRef.current;
+        previewResizeDragRef.current = null;
+        setIsPreviewResizing(false);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (!drag) return;
+        const stylePatch: Partial<React.CSSProperties> = {
+          width: drag.target.style.getPropertyValue("width"),
+          height: drag.target.style.getPropertyValue("height"),
+        };
+        if (drag.direction.includes("w") && drag.canMoveLeft) {
+          stylePatch.left = drag.target.style.getPropertyValue("left");
+        }
+        if (drag.direction.includes("n") && drag.canMoveTop) {
+          stylePatch.top = drag.target.style.getPropertyValue("top");
+        }
+        void applyPreviewLocalCssPatchAtPath(drag.path, stylePatch, {
+          syncSelectedElement: true,
+        });
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [previewSelectedPath, updatePreviewSelectionBox],
+  );
+  useEffect(() => {
+    if (
+      interactionMode !== "preview" ||
+      previewMode !== "edit" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      setPreviewSelectionBox(null);
+      return;
+    }
+    let rafId = 0;
+    const tick = () => {
+      updatePreviewSelectionBox();
+      rafId = window.requestAnimationFrame(tick);
+    };
+    tick();
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [
+    interactionMode,
+    previewMode,
+    previewRefreshNonce,
+    previewSelectedPath,
+    updatePreviewSelectionBox,
+  ]);
+  const applyPreviewAnimationUpdate = useCallback(
+    async (animation: string) => {
+      if (!selectedPreviewHtml || !Array.isArray(previewSelectedPath)) return;
+      const nextAnimation =
+        typeof animation === "string" ? animation.trim() : "";
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      if (!(target instanceof HTMLElement)) return;
+
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const jsLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        }
+        return head;
+      };
+      const ensureAssetLinkInHead = (
+        doc: Document,
+        htmlPath: string,
+        assetVirtualPath: string,
+        tag: "link" | "script",
+      ) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLElement>(
+            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
+          ),
+        ).some((node) => {
+          const refValue =
+            tag === "link"
+              ? (node.getAttribute("href") ?? "")
+              : (node.getAttribute("src") ?? "");
+          const resolved = resolveProjectRelativePath(htmlPath, refValue);
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(assetVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          assetVirtualPath,
+        );
+        if (!refPath) return;
+        if (tag === "link") {
+          const link = doc.createElement("link");
+          link.setAttribute("rel", "stylesheet");
+          link.setAttribute("href", refPath);
+          head.appendChild(link);
+        } else {
+          const script = doc.createElement("script");
+          script.setAttribute("src", refPath);
+          head.appendChild(script);
+        }
+      };
+      const replaceMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const start = safeSource.indexOf(markerStart);
+        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
+        const prefix =
+          start >= 0 ? safeSource.slice(0, start) : safeSource.trimEnd();
+        const suffix =
+          start >= 0 && endStart >= 0
+            ? safeSource.slice(endStart + markerEnd.length).trimStart()
+            : "";
+        if (!blockContent) {
+          return [prefix.trimEnd(), suffix].filter(Boolean).join("\n\n");
+        }
+        const block = `${markerStart}\n${blockContent}\n${markerEnd}`;
+        return [prefix.trimEnd(), block, suffix].filter(Boolean).join("\n\n");
+      };
+
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        cssLocalVirtualPath,
+        "link",
+      );
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        jsLocalVirtualPath,
+        "script",
+      );
+
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const assetDefs = [
+        {
+          path: cssLocalVirtualPath,
+          relativePath: "css/local.css",
+          defaultContent: "",
+        },
+        {
+          path: jsLocalVirtualPath,
+          relativePath: "js/local.js",
+          defaultContent: "// local page interactions\n",
+        },
+      ] as const;
+
+      const upsertedAssets: Record<string, ProjectFile> = {};
+      for (const asset of assetDefs) {
+        const absoluteAssetPath = absoluteHtmlDir
+          ? normalizePath(joinPath(absoluteHtmlDir, asset.relativePath))
+          : null;
+        if (absoluteAssetPath) {
+          const absoluteParent = getParentPath(absoluteAssetPath);
+          if (absoluteParent) {
+            await ensureDirectoryTree(absoluteParent);
+          }
+          filePathIndexRef.current[asset.path] = absoluteAssetPath;
+        }
+        let content =
+          typeof filesRef.current[asset.path]?.content === "string"
+            ? (filesRef.current[asset.path].content as string)
+            : asset.defaultContent;
+        if (!content && absoluteAssetPath) {
+          try {
+            content = await (Neutralino as any).filesystem.readFile(
+              absoluteAssetPath,
+            );
+          } catch {
+            content = asset.defaultContent;
+          }
+        }
+        if (absoluteAssetPath) {
+          await (Neutralino as any).filesystem.writeFile(
+            absoluteAssetPath,
+            content,
+          );
+        }
+        upsertedAssets[asset.path] = {
+          path: asset.path,
+          name: asset.path.split("/").slice(-1)[0],
+          type: asset.path.endsWith(".js") ? "js" : "css",
+          content,
+        } as ProjectFile;
+      }
+
+      const animationClassBase =
+        target.id ||
+        previewSelectedElement?.id ||
+        previewSelectedPath.join("-");
+      const animationClassName = `nx-local-anim-${String(animationClassBase)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const classTokens = new Set(
+        String(target.getAttribute("class") || "")
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      if (nextAnimation) {
+        classTokens.add(animationClassName);
+      } else {
+        classTokens.delete(animationClassName);
+      }
+      if (classTokens.size > 0) {
+        target.setAttribute("class", Array.from(classTokens).join(" "));
+      } else {
+        target.removeAttribute("class");
+      }
+      target.style.removeProperty("animation");
+      if (!target.getAttribute("style")?.trim()) {
+        target.removeAttribute("style");
+      }
+
+      const cssMarkerStart = `/* nocodex-local-animation:${animationClassName}:start */`;
+      const cssMarkerEnd = `/* nocodex-local-animation:${animationClassName}:end */`;
+      const cssRule = nextAnimation
+        ? `.${animationClassName} {\n  animation: ${nextAnimation};\n}`
+        : "";
+      const currentCss =
+        typeof upsertedAssets[cssLocalVirtualPath]?.content === "string"
+          ? (upsertedAssets[cssLocalVirtualPath].content as string)
+          : "";
+      const nextCss = replaceMarkerBlock(
+        currentCss,
+        cssMarkerStart,
+        cssMarkerEnd,
+        cssRule,
+      );
+      upsertedAssets[cssLocalVirtualPath] = {
+        ...upsertedAssets[cssLocalVirtualPath],
+        content: nextCss,
+      } as ProjectFile;
+      const absoluteCssPath = filePathIndexRef.current[cssLocalVirtualPath];
+      if (absoluteCssPath) {
+        await (Neutralino as any).filesystem.writeFile(
+          absoluteCssPath,
+          nextCss,
+        );
+      }
+
+      setFiles((prev) => ({
+        ...prev,
+        ...upsertedAssets,
+      }));
+
+      const serialized = parsed.documentElement.outerHTML;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: true,
+      });
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              animation: nextAnimation,
+              styles: {
+                ...prev.styles,
+                ...Object.fromEntries(
+                  Object.entries(prev.styles || {}).filter(
+                    ([key]) => key !== "animation",
+                  ),
+                ),
+              },
+              className: nextAnimation
+                ? Array.from(
+                    new Set(
+                      `${prev.className || ""} ${animationClassName}`
+                        .trim()
+                        .split(/\s+/)
+                        .filter(Boolean),
+                    ),
+                  ).join(" ")
+                : String(prev.className || "")
+                    .split(/\s+/)
+                    .filter((token) => token && token !== animationClassName)
+                    .join(" "),
+            }
+          : prev,
+      );
+    },
+    [
+      ensureDirectoryTree,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedElement?.id,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewLocalCssPatchAtPath = useCallback(
+    async (
+      elementPath: number[],
+      styles: Partial<React.CSSProperties>,
+      options?: { syncSelectedElement?: boolean },
+    ) => {
+      if (
+        !selectedPreviewHtml ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return;
+      }
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      const liveTarget = getLivePreviewSelectedElement(elementPath);
+      if (
+        !(target instanceof HTMLElement) &&
+        !(liveTarget instanceof HTMLElement)
+      ) {
+        return;
+      }
+
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        }
+        return head;
+      };
+      const ensureCssLinkInHead = (doc: Document, htmlPath: string) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]'),
+        ).some((node) => {
+          const resolved = resolveProjectRelativePath(
+            htmlPath,
+            node.getAttribute("href") ?? "",
+          );
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(cssLocalVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          cssLocalVirtualPath,
+        );
+        if (!refPath) return;
+        const link = doc.createElement("link");
+        link.setAttribute("rel", "stylesheet");
+        link.setAttribute("href", refPath);
+        head.appendChild(link);
+      };
+      const replaceMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const start = safeSource.indexOf(markerStart);
+        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
+        const prefix =
+          start >= 0
+            ? safeSource.slice(0, start).trimEnd()
+            : safeSource.trimEnd();
+        const suffix =
+          start >= 0 && endStart >= 0
+            ? safeSource.slice(endStart + markerEnd.length).trimStart()
+            : "";
+        const block = blockContent
+          ? `${markerStart}\n${blockContent}\n${markerEnd}`
+          : "";
+        return [prefix, block, suffix].filter(Boolean).join("\n\n");
+      };
+      const parseRuleBlock = (source: string): Record<string, string> => {
+        const match = source.match(/\{([\s\S]*)\}/);
+        if (!match) return {};
+        return match[1]
+          .split(";")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .reduce<Record<string, string>>((acc, entry) => {
+            const colonIndex = entry.indexOf(":");
+            if (colonIndex <= 0) return acc;
+            const key = entry.slice(0, colonIndex).trim();
+            const value = entry.slice(colonIndex + 1).trim();
+            if (key) acc[key] = value;
+            return acc;
+          }, {});
+      };
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const absoluteCssPath = absoluteHtmlDir
+        ? normalizePath(joinPath(absoluteHtmlDir, "css/local.css"))
+        : null;
+      if (absoluteCssPath) {
+        const absoluteParent = getParentPath(absoluteCssPath);
+        if (absoluteParent) {
+          await ensureDirectoryTree(absoluteParent);
+        }
+        filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
+      }
+
+      let cssContent =
+        typeof filesRef.current[cssLocalVirtualPath]?.content === "string"
+          ? (filesRef.current[cssLocalVirtualPath].content as string)
+          : "";
+      if (!cssContent && absoluteCssPath) {
+        try {
+          cssContent = await (Neutralino as any).filesystem.readFile(
+            absoluteCssPath,
+          );
+        } catch {
+          cssContent = "";
+        }
+      }
+
+      ensureCssLinkInHead(parsed, selectedPreviewHtml);
+      const classBase =
+        (target instanceof HTMLElement && target.id) ||
+        (liveTarget instanceof HTMLElement && liveTarget.id) ||
+        previewSelectedElement?.id ||
+        elementPath.join("-");
+      const className = `nx-local-style-${String(classBase)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const markerStart = `/* nocodex-local-style:${className}:start */`;
+      const markerEnd = `/* nocodex-local-style:${className}:end */`;
+      const existingStart = cssContent.indexOf(markerStart);
+      const existingEnd =
+        existingStart >= 0 ? cssContent.indexOf(markerEnd, existingStart) : -1;
+      const existingBlock =
+        existingStart >= 0 && existingEnd >= 0
+          ? cssContent.slice(existingStart + markerStart.length, existingEnd)
+          : "";
+      const mergedRules = parseRuleBlock(existingBlock);
+      for (const [key, rawValue] of Object.entries(styles)) {
+        const cssKey = toCssPropertyName(key);
+        const valueRaw =
+          rawValue === undefined || rawValue === null ? "" : String(rawValue);
+        const value =
+          cssKey === "font-family"
+            ? normalizeFontFamilyCssValue(valueRaw)
+            : valueRaw;
+        if (value) {
+          mergedRules[cssKey] = value;
+        } else {
+          delete mergedRules[cssKey];
+        }
+        if (target instanceof HTMLElement) {
+          target.style.removeProperty(cssKey);
+        }
+        if (liveTarget instanceof HTMLElement) {
+          liveTarget.style.removeProperty(cssKey);
+        }
+      }
+      const classTokens = new Set(
+        String(
+          (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
+            (liveTarget instanceof HTMLElement
+              ? liveTarget.getAttribute("class")
+              : "") ||
+            "",
+        )
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      classTokens.add(className);
+      const nextClassName = Array.from(classTokens).join(" ");
+      if (target instanceof HTMLElement) {
+        target.setAttribute("class", nextClassName);
+        if (!target.getAttribute("style")?.trim())
+          target.removeAttribute("style");
+      }
+      if (liveTarget instanceof HTMLElement) {
+        liveTarget.setAttribute("class", nextClassName);
+        if (!liveTarget.getAttribute("style")?.trim()) {
+          liveTarget.removeAttribute("style");
+        }
+      }
+      const cssRuleEntries = Object.entries(mergedRules);
+      const cssRuleBlock =
+        cssRuleEntries.length > 0
+          ? `.${className} {\n  ${cssRuleEntries
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(";\n  ")};\n}`
+          : "";
+      const nextCssContent = replaceMarkerBlock(
+        cssContent,
+        markerStart,
+        markerEnd,
+        cssRuleBlock,
+      );
+      textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
+      const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
+        ? {
+            ...filesRef.current[cssLocalVirtualPath],
+            content: nextCssContent,
+            type: "css",
+          }
+        : {
+            path: cssLocalVirtualPath,
+            name: "local.css",
+            type: "css",
+            content: nextCssContent,
+          };
+      filesRef.current = {
+        ...filesRef.current,
+        [cssLocalVirtualPath]: cssFile,
+      };
+      setFiles((prev) => ({
+        ...prev,
+        [cssLocalVirtualPath]: cssFile,
+      }));
+      if (absoluteCssPath) {
+        await (Neutralino as any).filesystem.writeFile(
+          absoluteCssPath,
+          nextCssContent,
+        );
+        delete pendingPreviewWritesRef.current[cssLocalVirtualPath];
+      } else {
+        pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+      }
+      if (liveTarget instanceof HTMLElement) {
+        const liveDoc = liveTarget.ownerDocument;
+        const liveHead = ensureHeadElement(liveDoc);
+        let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
+          `style[data-nx-local-style="${className}"]`,
+        );
+        if (!runtimeStyle) {
+          runtimeStyle = liveDoc.createElement("style");
+          runtimeStyle.setAttribute("data-nx-local-style", className);
+          liveHead.appendChild(runtimeStyle);
+        }
+        runtimeStyle.textContent = cssRuleBlock;
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath,
+      });
+
+      const pathMatchesSelection =
+        Array.isArray(previewSelectedPath) &&
+        previewSelectedPath.length === elementPath.length &&
+        previewSelectedPath.every(
+          (segment, idx) => segment === elementPath[idx],
+        );
+      const shouldSyncSelected =
+        options?.syncSelectedElement ?? pathMatchesSelection;
+      if (!shouldSyncSelected) return;
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              className: nextClassName,
+              styles: {
+                ...prev.styles,
+                ...styles,
+              },
+            }
+          : prev,
+      );
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedElement?.id,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewDrawCreate = useCallback(
+    async (
+      parentPath: number[],
+      tag: string,
+      rawStyles: Record<string, string>,
+    ) => {
+      if (!selectedPreviewHtml || !Array.isArray(parentPath)) return;
+      const normalizedParentPath = parentPath
+        .map((segment) => Number(segment))
+        .filter((segment) => Number.isFinite(segment))
+        .map((segment) => Math.max(0, Math.trunc(segment)));
+      if (normalizedParentPath.length !== parentPath.length) return;
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      let effectiveParentPath = normalizedParentPath;
+      let parsedParent =
+        effectiveParentPath.length > 0
+          ? readElementByPath(parsed.body, effectiveParentPath)
+          : parsed.body;
+      while (
+        parsedParent instanceof HTMLElement &&
+        parsedParent !== parsed.body &&
+        VOID_HTML_TAGS.has(String(parsedParent.tagName || "").toLowerCase()) &&
+        effectiveParentPath.length > 0
+      ) {
+        effectiveParentPath = effectiveParentPath.slice(0, -1);
+        parsedParent =
+          effectiveParentPath.length > 0
+            ? readElementByPath(parsed.body, effectiveParentPath)
+            : parsed.body;
+      }
+      if (
+        !(parsedParent instanceof HTMLElement) &&
+        !(parsedParent instanceof HTMLBodyElement)
+      ) {
+        return;
+      }
+
+      const drawTag = normalizePreviewDrawTag(tag);
+      const normalizedStyles = {
+        ...Object.fromEntries(
+          Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+        ),
+        // Ensure drawn elements appear on top of existing content
+        zIndex:
+          (rawStyles?.zIndex ?? rawStyles?.["z-index"]) ? undefined : "100",
+      } as Record<string, string>;
+
+      const applyStyleMap = (
+        el: HTMLElement,
+        styleMap: Record<string, string>,
+      ) => {
+        for (const [key, value] of Object.entries(styleMap)) {
+          const cssKey = toCssPropertyName(key);
+          const nextValue = String(value ?? "");
+          if (!nextValue) {
+            el.style.removeProperty(cssKey);
+          } else {
+            el.style.setProperty(cssKey, nextValue);
+          }
+        }
+      };
+
+      const buildDrawElement = (doc: Document): HTMLElement => {
+        const element = doc.createElement(drawTag);
+        applyStyleMap(element, normalizedStyles);
+        if (drawTag === "img") {
+          element.setAttribute("src", "https://picsum.photos/420/260");
+          element.setAttribute("alt", "Image");
+        } else if (
+          drawTag === "p" ||
+          drawTag === "span" ||
+          drawTag === "button" ||
+          drawTag === "h1" ||
+          drawTag === "h2" ||
+          drawTag === "h3"
+        ) {
+          element.textContent = "New Text";
+        } else if (
+          drawTag === "div" ||
+          drawTag === "section" ||
+          drawTag === "article" ||
+          drawTag === "aside" ||
+          drawTag === "main" ||
+          drawTag === "header" ||
+          drawTag === "footer" ||
+          drawTag === "nav"
+        ) {
+          // No default styles saved to HTML — visual highlight is applied via
+          // a temporary CSS class (__nx-draw-new) in the iframe only.
+        }
+        return element;
+      };
+
+      const parsedNewElement = buildDrawElement(parsed);
+      parsedParent.appendChild(parsedNewElement);
+      const newIndex = Math.max(0, parsedParent.children.length - 1);
+      const newPath = [...effectiveParentPath, newIndex];
+
+      // Send PREVIEW_INJECT_ELEMENT into the iframe via postMessage.
+      // This is the correct architecture — the iframe inserts the element itself,
+      // just like how PREVIEW_APPLY_STYLE works. Direct contentDocument mutation
+      // can fail in sandboxed/mounted-preview contexts and causes index mismatches.
+      postPreviewPatchToFrame({
+        type: "PREVIEW_INJECT_ELEMENT",
+        parentPath: effectiveParentPath,
+        tag: drawTag,
+        styles: normalizedStyles,
+        index: newIndex,
+      });
+
+      // Also update parsedParent positioning in the serialized HTML
+      if (effectiveParentPath.length > 0) {
+        const computedStyleStr = parsedParent.getAttribute("style") || "";
+        if (
+          !computedStyleStr.includes("position") ||
+          computedStyleStr.includes("position: static") ||
+          computedStyleStr.includes("position:static")
+        ) {
+          parsedParent.style.position = "relative";
+        }
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        // Do NOT pass elementPath here — that triggers markPreviewPathDirty which
+        // adds the orange __nx-preview-dirty overlay. A freshly drawn element is
+        // already committed so it should not appear as unsaved.
+      });
+
+      // Set optimistic React state immediately so the right panel opens.
+      // The iframe will send back PREVIEW_SELECT shortly which will fully sync the state.
+      const optimisticInlineStyles = parseInlineStyleText(
+        parsedNewElement.getAttribute("style") || "",
+      );
+      const mergedStyles: React.CSSProperties = {
+        ...optimisticInlineStyles,
+      };
+
+      const isContainerTag = [
+        "div",
+        "section",
+        "article",
+        "aside",
+        "main",
+        "header",
+        "footer",
+        "nav",
+      ].includes(drawTag);
+      const nextElement: VirtualElement = {
+        id: `preview-${Date.now()}`,
+        type: drawTag,
+        name: drawTag.toUpperCase(),
+        content:
+          drawTag === "img" ? undefined : isContainerTag ? "" : "New Text",
+        ...(drawTag === "img" ? { src: "https://picsum.photos/420/260" } : {}),
+        styles: mergedStyles,
+        children: [],
+      };
+
+      setPreviewSelectedPath(newPath);
+      setPreviewSelectedElement(nextElement);
+      setPreviewSelectedComputedStyles(null);
+      setSelectedId(null);
+      setIsCodePanelOpen(false);
+      setIsRightPanelOpen(true);
+    },
+    [
+      loadFileContent,
+      persistPreviewHtmlContent,
+      postPreviewPatchToFrame,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewDropCreate = useCallback(
+    async (rawType: string, clientX: number, clientY: number) => {
+      const dropType = String(rawType || "").trim();
+      if (!dropType || !selectedPreviewHtml) return;
+      const isMountedPreviewDrop = Boolean(selectedPreviewSrc);
+
+      const idFor = createPresetIdFactory(dropType);
+      const nextElement =
+        buildPresetElementV2(dropType, idFor) ??
+        buildStandardElement(dropType, idFor("element"));
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const parsedNode = materializeVirtualElement(parsed, nextElement);
+      if (!(parsedNode instanceof HTMLElement)) return;
+      const requiresAddToolAssets = ADD_TOOL_COMPONENT_PRESETS.has(dropType);
+      const htmlDirVirtual = selectedPreviewHtml.includes("/")
+        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+        : "";
+      const cssLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
+      const jsLocalVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
+      );
+      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
+        if (doc.head) return doc.head;
+        const head = doc.createElement("head");
+        if (doc.documentElement) {
+          doc.documentElement.insertBefore(head, doc.body || null);
+        } else {
+          const html = doc.createElement("html");
+          html.appendChild(head);
+          if (doc.body) {
+            html.appendChild(doc.body);
+          }
+          doc.appendChild(html);
+        }
+        return head;
+      };
+      const ensureAssetLinkInHead = (
+        doc: Document,
+        htmlPath: string,
+        assetVirtualPath: string,
+        tag: "link" | "script",
+      ) => {
+        const hasAssetRef = Array.from(
+          doc.querySelectorAll<HTMLElement>(
+            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
+          ),
+        ).some((node) => {
+          const refValue =
+            tag === "link"
+              ? (node.getAttribute("href") ?? "")
+              : (node.getAttribute("src") ?? "");
+          const resolved = resolveProjectRelativePath(htmlPath, refValue);
+          return (
+            normalizeProjectRelative(resolved || "") ===
+            normalizeProjectRelative(assetVirtualPath)
+          );
+        });
+        if (hasAssetRef) return;
+        const head = ensureHeadElement(doc);
+        const refPath = relativePathBetweenVirtualFiles(
+          htmlPath,
+          assetVirtualPath,
+        );
+        if (!refPath) return;
+        if (tag === "link") {
+          const link = doc.createElement("link");
+          link.setAttribute("rel", "stylesheet");
+          link.setAttribute("href", refPath);
+          head.appendChild(link);
+        } else {
+          const script = doc.createElement("script");
+          script.setAttribute("src", refPath);
+          head.appendChild(script);
+        }
+      };
+      const mergeMarkerBlock = (
+        source: string,
+        markerStart: string,
+        markerEnd: string,
+        blockContent: string,
+      ): string => {
+        const safeSource = source || "";
+        const block = blockContent
+          ? `${markerStart}\n${blockContent}\n${markerEnd}`
+          : "";
+        if (
+          safeSource.includes(markerStart) &&
+          safeSource.includes(markerEnd)
+        ) {
+          const start = safeSource.indexOf(markerStart);
+          const endStart = safeSource.indexOf(markerEnd, start);
+          const end = endStart >= 0 ? endStart + markerEnd.length : start;
+          const prefix = safeSource.slice(0, start).trimEnd();
+          const suffix = safeSource.slice(end).trimStart();
+          return [prefix, block, suffix].filter(Boolean).join("\n\n");
+        }
+        if (!block) return safeSource;
+        const needsGap = safeSource.length > 0 && !safeSource.endsWith("\n");
+        return `${safeSource}${needsGap ? "\n\n" : ""}${block}\n`;
+      };
+      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
+      const absoluteHtmlDir = absoluteHtmlPath
+        ? getParentPath(absoluteHtmlPath)
+        : null;
+      const upsertLocalAsset = async (
+        assetVirtualPath: string,
+        relativePath: string,
+        nextContentBuilder: (current: string) => string,
+        defaultContent = "",
+      ): Promise<string> => {
+        const absoluteAssetPath = absoluteHtmlDir
+          ? normalizePath(joinPath(absoluteHtmlDir, relativePath))
+          : null;
+        if (absoluteAssetPath) {
+          const absoluteParent = getParentPath(absoluteAssetPath);
+          if (absoluteParent) {
+            await ensureDirectoryTree(absoluteParent);
+          }
+          filePathIndexRef.current[assetVirtualPath] = absoluteAssetPath;
+        }
+        let existingContent =
+          typeof filesRef.current[assetVirtualPath]?.content === "string"
+            ? (filesRef.current[assetVirtualPath].content as string)
+            : "";
+        if (!existingContent && absoluteAssetPath) {
+          try {
+            existingContent = await (Neutralino as any).filesystem.readFile(
+              absoluteAssetPath,
+            );
+          } catch {
+            existingContent = defaultContent;
+          }
+        }
+        if (!existingContent) existingContent = defaultContent;
+        const nextContent = nextContentBuilder(existingContent);
+        textFileCacheRef.current[assetVirtualPath] = nextContent;
+        const name = assetVirtualPath.includes("/")
+          ? assetVirtualPath.slice(assetVirtualPath.lastIndexOf("/") + 1)
+          : assetVirtualPath;
+        const nextFile: ProjectFile = filesRef.current[assetVirtualPath]
+          ? {
+              ...filesRef.current[assetVirtualPath],
+              content: nextContent,
+              type: inferFileType(name),
+            }
+          : {
+              path: assetVirtualPath,
+              name,
+              type: inferFileType(name),
+              content: nextContent,
+            };
+        filesRef.current = {
+          ...filesRef.current,
+          [assetVirtualPath]: nextFile,
+        };
+        setFiles((prev) => ({
+          ...prev,
+          [assetVirtualPath]: nextFile,
+        }));
+        if (absoluteAssetPath) {
+          await (Neutralino as any).filesystem.writeFile(
+            absoluteAssetPath,
+            nextContent,
+          );
+          delete pendingPreviewWritesRef.current[assetVirtualPath];
+        } else {
+          pendingPreviewWritesRef.current[assetVirtualPath] = nextContent;
+        }
+        return nextContent;
+      };
+
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        cssLocalVirtualPath,
+        "link",
+      );
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        jsLocalVirtualPath,
+        "script",
+      );
+
+      if (requiresAddToolAssets) {
+        const removeLegacySharedAssetRefs = (
+          doc: Document,
+          htmlPath: string,
+        ) => {
+          const legacyPaths = new Set([
+            "shared/css/nx-add-tool-components.css",
+            "shared/js/nx-add-tool-components.js",
+            "__nx_add_tool.css",
+            "__nx_add_tool.js",
+          ]);
+          const nodes = Array.from(
+            doc.querySelectorAll<HTMLElement>(
+              'link[rel="stylesheet"][href],script[src]',
+            ),
+          );
+          for (const node of nodes) {
+            const refValue =
+              node.tagName.toLowerCase() === "link"
+                ? (node.getAttribute("href") ?? "")
+                : (node.getAttribute("src") ?? "");
+            const resolved = normalizeProjectRelative(
+              resolveProjectRelativePath(htmlPath, refValue) || "",
+            );
+            if (legacyPaths.has(resolved)) {
+              node.parentElement?.removeChild(node);
+            }
+          }
+          Array.from(
+            doc.querySelectorAll<HTMLElement>(
+              'style[data-nx-add-tool="css"],script[data-nx-add-tool="js"]',
+            ),
+          ).forEach((node) => node.parentElement?.removeChild(node));
+        };
+        removeLegacySharedAssetRefs(parsed, selectedPreviewHtml);
+        const assetDefs = [
+          {
+            path: cssLocalVirtualPath,
+            relativePath: "css/local.css",
+            markerStart: ADD_TOOL_CSS_MARKER_START,
+            markerEnd: ADD_TOOL_CSS_MARKER_END,
+            block: ADD_TOOL_COMPONENTS_CSS_CONTENT,
+          },
+          {
+            path: jsLocalVirtualPath,
+            relativePath: "js/local.js",
+            markerStart: ADD_TOOL_JS_MARKER_START,
+            markerEnd: ADD_TOOL_JS_MARKER_END,
+            block: ADD_TOOL_COMPONENTS_JS_CONTENT,
+          },
+        ] as const;
+        for (const asset of assetDefs) {
+          try {
+            await upsertLocalAsset(
+              asset.path,
+              asset.relativePath,
+              (existingContent) =>
+                mergeMarkerBlock(
+                  existingContent,
+                  asset.markerStart,
+                  asset.markerEnd,
+                  asset.block,
+                ),
+            );
+          } catch (error) {
+            console.warn("Failed writing slide local asset file:", error);
+          }
+        }
+      }
+
+      const pickDropHost = (doc: Document): HTMLElement => {
+        const candidates = [
+          ".maincontainer",
+          ".mainContainer",
+          "#maincontainer",
+          "#mainContainer",
+          "#contentFrame",
+          ".contentFrame",
+          ".mainContent",
+          "#container",
+        ];
+        for (const selector of candidates) {
+          const found = doc.querySelector(selector);
+          if (found instanceof HTMLElement) return found;
+        }
+        return doc.body;
+      };
+      const computePathFromBody = (element: Element | null): number[] => {
+        if (!element) return [];
+        const path: number[] = [];
+        let cursor: Element | null = element;
+        while (cursor && cursor.parentElement) {
+          const parentEl: HTMLElement = cursor.parentElement;
+          const index = Array.from(parentEl.children).indexOf(cursor);
+          if (index < 0) break;
+          path.unshift(index);
+          if (parentEl === element.ownerDocument.body) break;
+          cursor = parentEl;
+        }
+        return path;
+      };
+      const ensurePositionableHost = (host: HTMLElement) => {
+        const computed = host.ownerDocument.defaultView?.getComputedStyle(host);
+        if (!computed) return;
+        if (!computed.position || computed.position === "static") {
+          host.style.setProperty("position", "relative");
+        }
+      };
+
+      const liveDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const liveWindow = liveDocument?.defaultView ?? null;
+      const frameRect = previewFrameRef.current?.getBoundingClientRect();
+      const parsedDropHost = pickDropHost(parsed);
+      const liveDropHost = liveDocument ? pickDropHost(liveDocument) : null;
+      ensurePositionableHost(parsedDropHost);
+      if (liveDropHost) {
+        ensurePositionableHost(liveDropHost);
+      }
+      const getDocumentOffset = (
+        element: HTMLElement,
+      ): { left: number; top: number } => {
+        let left = 0;
+        let top = 0;
+        let cursor: HTMLElement | null = element;
+        while (cursor) {
+          left += cursor.offsetLeft || 0;
+          top += cursor.offsetTop || 0;
+          cursor = cursor.offsetParent as HTMLElement | null;
+        }
+        return { left, top };
+      };
+
+      let nextLeft = 0;
+      let nextTop = 0;
+      let normalizedDropX: number | null = null;
+      let normalizedDropY: number | null = null;
+      if (frameRect && liveDropHost) {
+        const liveViewportWidth = Math.max(
+          1,
+          previewFrameRef.current?.clientWidth ||
+            liveDocument?.documentElement?.clientWidth ||
+            0,
+        );
+        const liveViewportHeight = Math.max(
+          1,
+          previewFrameRef.current?.clientHeight ||
+            liveDocument?.documentElement?.clientHeight ||
+            0,
+        );
+        const scaleX =
+          liveViewportWidth > 0 ? frameRect.width / liveViewportWidth : 1;
+        const scaleY =
+          liveViewportHeight > 0 ? frameRect.height / liveViewportHeight : 1;
+        normalizedDropX =
+          frameRect.width > 0
+            ? Math.max(
+                0,
+                Math.min(1, (clientX - frameRect.left) / frameRect.width),
+              )
+            : null;
+        normalizedDropY =
+          frameRect.height > 0
+            ? Math.max(
+                0,
+                Math.min(1, (clientY - frameRect.top) / frameRect.height),
+              )
+            : null;
+        const innerClientX = (clientX - frameRect.left) / (scaleX || 1);
+        const innerClientY = (clientY - frameRect.top) / (scaleY || 1);
+        const innerDocX = innerClientX + (liveWindow?.scrollX || 0);
+        const innerDocY = innerClientY + (liveWindow?.scrollY || 0);
+        const hostOffset = getDocumentOffset(liveDropHost);
+        nextLeft = Math.max(0, Math.round(innerDocX - hostOffset.left));
+        nextTop = Math.max(0, Math.round(innerDocY - hostOffset.top));
+      }
+      const hostWidth = Math.max(
+        0,
+        liveDropHost?.scrollWidth ||
+          liveDropHost?.clientWidth ||
+          parsedDropHost.clientWidth ||
+          0,
+      );
+      const hostHeight = Math.max(
+        0,
+        liveDropHost?.scrollHeight ||
+          liveDropHost?.clientHeight ||
+          parsedDropHost.clientHeight ||
+          0,
+      );
+      if (hostWidth > 0) {
+        if (
+          normalizedDropX !== null &&
+          nextLeft === 0 &&
+          normalizedDropX > 0.04
+        ) {
+          nextLeft = Math.round(normalizedDropX * hostWidth);
+        }
+        nextLeft = Math.max(0, Math.min(nextLeft, Math.max(0, hostWidth - 24)));
+      }
+      if (hostHeight > 0) {
+        if (
+          normalizedDropY !== null &&
+          nextTop === 0 &&
+          normalizedDropY > 0.04
+        ) {
+          nextTop = Math.round(normalizedDropY * hostHeight);
+        }
+        nextTop = Math.max(0, Math.min(nextTop, Math.max(0, hostHeight - 24)));
+      }
+      const instanceClassName = `nx-local-drop-${String(
+        nextElement.id || `drop-${Date.now()}`,
+      )
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const styleRules: string[] = [
+        "position: absolute",
+        `left: ${nextLeft}px`,
+        `top: ${nextTop}px`,
+      ];
+      for (const [key, value] of Object.entries(nextElement.styles || {})) {
+        if (value === undefined || value === null || value === "") continue;
+        styleRules.push(`${toCssPropertyName(key)}: ${String(value)}`);
+      }
+      if (requiresAddToolAssets) {
+        styleRules.push("max-width: 100%");
+        styleRules.push("box-sizing: border-box");
+      }
+      const dropMarkerStart = `/* nocodex-local-drop:${instanceClassName}:start */`;
+      const dropMarkerEnd = `/* nocodex-local-drop:${instanceClassName}:end */`;
+      const dropCssBlock = `.${instanceClassName} {\n  ${styleRules.join(";\n  ")};\n}`;
+      try {
+        await upsertLocalAsset(
+          cssLocalVirtualPath,
+          "css/local.css",
+          (existingContent) =>
+            mergeMarkerBlock(
+              existingContent,
+              dropMarkerStart,
+              dropMarkerEnd,
+              dropCssBlock,
+            ),
+        );
+        await upsertLocalAsset(
+          jsLocalVirtualPath,
+          "js/local.js",
+          (existingContent) =>
+            existingContent || "// local page interactions\n",
+          "// local page interactions\n",
+        );
+      } catch (error) {
+        console.warn("Failed wiring local drop assets:", error);
+      }
+      const currentClassTokens = new Set(
+        String(parsedNode.getAttribute("class") || "")
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      );
+      currentClassTokens.add(instanceClassName);
+      parsedNode.setAttribute(
+        "class",
+        Array.from(currentClassTokens).join(" "),
+      );
+      parsedNode.removeAttribute("style");
+      parsedDropHost.appendChild(parsedNode);
+      const newPath = computePathFromBody(parsedNode);
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+
+      let appliedLive = false;
+      if (liveDocument?.body) {
+        const liveHead = liveDocument.head || liveDocument.documentElement;
+        if (liveHead) {
+          let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
+            `style[data-nx-local-drop="${instanceClassName}"]`,
+          );
+          if (!runtimeStyle) {
+            runtimeStyle = liveDocument.createElement("style");
+            runtimeStyle.setAttribute("data-nx-local-drop", instanceClassName);
+            liveHead.appendChild(runtimeStyle);
+          }
+          runtimeStyle.textContent = dropCssBlock;
+        }
+        const liveNode = materializeVirtualElement(liveDocument, nextElement);
+        if (liveNode instanceof HTMLElement) {
+          const liveDropHost = pickDropHost(liveDocument);
+          ensurePositionableHost(liveDropHost);
+          liveNode.classList.add(instanceClassName);
+          liveNode.style.setProperty("position", "absolute");
+          liveNode.style.setProperty("left", `${nextLeft}px`);
+          liveNode.style.setProperty("top", `${nextTop}px`);
+          if (requiresAddToolAssets) {
+            liveNode.style.setProperty("max-width", "100%");
+            liveNode.style.setProperty("box-sizing", "border-box");
+          }
+          liveDropHost.appendChild(liveNode);
+          appliedLive = true;
+        }
+      }
+
+      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc:
+          needsAssetReload || (!appliedLive && !isMountedPreviewDrop),
+        saveNow: isMountedPreviewDrop,
+        skipAutoSave: !isMountedPreviewDrop,
+        elementPath: newPath,
+      });
+      if (isMountedPreviewDrop && parsed.body && !needsAssetReload) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_APPLY_HTML",
+          html: parsed.body.innerHTML,
+        });
+      }
+
+      setPreviewSelectedPath(newPath);
+      setPreviewSelectedElement({
+        ...nextElement,
+        className: instanceClassName,
+        styles: {
+          ...nextElement.styles,
+        },
+      });
+      setPreviewSelectedComputedStyles(null);
+      setSelectedId(null);
+      setIsCodePanelOpen(false);
+      setIsRightPanelOpen(true);
+      requestPropertiesPanelTab("content");
+      setSidebarToolMode("edit");
+      setPreviewMode("edit");
+      setInteractionMode("preview");
+    },
+    [
+      loadFileContent,
+      postPreviewPatchToFrame,
+      persistPreviewHtmlContent,
+      requestPropertiesPanelTab,
+      selectedPreviewHtml,
+      selectedPreviewSrc,
+    ],
+  );
+  useEffect(() => {
+    applyPreviewDropCreateRef.current = applyPreviewDropCreate;
+  }, [applyPreviewDropCreate]);
+  const handlePreviewStageDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!selectedPreviewHtml) return;
+      const payload = (
+        getToolboxDragPayload(event.dataTransfer).trim() ||
+        toolboxDragTypeRef.current
+      ).trim();
+      if (!payload) return;
+      event.preventDefault();
+      setIsToolboxDragging(false);
+      toolboxDragTypeRef.current = "";
+      void applyPreviewDropCreate(payload, event.clientX, event.clientY);
+    },
+    [applyPreviewDropCreate, selectedPreviewHtml],
+  );
+  const handlePreviewStyleUpdateStable = useCallback(
+    (styles: Partial<React.CSSProperties>) => {
+      void applyPreviewStyleUpdate(styles);
+    },
+    [applyPreviewStyleUpdate],
+  );
+  const handlePreviewContentUpdateStable = useCallback(
+    (data: {
+      content?: string;
+      html?: string;
+      src?: string;
+      href?: string;
+    }) => {
+      void applyPreviewContentUpdate(data);
+    },
+    [applyPreviewContentUpdate],
+  );
+  const handlePreviewAttributesUpdateStable = useCallback(
+    (attributes: Record<string, string>) => {
+      void applyPreviewAttributesUpdate(attributes);
+    },
+    [applyPreviewAttributesUpdate],
+  );
+  const handlePreviewAnimationUpdateStable = useCallback(
+    (animation: string) => {
+      void applyPreviewAnimationUpdate(animation);
+    },
+    [applyPreviewAnimationUpdate],
+  );
+  const handlePreviewDeleteStable = useCallback(() => {
+    void applyPreviewDeleteSelected();
+  }, [applyPreviewDeleteSelected]);
+  const noopPropertiesAction = useCallback(() => {}, []);
+  const noopMoveOrder = useCallback((_dir: "up" | "down") => {}, []);
 
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
-      const payload = event.data as
+      if (!isActivePreviewMessageSource(event.source)) return;
+      let payload = event.data as
         | {
             type?: string;
-            path?: string;
+            path?: string | number[];
             level?: PreviewConsoleLevel;
             message?: string;
             source?: string;
+            html?: string;
+            tag?: string;
+            id?: string;
+            className?: string;
+            attributes?: Record<string, string>;
+            text?: string;
+            inlineStyle?: string;
+            src?: string;
+            href?: string;
+            dir?: string;
+            key?: string;
+            code?: string;
+            ctrlKey?: boolean;
+            metaKey?: boolean;
+            shiftKey?: boolean;
+            altKey?: boolean;
+            editable?: boolean;
+            computedStyles?: Record<string, string>;
+            parentPath?: number[];
+            styles?: Record<string, string | number>;
           }
         | undefined;
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          return;
+        }
+      }
       if (!payload || !payload.type) return;
 
       if (payload.type === "PREVIEW_CONSOLE") {
         const level = payload.level ?? "log";
-        const message = typeof payload.message === "string" ? payload.message : "";
+        const message =
+          typeof payload.message === "string" ? payload.message : "";
         if (!message) return;
         appendPreviewConsole(level, message, payload.source || "preview");
         return;
       }
+      if (payload.type === "PREVIEW_HOTKEY") {
+        const key = String(payload.key || "").toLowerCase();
+        const code = String(payload.code || "");
+        if (!key && !code) return;
+        const hasModifier = Boolean(payload.ctrlKey || payload.metaKey);
+        const editableTarget = Boolean(payload.editable);
+        const altKey = Boolean(payload.altKey);
+        const shiftKey = Boolean(payload.shiftKey);
+
+        if (hasModifier && editableTarget) {
+          if (key === "s") {
+            void saveCodeDraftsRef.current?.();
+            void flushPendingPreviewSaves();
+            return;
+          }
+          if (key === "t") {
+            requestPreviewRefreshWithUnsavedGuard();
+            return;
+          }
+          if (key === "p") {
+            requestSwitchToPreviewMode();
+            return;
+          }
+          if (key === "f") {
+            setIsLeftPanelOpen(true);
+            setIsRightPanelOpen(true);
+            setIsCodePanelOpen(false);
+            return;
+          }
+          if (key === "e") {
+            setSidebarToolMode("edit");
+            setInteractionMode("preview");
+            setPreviewMode("edit");
+            return;
+          }
+          if (key === "k") {
+            setIsCommandPaletteOpen((prev) => !prev);
+            return;
+          }
+          if (code === "Backquote") {
+            setShowTerminal((prev) => !prev);
+          }
+          return;
+        }
+        if (
+          key === "escape" &&
+          isPageSwitchPromptOpen &&
+          !isPageSwitchPromptBusy
+        ) {
+          closePendingPageSwitchPrompt();
+          return;
+        }
+        if (key === "escape" && isZenMode) {
+          toggleZenMode();
+          return;
+        }
+
+        if (!hasModifier && !altKey && !editableTarget) {
+          if (key === "w") {
+            setIsLeftPanelOpen((prev) => !prev);
+            return;
+          }
+          if (key === "e") {
+            setIsRightPanelOpen((prev) => {
+              const next = !prev;
+              if (next) setIsCodePanelOpen(false);
+              return next;
+            });
+            return;
+          }
+        }
+        if (!hasModifier) return;
+
+        if (key === "k") {
+          setIsCommandPaletteOpen((prev) => !prev);
+          return;
+        }
+        if (key === "f") {
+          setIsLeftPanelOpen(true);
+          setIsRightPanelOpen(true);
+          setIsCodePanelOpen(false);
+          return;
+        }
+        if (key === "p") {
+          requestSwitchToPreviewMode();
+          return;
+        }
+        if (key === "e") {
+          setSidebarToolMode("edit");
+          setInteractionMode("preview");
+          setPreviewMode("edit");
+          return;
+        }
+        if (key === "`" || code === "Backquote") {
+          setShowTerminal((prev) => !prev);
+          return;
+        }
+        if (key === "j") {
+          toggleZenMode();
+          return;
+        }
+        if (key === "s") {
+          void saveCodeDraftsRef.current?.();
+          void flushPendingPreviewSaves();
+          return;
+        }
+        if (key === "t") {
+          requestPreviewRefreshWithUnsavedGuard();
+          return;
+        }
+        if (key === "z" && !shiftKey) {
+          runUndo();
+          return;
+        }
+        if (key === "u" || key === "y" || (key === "z" && shiftKey)) {
+          runRedo();
+        }
+        return;
+      }
 
       if (payload.type === "PREVIEW_NAVIGATE") {
-        if (!selectedPreviewHtml || !payload.path) return;
+        if (
+          !selectedPreviewHtml ||
+          typeof payload.path !== "string" ||
+          !payload.path
+        )
+          return;
+
         const target = resolvePreviewNavigationPath(
           selectedPreviewHtml,
           payload.path,
           filesRef.current,
         );
         if (!target) return;
-        console.log("[Preview] Current page:", target);
-        if (selectedPreviewSrc) {
-          setPreviewSyncedFile((prev) => (prev === target ? prev : target));
-          if (interactionModeRef.current !== "preview") {
-            setInteractionMode("preview");
-          }
-        } else {
-          if (target === activeFileRef.current) return;
-          syncPreviewActiveFile(target, "navigate");
-        }
+
+        if (!shouldProcessPreviewPageSignal(target)) return;
+        if (target === activeFileRef.current) return;
+
+        syncPreviewActiveFile(target, "navigate");
+        return;
+      }
+
+      if (payload.type === "PREVIEW_SWIPE_DIR") {
+        const currentPath =
+          selectedPreviewHtmlRef.current || activeFileRef.current;
+        if (!currentPath) return;
+        const dir = payload.dir === "prev" ? "prev" : "next";
+        const nextPath = resolveAdjacentSlidePath(currentPath, dir);
+        if (!nextPath || nextPath === currentPath) return;
+        (window as any).__explorerNavTime = Date.now();
+        explorerSelectionLockRef.current = nextPath;
+        explorerSelectionLockUntilRef.current =
+          Date.now() + EXPLORER_LOCK_TTL_MS;
+        syncPreviewActiveFile(nextPath, "explorer", {
+          skipUnsavedPrompt: true,
+        });
         return;
       }
 
       if (payload.type === "PREVIEW_PATH_CHANGED") {
-        if (!payload.path) return;
+        console.log("[DEBUG] Frame reported PATH_CHANGED:", payload.path);
+        if (typeof payload.path !== "string" || !payload.path) return;
         const mountRelativePath = extractMountRelativePath(payload.path);
         if (!mountRelativePath) return;
         const resolvedVirtualPath =
           resolveVirtualPathFromMountRelative(mountRelativePath);
         if (!resolvedVirtualPath) return;
+
+        const lockPath = explorerSelectionLockRef.current;
+        const lockActive =
+          Boolean(lockPath) &&
+          Date.now() <= explorerSelectionLockUntilRef.current;
+        if (lockPath && !lockActive) {
+          explorerSelectionLockRef.current = null;
+          explorerSelectionLockUntilRef.current = 0;
+        }
+        if (lockPath && lockActive) {
+          const resolvedNorm =
+            normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
+          const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
+          if (resolvedNorm !== lockNorm) {
+            // Frame changed to wrong page — redirect back.
+            // Clear lock first to prevent infinite redirect.
+            return;
+          }
+          // Path matches lock — clear so future changes propagate freely.
+          explorerSelectionLockRef.current = null;
+          explorerSelectionLockUntilRef.current = 0;
+        }
+        // THE FIX: Block rogue automated path changes during manual navigation transition
+        const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
+        if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
+          return;
+        }
         const resolvedFile = filesRef.current[resolvedVirtualPath];
         if (!resolvedFile || resolvedFile.type !== "html") return;
         if (resolvedVirtualPath === activeFileRef.current) return;
+        if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
         console.log("[Preview] Current page:", resolvedVirtualPath);
         syncPreviewActiveFile(resolvedVirtualPath, "path_changed");
+        return;
+      }
+
+      if (payload.type === "PREVIEW_INLINE_EDIT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath) return;
+        void applyPreviewInlineEdit(
+          nextPath,
+          typeof payload.html === "string" ? payload.html : "",
+        );
+        return;
+      }
+      if (payload.type === "PREVIEW_INLINE_EDIT_DRAFT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath) return;
+        const draftHtml = typeof payload.html === "string" ? payload.html : "";
+        const draftFile = selectedPreviewHtmlRef.current;
+        if (draftFile) {
+          setDirtyFiles((prev) =>
+            prev.includes(draftFile) ? prev : [...prev, draftFile],
+          );
+          inlineEditDraftPendingRef.current = {
+            filePath: draftFile,
+            elementPath: nextPath,
+            html: draftHtml,
+          };
+          if (inlineEditDraftTimerRef.current !== null) {
+            window.clearTimeout(inlineEditDraftTimerRef.current);
+          }
+          inlineEditDraftTimerRef.current = window.setTimeout(() => {
+            inlineEditDraftTimerRef.current = null;
+            const pending = inlineEditDraftPendingRef.current;
+            inlineEditDraftPendingRef.current = null;
+            if (!pending) return;
+            void applyPreviewInlineEditDraft(
+              pending.filePath,
+              pending.elementPath,
+              pending.html,
+            );
+          }, 180);
+        }
+        const liveElement = getLivePreviewSelectedElement(nextPath);
+        const draftText = normalizeEditorMultilineText(
+          liveElement
+            ? extractTextWithBreaks(liveElement)
+            : extractTextFromHtmlFragment(draftHtml),
+        );
+        setPreviewSelectedPath(nextPath);
+        if (!(liveElement instanceof HTMLElement)) {
+          setPreviewSelectedElement((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  content: draftText,
+                  html: draftHtml,
+                }
+              : prev,
+          );
+          return;
+        }
+        const computedStyles =
+          extractComputedStylesFromElement(liveElement) || null;
+        const inlineStyles = parseInlineStyleText(
+          liveElement.getAttribute("style") || "",
+        );
+        const mergedStyles: React.CSSProperties = {
+          ...(computedStyles || {}),
+          ...inlineStyles,
+        };
+        const liveAttributes =
+          extractCustomAttributesFromElement(liveElement) || undefined;
+        const liveSrc = liveElement.getAttribute("src") || "";
+        const liveHref = liveElement.getAttribute("href") || "";
+        const liveTag = String(liveElement.tagName || "div").toLowerCase();
+        const inlineAnimation =
+          typeof inlineStyles.animation === "string"
+            ? inlineStyles.animation.trim()
+            : "";
+        const computedAnimationCandidate =
+          computedStyles && typeof computedStyles.animation === "string"
+            ? computedStyles.animation.trim()
+            : "";
+        const resolvedAnimation =
+          inlineAnimation ||
+          (computedAnimationCandidate &&
+          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+            ? computedAnimationCandidate
+            : "");
+        setPreviewSelectedComputedStyles(computedStyles);
+        setPreviewSelectedElement((prev) => ({
+          id: liveElement.id || prev?.id || `preview-${Date.now()}`,
+          type: liveTag,
+          name: liveTag.toUpperCase(),
+          content: draftText,
+          html: draftHtml || liveElement.innerHTML || prev?.html || "",
+          ...(liveSrc ? { src: liveSrc } : {}),
+          ...(liveHref ? { href: liveHref } : {}),
+          ...(liveElement.className
+            ? { className: liveElement.className }
+            : {}),
+          ...(liveAttributes ? { attributes: liveAttributes } : {}),
+          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+          styles: mergedStyles,
+          children: [],
+        }));
+        return;
+      }
+
+      if (payload.type === "PREVIEW_MOVE_COMMIT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath) return;
+        if (!payload.styles || typeof payload.styles !== "object") return;
+        const stylePatch = Object.fromEntries(
+          Object.entries(payload.styles).map(([key, value]) => [
+            key,
+            value == null ? "" : String(value),
+          ]),
+        ) as Partial<React.CSSProperties>;
+        void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
+          syncSelectedElement: true,
+        });
+        return;
+      }
+
+      if (payload.type === "PREVIEW_DRAW_CREATE") {
+        const nextParentPath = normalizePreviewPath(payload.parentPath || []);
+        if (!nextParentPath) return;
+        if (typeof payload.tag !== "string" || !payload.tag.trim()) return;
+        const stylePatch = Object.fromEntries(
+          Object.entries(payload.styles || {}).map(([key, value]) => [
+            key,
+            value == null ? "" : String(value),
+          ]),
+        ) as Record<string, string>;
+        void applyPreviewDrawCreate(nextParentPath, payload.tag, stylePatch);
+        return;
+      }
+
+      if (payload.type === "PREVIEW_SELECT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath || nextPath.length === 0) return;
+
+        const tag = (payload.tag || "div").toLowerCase();
+        const id = payload.id ? String(payload.id) : `preview-${Date.now()}`;
+        const inlineStyles = parseInlineStyleText(
+          typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
+        );
+        const payloadComputedStyles =
+          payload.computedStyles && typeof payload.computedStyles === "object"
+            ? (payload.computedStyles as React.CSSProperties)
+            : null;
+
+        const liveElement = getLivePreviewSelectedElement(nextPath);
+        const computedStyles =
+          payloadComputedStyles ||
+          extractComputedStylesFromElement(liveElement);
+
+        // Prefer the text sent directly from the iframe at click time (el.textContent)
+        // since it's the most reliable source. Fall back to DOM extraction if needed.
+        const payloadText =
+          typeof payload.text === "string" ? payload.text.trim() : "";
+        const payloadHtml =
+          typeof payload.html === "string" ? payload.html : "";
+        const liveText = liveElement ? extractTextWithBreaks(liveElement) : "";
+        const liveHtml =
+          liveElement instanceof HTMLElement ? liveElement.innerHTML || "" : "";
+        const payloadAttributes =
+          payload.attributes && typeof payload.attributes === "object"
+            ? (Object.fromEntries(
+                Object.entries(payload.attributes).filter(
+                  ([key, value]) => Boolean(key) && typeof value === "string",
+                ),
+              ) as Record<string, string>)
+            : {};
+        const liveAttributes =
+          extractCustomAttributesFromElement(liveElement) || {};
+
+        // Third-layer fallback: parse the saved source HTML from filesRef and read
+        // the text directly at the element path. This handles cases where the live
+        // DOM was reloaded/refreshed and payload.text is empty (e.g. immediately
+        // after a tool switch with no prior click).
+        let savedHtmlText = "";
+        let savedHtmlMarkup = "";
+        let savedHtmlAttributes: Record<string, string> = {};
+        if (
+          ((!payloadText && !liveText) || (!payloadHtml && !liveHtml)) &&
+          selectedPreviewHtml &&
+          nextPath.length > 0
+        ) {
+          try {
+            const savedHtmlContent =
+              filesRef.current[selectedPreviewHtml]?.content;
+            if (
+              typeof savedHtmlContent === "string" &&
+              savedHtmlContent.length > 0
+            ) {
+              const tempParser = new DOMParser();
+              const tempDoc = tempParser.parseFromString(
+                savedHtmlContent,
+                "text/html",
+              );
+              const savedEl = readElementByPath(tempDoc.body, nextPath);
+              if (savedEl) {
+                savedHtmlText = extractTextWithBreaks(savedEl);
+                savedHtmlMarkup = savedEl.innerHTML || "";
+                savedHtmlAttributes =
+                  extractCustomAttributesFromElement(savedEl) || {};
+              }
+            }
+          } catch {
+            // Ignore parse errors.
+          }
+        }
+
+        const editableText = normalizeEditorMultilineText(
+          payloadText || liveText || savedHtmlText,
+        );
+        const editableHtml = payloadHtml || liveHtml || savedHtmlMarkup;
+        const payloadSrc =
+          typeof payload.src === "string" && payload.src.trim().length > 0
+            ? payload.src.trim()
+            : "";
+        const payloadHref =
+          typeof payload.href === "string" && payload.href.trim().length > 0
+            ? payload.href.trim()
+            : "";
+        const liveSrc =
+          liveElement && liveElement instanceof HTMLElement
+            ? liveElement.getAttribute("src") || ""
+            : "";
+        const liveHref =
+          liveElement && liveElement instanceof HTMLElement
+            ? liveElement.getAttribute("href") || ""
+            : "";
+        const resolvedSrc = payloadSrc || liveSrc || undefined;
+        const resolvedHref = payloadHref || liveHref || undefined;
+        const mergedAttributes = {
+          ...savedHtmlAttributes,
+          ...liveAttributes,
+          ...payloadAttributes,
+        };
+        const resolvedAttributes =
+          Object.keys(mergedAttributes).length > 0
+            ? mergedAttributes
+            : undefined;
+        const mergedStyles: React.CSSProperties = {
+          ...(computedStyles || {}),
+          ...inlineStyles,
+        };
+        const inlineAnimation =
+          typeof inlineStyles.animation === "string"
+            ? inlineStyles.animation.trim()
+            : "";
+        const computedAnimationCandidate =
+          computedStyles && typeof computedStyles.animation === "string"
+            ? computedStyles.animation.trim()
+            : "";
+        const resolvedAnimation =
+          inlineAnimation ||
+          (computedAnimationCandidate &&
+          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+            ? computedAnimationCandidate
+            : "");
+
+        const nextElement: VirtualElement = {
+          id,
+          type: tag,
+          name: tag.toUpperCase(),
+          content: editableText,
+          ...(editableHtml ? { html: editableHtml } : {}),
+          ...(resolvedSrc ? { src: resolvedSrc } : {}),
+          ...(resolvedHref ? { href: resolvedHref } : {}),
+          className:
+            typeof payload.className === "string" &&
+            payload.className.length > 0
+              ? payload.className
+              : undefined,
+          ...(resolvedAttributes ? { attributes: resolvedAttributes } : {}),
+          styles: mergedStyles,
+          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+          children: [],
+        };
+
+        setPreviewSelectedPath(nextPath);
+        setPreviewSelectedElement(nextElement);
+        setPreviewSelectedComputedStyles(computedStyles);
+        setSelectedId(null);
+        setIsCodePanelOpen(false);
+        setIsRightPanelOpen(true);
       }
     };
 
     window.addEventListener("message", onPreviewMessage);
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [
+    applyPreviewDrawCreate,
+    applyPreviewLocalCssPatchAtPath,
+    applyPreviewStyleUpdateAtPath,
     appendPreviewConsole,
-    selectedPreviewSrc,
+    closePendingPageSwitchPrompt,
+    getLivePreviewSelectedElement,
+    flushPendingPreviewSaves,
+    isActivePreviewMessageSource,
+    isMountedPreview,
+    isPageSwitchPromptBusy,
+    isPageSwitchPromptOpen,
+    isZenMode,
     extractMountRelativePath,
+    requestPreviewRefreshWithUnsavedGuard,
+    requestSwitchToPreviewMode,
+    resolveAdjacentSlidePath,
+    previewSyncedFile,
     resolveVirtualPathFromMountRelative,
+    runRedo,
+    runUndo,
     selectedPreviewHtml,
+    shouldProcessPreviewPageSignal,
     syncPreviewActiveFile,
+    toggleZenMode,
+    applyPreviewInlineEditDraft,
+    applyPreviewInlineEdit,
+    EXPLORER_LOCK_TTL_MS,
   ]);
   useEffect(() => {
     if (!activeFile) return;
@@ -2116,8 +9484,17 @@ const App: React.FC = () => {
   }, [activeFile, loadFileContent]);
 
   useEffect(() => {
+    if (!shouldPrepareEditPreviewDoc) {
+      setSelectedPreviewDoc("");
+      return;
+    }
     if (!selectedPreviewHtml) {
       setSelectedPreviewDoc("");
+      return;
+    }
+    const cachedDoc = previewDocCacheRef.current[selectedPreviewHtml];
+    if (cachedDoc) {
+      setSelectedPreviewDoc(cachedDoc);
       return;
     }
 
@@ -2148,6 +9525,14 @@ const App: React.FC = () => {
       }
       if (!html) return;
 
+      if (!previewHistoryRef.current[selectedPreviewHtml]) {
+        previewHistoryRef.current[selectedPreviewHtml] = {
+          past: [],
+          present: html,
+          future: [],
+        };
+      }
+
       if (fileMapSnapshot[selectedPreviewHtml]) {
         fileMapSnapshot[selectedPreviewHtml] = {
           ...fileMapSnapshot[selectedPreviewHtml],
@@ -2165,7 +9550,8 @@ const App: React.FC = () => {
             selectedPreviewHtml,
             hrefValue,
           );
-          if (resolved && fileMapSnapshot[resolved]) dependencyPaths.add(resolved);
+          if (resolved && fileMapSnapshot[resolved])
+            dependencyPaths.add(resolved);
           return full;
         },
       );
@@ -2177,19 +9563,21 @@ const App: React.FC = () => {
             selectedPreviewHtml,
             srcValue,
           );
-          if (resolved && fileMapSnapshot[resolved]) dependencyPaths.add(resolved);
+          if (resolved && fileMapSnapshot[resolved])
+            dependencyPaths.add(resolved);
           return _full;
         },
       );
 
       html.replace(/\b(src|href)=["']([^"']+)["']/gi, (_full, _attr, raw) => {
         const resolved = resolveProjectRelativePath(selectedPreviewHtml, raw);
-        if (resolved && fileMapSnapshot[resolved]) dependencyPaths.add(resolved);
+        if (resolved && fileMapSnapshot[resolved])
+          dependencyPaths.add(resolved);
         return _full;
       });
 
       // Legacy projects often request shared HTML fragments dynamically.
-      // Preload only these lightweight content fragments to avoid heavy startup cost.
+      // Keep preload intentionally narrow; avoid eager icon/font loading.
       for (const path of Object.keys(fileMapSnapshot)) {
         const lowerPath = path.toLowerCase();
         if (
@@ -2199,34 +9587,13 @@ const App: React.FC = () => {
         ) {
           dependencyPaths.add(path);
         }
-        if (
-          (lowerPath.includes("shared/media/icons/") ||
-            lowerPath.includes("/shared/media/icons/")) &&
-          (lowerPath.endsWith(".svg") ||
-            lowerPath.endsWith(".png") ||
-            lowerPath.endsWith(".jpg") ||
-            lowerPath.endsWith(".jpeg") ||
-            lowerPath.endsWith(".webp") ||
-            lowerPath.endsWith(".gif"))
-        ) {
-          dependencyPaths.add(path);
-        }
-        if (
-          (lowerPath.includes("shared/media/fonts/") ||
-            lowerPath.includes("/shared/media/fonts/")) &&
-          (lowerPath.endsWith(".woff") ||
-            lowerPath.endsWith(".woff2") ||
-            lowerPath.endsWith(".ttf") ||
-            lowerPath.endsWith(".otf") ||
-            lowerPath.endsWith(".eot"))
-        ) {
-          dependencyPaths.add(path);
-        }
       }
 
       const loaded = await Promise.all(
         Array.from(dependencyPaths).map(async (path) => {
-          const content = await loadFileContent(path);
+          const content = await loadFileContent(path, {
+            persistToState: false,
+          });
           return { path, content };
         }),
       );
@@ -2246,9 +9613,17 @@ const App: React.FC = () => {
       }
 
       if (canceled) return;
-      setSelectedPreviewDoc(
-        createPreviewDocument(fileMapSnapshot, selectedPreviewHtml),
+      previewDependencyIndexRef.current[selectedPreviewHtml] = [
+        selectedPreviewHtml,
+        ...Array.from(dependencyPaths),
+      ];
+      const doc = createPreviewDocument(
+        fileMapSnapshot,
+        selectedPreviewHtml,
+        previewDependencyIndexRef.current[selectedPreviewHtml],
       );
+      cachePreviewDoc(selectedPreviewHtml, doc);
+      setSelectedPreviewDoc(doc);
     };
 
     void preloadPreviewDependencies();
@@ -2256,9 +9631,302 @@ const App: React.FC = () => {
       canceled = true;
     };
   }, [
+    cachePreviewDoc,
     loadFileContent,
     selectedPreviewHtml,
+    shouldPrepareEditPreviewDoc,
   ]);
+  useEffect(() => {
+    if (!selectedPreviewHtml) return;
+    const keys = dirtyPathKeysByFile[selectedPreviewHtml] || [];
+    if (keys.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument?.body) return;
+      for (const key of keys) {
+        const path = key
+          .split(".")
+          .map((segment) => Number(segment))
+          .filter((segment) => Number.isFinite(segment))
+          .map((segment) => Math.max(0, Math.trunc(segment)));
+        const element = readElementByPath(frameDocument.body, path);
+        if (element instanceof HTMLElement) {
+          element.classList.add("__nx-preview-dirty");
+        }
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [dirtyPathKeysByFile, selectedPreviewDoc, selectedPreviewHtml]);
+  const activeCodeFilePath = useMemo(() => {
+    const candidate =
+      activeFile &&
+      files[activeFile] &&
+      isCodeEditableFile(activeFile, files[activeFile].type)
+        ? activeFile
+        : selectedPreviewHtml &&
+            files[selectedPreviewHtml] &&
+            isCodeEditableFile(
+              selectedPreviewHtml,
+              files[selectedPreviewHtml].type,
+            )
+          ? selectedPreviewHtml
+          : null;
+    if (candidate) return candidate;
+    const firstText = Object.keys(files).find((path) =>
+      isCodeEditableFile(path, files[path].type),
+    );
+    return firstText ?? null;
+  }, [activeFile, files, selectedPreviewHtml]);
+  const activeCodeFileType: ProjectFile["type"] | null = activeCodeFilePath
+    ? (files[activeCodeFilePath]?.type ?? null)
+    : null;
+  const activeCodeContent = useMemo(() => {
+    if (!activeCodeFilePath) return "";
+    if (typeof codeDraftByPath[activeCodeFilePath] === "string") {
+      return codeDraftByPath[activeCodeFilePath];
+    }
+    const raw = files[activeCodeFilePath]?.content;
+    return typeof raw === "string" ? raw : "";
+  }, [activeCodeFilePath, codeDraftByPath, files]);
+  const activeCodeIsDirty = activeCodeFilePath
+    ? Boolean(codeDirtyPathSet[activeCodeFilePath])
+    : false;
+  const activeDetachedEditorFilePath = useMemo(() => {
+    if (activeFile && files[activeFile]) return activeFile;
+    if (selectedPreviewHtml && files[selectedPreviewHtml])
+      return selectedPreviewHtml;
+    return Object.keys(files).sort((a, b) => a.localeCompare(b))[0] ?? null;
+  }, [activeFile, files, selectedPreviewHtml]);
+  const activeDetachedEditorFileType: ProjectFile["type"] | null =
+    activeDetachedEditorFilePath
+      ? (files[activeDetachedEditorFilePath]?.type ?? null)
+      : null;
+  const activeDetachedEditorContent = useMemo(() => {
+    if (!activeDetachedEditorFilePath) return "";
+    if (
+      typeof codeDraftByPath[activeDetachedEditorFilePath] === "string" &&
+      files[activeDetachedEditorFilePath] &&
+      isCodeEditableFile(
+        activeDetachedEditorFilePath,
+        files[activeDetachedEditorFilePath].type,
+      )
+    ) {
+      return codeDraftByPath[activeDetachedEditorFilePath];
+    }
+    const raw = files[activeDetachedEditorFilePath]?.content;
+    return typeof raw === "string" ? raw : "";
+  }, [activeDetachedEditorFilePath, codeDraftByPath, files]);
+  const activeDetachedEditorIsDirty = activeDetachedEditorFilePath
+    ? Boolean(codeDirtyPathSet[activeDetachedEditorFilePath])
+    : false;
+  const detachedEditorIsTextEditable = Boolean(
+    activeDetachedEditorFilePath &&
+    activeDetachedEditorFileType &&
+    isCodeEditableFile(
+      activeDetachedEditorFilePath,
+      activeDetachedEditorFileType,
+    ),
+  );
+  const detachedEditorFiles = useMemo(
+    () => Object.keys(files).sort((a, b) => a.localeCompare(b)),
+    [files],
+  );
+  const handleDetachedEditorSelectFile = useCallback(
+    (path: string) => {
+      if (!path || !files[path]) return;
+      setActiveFileStable(path);
+      if (files[path]?.type === "html") {
+        setPreviewSyncedFile((prev) => (prev === path ? prev : path));
+        setPreviewNavigationFile((prev) => (prev === path ? prev : path));
+      }
+      if (isSvgPath(path)) {
+        const absolutePath = filePathIndexRef.current[path];
+        if (!absolutePath) return;
+        void (async () => {
+          try {
+            const raw = await (Neutralino as any).filesystem.readFile(
+              absolutePath,
+            );
+            textFileCacheRef.current[path] = raw;
+            setFiles((prev) => {
+              const existing = prev[path];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [path]: {
+                  ...existing,
+                  content: raw,
+                },
+              };
+            });
+          } catch (error) {
+            console.warn(`Failed reading SVG source ${path}:`, error);
+          }
+        })();
+        return;
+      }
+      void loadFileContent(path, { persistToState: true });
+    },
+    [files, loadFileContent, setActiveFileStable],
+  );
+  const saveCodeDraftAtPath = useCallback(
+    async (path: string) => {
+      const draft = codeDraftByPathRef.current[path];
+      if (typeof draft !== "string") return;
+      const file = filesRef.current[path];
+      if (!file || !isCodeEditableFile(path, file.type)) return;
+      try {
+        if (file.type === "html") {
+          await persistPreviewHtmlContent(path, draft, {
+            refreshPreviewDoc: path === selectedPreviewHtmlRef.current,
+            saveNow: true,
+            pushToHistory: true,
+          });
+          if (path === selectedPreviewHtmlRef.current) {
+            setPreviewNavigationFile((prev) => (prev === path ? prev : path));
+            setPreviewRefreshNonce((prev) => prev + 1);
+          }
+        } else {
+          const absolutePath = filePathIndexRef.current[path];
+          if (!absolutePath) return;
+          await (Neutralino as any).filesystem.writeFile(absolutePath, draft);
+          textFileCacheRef.current[path] = draft;
+          setFiles((prev) => {
+            const existing = prev[path];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [path]: {
+                ...existing,
+                content: draft,
+              },
+            };
+          });
+          const currentPreview = selectedPreviewHtmlRef.current;
+          if (currentPreview) {
+            setPreviewNavigationFile((prev) =>
+              prev === currentPreview ? prev : currentPreview,
+            );
+          }
+          setPreviewRefreshNonce((prev) => prev + 1);
+        }
+        delete codeDraftByPathRef.current[path];
+        delete codeDirtyPathSetRef.current[path];
+        dirtyFilesRef.current = dirtyFilesRef.current.filter(
+          (entry) => entry !== path,
+        );
+        setCodeDraftByPath((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setCodeDirtyPathSet((prev) => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+        });
+        setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
+      } catch (error) {
+        console.warn(`Failed saving code file ${path}:`, error);
+      }
+    },
+    [persistPreviewHtmlContent],
+  );
+  const saveAllCodeDrafts = useCallback(async () => {
+    const dirtyPaths = Object.keys(codeDirtyPathSetRef.current);
+    for (const path of dirtyPaths) {
+      await saveCodeDraftAtPath(path);
+    }
+  }, [saveCodeDraftAtPath]);
+  useEffect(() => {
+    saveCodeDraftsRef.current = saveAllCodeDrafts;
+    return () => {
+      if (saveCodeDraftsRef.current === saveAllCodeDrafts) {
+        saveCodeDraftsRef.current = null;
+      }
+    };
+  }, [saveAllCodeDrafts]);
+  const handleCodeDraftChange = useCallback(
+    (nextValue: string | undefined) => {
+      if (!activeCodeFilePath) return;
+      const value = nextValue ?? "";
+      codeDraftByPathRef.current = {
+        ...codeDraftByPathRef.current,
+        [activeCodeFilePath]: value,
+      };
+      codeDirtyPathSetRef.current = {
+        ...codeDirtyPathSetRef.current,
+        [activeCodeFilePath]: true,
+      };
+      if (!dirtyFilesRef.current.includes(activeCodeFilePath)) {
+        dirtyFilesRef.current = [...dirtyFilesRef.current, activeCodeFilePath];
+      }
+      setCodeDraftByPath((prev) => ({
+        ...prev,
+        [activeCodeFilePath]: value,
+      }));
+      setCodeDirtyPathSet((prev) => ({
+        ...prev,
+        [activeCodeFilePath]: true,
+      }));
+      setDirtyFiles((prev) =>
+        prev.includes(activeCodeFilePath)
+          ? prev
+          : [...prev, activeCodeFilePath],
+      );
+    },
+    [activeCodeFilePath],
+  );
+  const handleDetachedEditorChange = useCallback(
+    (nextValue: string) => {
+      if (!activeDetachedEditorFilePath || !activeDetachedEditorFileType)
+        return;
+      if (
+        !isCodeEditableFile(
+          activeDetachedEditorFilePath,
+          activeDetachedEditorFileType,
+        )
+      ) {
+        return;
+      }
+      codeDraftByPathRef.current = {
+        ...codeDraftByPathRef.current,
+        [activeDetachedEditorFilePath]: nextValue,
+      };
+      codeDirtyPathSetRef.current = {
+        ...codeDirtyPathSetRef.current,
+        [activeDetachedEditorFilePath]: true,
+      };
+      if (!dirtyFilesRef.current.includes(activeDetachedEditorFilePath)) {
+        dirtyFilesRef.current = [
+          ...dirtyFilesRef.current,
+          activeDetachedEditorFilePath,
+        ];
+      }
+      setCodeDraftByPath((prev) => ({
+        ...prev,
+        [activeDetachedEditorFilePath]: nextValue,
+      }));
+      setCodeDirtyPathSet((prev) => ({
+        ...prev,
+        [activeDetachedEditorFilePath]: true,
+      }));
+      setDirtyFiles((prev) =>
+        prev.includes(activeDetachedEditorFilePath)
+          ? prev
+          : [...prev, activeDetachedEditorFilePath],
+      );
+    },
+    [activeDetachedEditorFilePath, activeDetachedEditorFileType],
+  );
+  useEffect(() => {
+    if (!isCodePanelOpen) return;
+    if (!activeCodeFilePath) return;
+    void loadFileContent(activeCodeFilePath, { persistToState: true });
+  }, [activeCodeFilePath, isCodePanelOpen, loadFileContent]);
 
   const tabletMetrics = useMemo(() => {
     const base =
@@ -2301,7 +9969,663 @@ const App: React.FC = () => {
       usableHeight / tabletMetrics.contentHeight,
     );
   }, [tabletMetrics]);
+  const [currentDevicePixelRatio, setCurrentDevicePixelRatio] = useState(() =>
+    typeof window !== "undefined" && window.devicePixelRatio
+      ? window.devicePixelRatio
+      : 1,
+  );
+  const useCompactBottomPanel = true;
+  const CONSOLE_PANEL_WIDTH = 420;
+  const shouldPushTabletFrame =
+    deviceMode === "tablet" &&
+    frameZoom === 75 &&
+    currentDevicePixelRatio !== 1;
+  const tabletPanelPushX = useMemo(() => {
+    if (isPdfAnnotationPanelOpen && deviceMode === "tablet") {
+      return 0;
+    }
+    if (!shouldPushTabletFrame) return 0;
+
+    const rightActive =
+      isRightPanelOpen || isPdfAnnotationPanelOpen || isScreenshotGalleryOpen;
+    if (isLeftPanelOpen === rightActive) return 0;
+
+    // Calculate push amount based on panel widths
+    const pushAmount = Math.round(leftPanelWidth * 0.42);
+    return isLeftPanelOpen ? pushAmount : -pushAmount;
+  }, [
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    isPdfAnnotationPanelOpen,
+    isScreenshotGalleryOpen,
+    leftPanelWidth,
+    shouldPushTabletFrame,
+    deviceMode,
+  ]);
+  const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
+  const isTabletZoomMode = deviceMode === "tablet";
+  const lockAllScrollAt50 = isTabletZoomMode && frameZoom === 50;
+  const lockVerticalAt75Landscape =
+    isTabletZoomMode && frameZoom === 75 && tabletOrientation === "landscape";
+  const lockHorizontalAt75Portrait =
+    isTabletZoomMode && frameZoom === 75 && tabletOrientation === "portrait";
+  const shouldLockHorizontalScroll =
+    lockAllScrollAt50 || lockHorizontalAt75Portrait;
+  const shouldLockVerticalScroll =
+    lockAllScrollAt50 || lockVerticalAt75Landscape;
   const frameScale = frameZoom / 100;
+  const darkTabletReflectionOpacity =
+    theme === "dark" && deviceMode === "tablet"
+      ? Math.min(
+          0.72,
+          0.28 +
+            (isLeftPanelOpen ? 0.12 : 0) +
+            (isRightPanelOpen ? 0.12 : 0) +
+            (isCodePanelOpen ? 0.12 : 0) +
+            (showTerminal ? 0.14 : 0),
+        )
+      : 0;
+  const codePanelStageOffset =
+    isCodePanelOpen && deviceMode !== "mobile"
+      ? (() => {
+          const viewportWidth =
+            typeof window !== "undefined" ? window.innerWidth : 1440;
+          if (!isFloatingPanels) return CODE_PANEL_WIDTH;
+          const floatingPanelWidth = Math.min(
+            42 * 16,
+            Math.max(320, viewportWidth - 96),
+          );
+          const floatingRightInset = 40; // `right-10`
+          return floatingPanelWidth + floatingRightInset;
+        })()
+      : 0;
+  const consolePanelStageOffset = 0;
+  const stageViewportWidth = Math.max(
+    320,
+    (typeof window !== "undefined" ? window.innerWidth : 1440) -
+      codePanelStageOffset -
+      consolePanelStageOffset,
+  );
+  const estimatedFrameWidthPx =
+    deviceMode === "mobile"
+      ? 375 * frameScale
+      : deviceMode === "tablet"
+        ? tabletMetrics.frameWidth * frameScale
+        : desktopResolution === "resizable"
+          ? stageViewportWidth * 0.8 * frameScale
+          : 921.6 * frameScale;
+  const halfSpareSpace = (stageViewportWidth - estimatedFrameWidthPx) / 2;
+  const maxShiftMagnitude =
+    Math.max(0, Math.floor(halfSpareSpace - 16)) +
+    (isPdfAnnotationPanelOpen && deviceMode !== "tablet" ? 400 : 0);
+  const intendedCodeShiftX = 0;
+  const clampedCodeShiftX = Math.max(
+    -maxShiftMagnitude,
+    Math.min(maxShiftMagnitude, intendedCodeShiftX),
+  );
+  const clampedTabletShiftX = Math.max(
+    -maxShiftMagnitude,
+    Math.min(maxShiftMagnitude, tabletPanelPushX + clampedCodeShiftX),
+  );
+  const toolbarAnchorLeft = Math.max(
+    16,
+    Math.round(
+      (typeof window !== "undefined" ? window.innerWidth : 1440) / 2 -
+        estimatedFrameWidthPx / 2 +
+        20,
+    ),
+  );
+  const showDeviceFrameToolbar = true;
+
+  useEffect(() => {
+    const syncDevicePixelRatio = () => {
+      const next =
+        typeof window !== "undefined" && window.devicePixelRatio
+          ? window.devicePixelRatio
+          : 1;
+      setCurrentDevicePixelRatio((prev) =>
+        Math.abs(prev - next) > 0.01 ? next : prev,
+      );
+    };
+
+    syncDevicePixelRatio();
+    const media =
+      typeof window !== "undefined" && window.matchMedia
+        ? window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+        : null;
+
+    window.addEventListener("resize", syncDevicePixelRatio);
+    media?.addEventListener?.("change", syncDevicePixelRatio);
+
+    return () => {
+      window.removeEventListener("resize", syncDevicePixelRatio);
+      media?.removeEventListener?.("change", syncDevicePixelRatio);
+    };
+  }, [currentDevicePixelRatio]);
+
+  useEffect(() => {
+    const previousDpr = lastPanelDprRef.current;
+    lastPanelDprRef.current = currentDevicePixelRatio;
+    if (
+      previousDpr === null ||
+      Math.abs(previousDpr - currentDevicePixelRatio) < 0.01
+    ) {
+      return;
+    }
+    setRightPanelFloatingPosition(
+      getDefaultRightPanelPosition(rightPanelWidth),
+    );
+  }, [currentDevicePixelRatio, getDefaultRightPanelPosition, rightPanelWidth]);
+
+  useEffect(() => {
+    const clampRightPanelPosition = () => {
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 1440;
+      const viewportHeight =
+        typeof window !== "undefined" ? window.innerHeight : 900;
+      setRightPanelFloatingPosition((prev) => ({
+        left: Math.max(
+          8,
+          Math.min(prev.left, Math.max(8, viewportWidth - rightPanelWidth - 8)),
+        ),
+        top: Math.max(
+          56,
+          Math.min(prev.top, Math.max(56, viewportHeight - 140)),
+        ),
+      }));
+    };
+
+    window.addEventListener("resize", clampRightPanelPosition);
+    return () => window.removeEventListener("resize", clampRightPanelPosition);
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    if (!isCompactConsoleOpening) return;
+    const timer = window.setTimeout(() => {
+      setIsCompactConsoleOpening(false);
+    }, 520);
+    return () => window.clearTimeout(timer);
+  }, [isCompactConsoleOpening]);
+
+  useEffect(() => {
+    const targetZoom: 75 | 100 = currentDevicePixelRatio >= 1.5 ? 75 : 100;
+    const previousAuto = lastAutoDprZoomRef.current;
+    if (previousAuto === targetZoom) return;
+    lastAutoDprZoomRef.current = targetZoom;
+    if (deviceMode !== "tablet") return;
+    setFrameZoom(targetZoom);
+  }, [currentDevicePixelRatio, deviceMode]);
+
+  useEffect(() => {
+    if (bottomPanelTab !== "console") {
+      setBottomPanelTab("console");
+    }
+  }, [bottomPanelTab]);
+
+  const renderDetachedConsoleWindow = useCallback(() => {
+    const detachedWindow = detachedConsoleWindowRef.current;
+    if (!detachedWindow || detachedWindow.closed) {
+      detachedConsoleWindowRef.current = null;
+      return;
+    }
+
+    const rows =
+      previewConsoleEntries.length === 0
+        ? `<div class="empty">No project logs yet</div>`
+        : previewConsoleEntries
+            .map((entry) => {
+              const levelClass =
+                entry.level === "error"
+                  ? "error"
+                  : entry.level === "warn"
+                    ? "warn"
+                    : "info";
+              return `<div class="row ${levelClass}">
+  <div class="meta">${escapeConsoleHtml(entry.level.toUpperCase())} • ${escapeConsoleHtml(entry.source || "preview")}</div>
+  <div class="message">${escapeConsoleHtml(entry.message)}</div>
+</div>`;
+            })
+            .join("");
+
+    detachedWindow.document.open();
+    detachedWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>NoCodeX Console</title>
+  <style>
+    :root { color-scheme: ${theme === "dark" ? "dark" : "light"}; }
+    body {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: ${theme === "dark" ? "#020617" : "#f8fafc"};
+      color: ${theme === "dark" ? "#e2e8f0" : "#0f172a"};
+    }
+    .shell { display: flex; flex-direction: column; height: 100vh; }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; border-bottom: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.25)" : "rgba(148,163,184,0.2)"};
+      background: ${theme === "dark" ? "rgba(15,23,42,0.96)" : "rgba(255,255,255,0.96)"};
+      position: sticky; top: 0;
+    }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      font-size: 11px; padding: 4px 8px; border-radius: 999px;
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      background: ${theme === "dark" ? "rgba(30,41,59,0.7)" : "rgba(241,245,249,0.95)"};
+    }
+    .body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .row {
+      border-radius: 12px; padding: 10px 12px;
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.18)"};
+      background: ${theme === "dark" ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.95)"};
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .row.warn { border-color: rgba(245,158,11,0.35); }
+    .row.error { border-color: rgba(239,68,68,0.35); }
+    .meta { font-size: 10px; opacity: 0.7; margin-bottom: 6px; }
+    .message { font-size: 12px; line-height: 1.45; }
+    .empty {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      border: 1px dashed ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      border-radius: 16px; min-height: 160px; font-size: 12px; opacity: 0.75;
+    }
+    button {
+      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
+      background: transparent; color: inherit; border-radius: 10px; padding: 8px 10px; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <div class="badges">
+        <span class="badge">Logs ${previewConsoleEntries.length}</span>
+        <span class="badge">Warn ${previewConsoleWarnCount}</span>
+        <span class="badge">Error ${previewConsoleErrorCount}</span>
+      </div>
+      <button onclick="window.close()">Close</button>
+    </div>
+    <div class="body">${rows}</div>
+  </div>
+</body>
+</html>`);
+    detachedWindow.document.close();
+  }, [
+    previewConsoleEntries,
+    previewConsoleWarnCount,
+    previewConsoleErrorCount,
+    theme,
+  ]);
+
+  const handleDetachConsoleWindow = useCallback(() => {
+    const existingWindow = detachedConsoleWindowRef.current;
+    if (existingWindow && !existingWindow.closed) {
+      existingWindow.focus();
+      return;
+    }
+    const nextWindow = window.open(
+      "",
+      "nocodex-console-window",
+      "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes",
+    );
+    if (!nextWindow) return;
+    detachedConsoleWindowRef.current = nextWindow;
+    window.setTimeout(() => {
+      renderDetachedConsoleWindow();
+    }, 0);
+    setShowTerminal(false);
+  }, [renderDetachedConsoleWindow]);
+
+  useEffect(() => {
+    renderDetachedConsoleWindow();
+  }, [renderDetachedConsoleWindow]);
+
+  useEffect(() => {
+    return () => {
+      if (
+        detachedConsoleWindowRef.current &&
+        !detachedConsoleWindowRef.current.closed
+      ) {
+        detachedConsoleWindowRef.current.close();
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (interactionMode !== "preview" || !quickTextEdit.open) return;
+    const viewportWidth =
+      typeof window !== "undefined" ? window.innerWidth : 1440;
+    const viewportHeight =
+      typeof window !== "undefined" ? window.innerHeight : 900;
+    const margin = 16;
+    const panelWidth = rightPanelWidth;
+    const panelHeight = 420;
+    const nextLeft = Math.max(
+      margin,
+      Math.min(quickTextEdit.x, viewportWidth - panelWidth - margin),
+    );
+    const nextTop = Math.max(
+      margin,
+      Math.min(quickTextEdit.y, viewportHeight - panelHeight - margin),
+    );
+    setRightPanelFloatingPosition({ left: nextLeft, top: nextTop });
+    if (!isRightPanelOpen) {
+      setIsRightPanelOpen(true);
+    }
+  }, [
+    interactionMode,
+    quickTextEdit.open,
+    quickTextEdit.x,
+    quickTextEdit.y,
+    rightPanelWidth,
+    isRightPanelOpen,
+  ]);
+  const pendingSwitchFromLabel =
+    pendingPageSwitch?.fromPath &&
+    normalizePath(pendingPageSwitch.fromPath).split("/").filter(Boolean)
+      .length > 0
+      ? normalizePath(pendingPageSwitch.fromPath)
+          .split("/")
+          .filter(Boolean)
+          .slice(-1)[0]
+      : pendingPageSwitch?.fromPath || "current page";
+  const pendingSwitchNextLabel =
+    pendingPageSwitch?.nextPath &&
+    normalizePath(pendingPageSwitch.nextPath).split("/").filter(Boolean)
+      .length > 0
+      ? normalizePath(pendingPageSwitch.nextPath)
+          .split("/")
+          .filter(Boolean)
+          .slice(-1)[0]
+      : pendingPageSwitch?.nextPath || "next page";
+  const isPendingRefresh = pendingPageSwitch?.mode === "refresh";
+  const isPendingPreviewMode = pendingPageSwitch?.mode === "preview_mode";
+  const renderPdfAnnotationCard = useCallback(
+    (annotation: PdfAnnotationUiRecord) => {
+      const isCurrentSlideMatch =
+        annotation.mappedSlideId === currentPreviewSlideId;
+      const isFocused =
+        focusedPdfAnnotation?.annotationId === annotation.annotationId;
+      const mainThreadEntry =
+        annotation.threadEntries.find((entry) => entry.role === "comment") ||
+        annotation.threadEntries[0] ||
+        null;
+      const replyEntries = annotation.threadEntries.filter(
+        (entry) => entry !== mainThreadEntry,
+      );
+      const mappedLabel = resolveMappedLabelShort(annotation);
+      const effectiveType =
+        pdfAnnotationTypeOverrides[annotation.annotationId] ||
+        (ANNOTATION_INTENT_OPTIONS.includes(annotation.annotationType)
+          ? annotation.annotationType
+          : "notFound");
+      const typeOptions = ANNOTATION_INTENT_OPTIONS;
+      const hasResolvableTarget = Boolean(
+        annotation.foundSelector ||
+        annotation.mappedFilePath ||
+        annotation.status === "Mapped" ||
+        annotation.popupInvocation?.triggerSelector ||
+        annotation.popupInvocation?.containerSelector ||
+        (annotation.subtype === "Popup" && annotation.mappedFilePath) ||
+        (annotation.subtype === "Popup" &&
+          annotation.pdfContextText &&
+          annotation.pdfContextText.length > 5),
+      );
+      return (
+        <div
+          key={annotation.annotationId}
+          className="rounded-[22px] border px-4 py-4"
+          style={{
+            borderColor: isFocused
+              ? "rgba(34,211,238,0.55)"
+              : theme === "dark"
+                ? "rgba(148,163,184,0.18)"
+                : "rgba(15,23,42,0.08)",
+            background: isCurrentSlideMatch
+              ? theme === "dark"
+                ? "rgba(8,145,178,0.16)"
+                : "rgba(14,165,233,0.1)"
+              : theme === "dark"
+                ? "rgba(15,23,42,0.54)"
+                : "rgba(255,255,255,0.8)",
+          }}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">
+                Page {annotation.annoPdfPage}
+              </div>
+              <div
+                className="mt-1 text-[11px] uppercase tracking-[0.18em]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {mappedLabel ? mappedLabel : "Unmapped"}
+              </div>
+            </div>
+            <div className="shrink-0 flex flex-col items-end gap-2">
+              <select
+                title={`Annotation intent for page ${annotation.annoPdfPage}`}
+                aria-label={`Annotation intent for page ${annotation.annoPdfPage}`}
+                className="rounded-full border bg-transparent px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.4)"
+                      : "rgba(14,165,233,0.35)",
+                  color: "var(--text-main)",
+                }}
+                value={effectiveType}
+                onChange={(event) =>
+                  dispatch(
+                    setTypeOverrides({
+                      ...pdfAnnotationTypeOverrides,
+                      [annotation.annotationId]: event.target.value,
+                    }),
+                  )
+                }
+              >
+                {typeOptions.map((option) => (
+                  <option
+                    key={`anno-type-${annotation.annotationId}-${option}`}
+                    value={option}
+                  >
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <div
+                className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+                style={{
+                  background:
+                    theme === "dark"
+                      ? "rgba(148,163,184,0.18)"
+                      : "rgba(15,23,42,0.1)",
+                  color: "var(--text-main)",
+                }}
+              >
+                {annotation.annotationLocationType}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 text-[13px] leading-6 break-words">
+            {mainThreadEntry ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="font-medium leading-6">
+                    {mainThreadEntry.text}
+                  </div>
+                  <div
+                    className="mt-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {mainThreadEntry.author}
+                  </div>
+                </div>
+                {replyEntries.length > 0 ? (
+                  <div
+                    className="rounded-2xl border px-3 py-3 space-y-3"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.14)"
+                          : "rgba(15,23,42,0.08)",
+                      background:
+                        theme === "dark"
+                          ? "rgba(2,6,23,0.24)"
+                          : "rgba(248,250,252,0.9)",
+                    }}
+                  >
+                    <div
+                      className="text-[10px] font-semibold uppercase tracking-[0.18em]"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      Discussion
+                    </div>
+                    {replyEntries.map((entry, index) => (
+                      <div
+                        key={`${annotation.annotationId}-reply-${index}`}
+                        className="pl-3 border-l space-y-1"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(34,211,238,0.24)"
+                              : "rgba(14,165,233,0.18)",
+                        }}
+                      >
+                        <div className="leading-6">{entry.text}</div>
+                        <div
+                          className="text-[11px] font-semibold uppercase tracking-[0.16em]"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          {entry.author}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              annotation.annotationText
+            )}
+          </div>
+          <div
+            className="mt-3 flex items-center gap-2 text-[11px]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{
+                background: hasResolvableTarget
+                  ? "rgba(34,197,94,0.9)"
+                  : "rgba(248,113,113,0.9)",
+              }}
+            />
+            {hasResolvableTarget
+              ? "Target mapped in preview"
+              : "Target not mapped to preview"}
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            {annotation.annotationText && hasResolvableTarget && (
+              <button
+                type="button"
+                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors flex items-center gap-1.5"
+                style={{
+                  borderColor: "rgba(16,185,129,0.34)",
+                  background: "rgba(16,185,129,0.1)",
+                  color: theme === "dark" ? "#6ee7b7" : "#065f46",
+                }}
+                onClick={async () => {
+                  try {
+                    const aiRoot =
+                      interactionMode === "preview" ? previewLayersRoot : root;
+                    if (!aiRoot) return;
+
+                    const pipeline = new AIPipeline();
+                    const response = await pipeline.process(
+                      annotation.annotationText,
+                      aiRoot,
+                      files,
+                      {
+                        allowPopupActions: true,
+                        annotationContext: annotation,
+                      },
+                    );
+
+                    if (response.intent !== "UNKNOWN" && response.updatedRoot) {
+                      if (interactionMode === "preview") {
+                        const currentPath = selectedPreviewHtmlRef.current;
+                        if (currentPath) {
+                          const tempDoc =
+                            document.implementation.createHTMLDocument();
+                          const node = materializeVirtualElement(
+                            tempDoc,
+                            response.updatedRoot,
+                          );
+                          const serialized =
+                            (node as HTMLElement).innerHTML || "";
+                          // @ts-ignore
+                          await persistPreviewHtmlContent(
+                            currentPath,
+                            serialized,
+                            { refreshPreviewDoc: true, saveNow: true },
+                          );
+                        }
+                      } else {
+                        setRoot(response.updatedRoot);
+                      }
+
+                      console.log(
+                        "AI Action Applied from Annotation:",
+                        response.message,
+                      );
+                    }
+                  } catch (err) {
+                    console.error("AI Action failed:", err);
+                  }
+                }}
+              >
+                <Sparkles size={12} />
+                Apply AI Action
+              </button>
+            )}
+            {annotation.popupInvocation?.popupId && (
+              <div
+                className="px-2 py-1 rounded text-[10px] font-mono opacity-60 hover:opacity-100 transition-opacity cursor-help"
+                title={`Resolved Popup ID: ${annotation.popupInvocation.popupId}`}
+                style={{ background: "rgba(0,0,0,0.1)" }}
+              >
+                PID: {annotation.popupInvocation.popupId.slice(0, 8)}...
+              </div>
+            )}
+            {annotation.mappedFilePath ? (
+              <button
+                type="button"
+                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.34)"
+                      : "rgba(14,165,233,0.28)",
+                  color: theme === "dark" ? "#67e8f9" : "#0f766e",
+                }}
+                onClick={() => handleJumpToPdfAnnotation(annotation)}
+              >
+                Open In Slide
+              </button>
+            ) : null}
+          </div>
+        </div>
+      );
+    },
+    [
+      currentPreviewSlideId,
+      focusedPdfAnnotation?.annotationId,
+      handleJumpToPdfAnnotation,
+      pdfAnnotationTypeOverrides,
+      resolveMappedLabelShort,
+      theme,
+    ],
+  );
 
   return (
     <div
@@ -2311,6 +10635,7 @@ const App: React.FC = () => {
         backgroundColor: "var(--bg-app)",
         color: "var(--text-main)",
         ["--left-panel-width" as any]: `${leftPanelWidth}px`,
+        ["--right-panel-width" as any]: `${rightPanelWidth}px`,
         ...(theme !== "light"
           ? {
               boxShadow:
@@ -2319,113 +10644,348 @@ const App: React.FC = () => {
           : {}),
       }}
     >
-      <TitleBar />
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         onAction={handleCommandAction}
       />
+      {isPageSwitchPromptOpen && pendingPageSwitch && (
+        <div
+          className="fixed inset-0 z-[1400] flex items-center justify-center px-4"
+          style={{
+            background:
+              theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border shadow-2xl p-5"
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(148,163,184,0.32)"
+                  : "rgba(15,23,42,0.12)",
+              color: "var(--text-main)",
+            }}
+          >
+            <div
+              className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Unsaved Changes
+            </div>
+            <h3 className="text-base font-semibold leading-tight">
+              {isPendingRefresh
+                ? "Save changes before refresh?"
+                : isPendingPreviewMode
+                  ? "Save changes before switching mode?"
+                  : "Save changes before switching page?"}
+            </h3>
+            <p
+              className="text-xs mt-2 leading-relaxed"
+              style={{ color: "var(--text-muted)" }}
+            >
+              You have unsaved edits in{" "}
+              <span
+                className="font-semibold"
+                style={{ color: "var(--text-main)" }}
+              >
+                {pendingSwitchFromLabel}
+              </span>
+              .
+              {isPendingRefresh ? (
+                <> Refresh can overwrite your in-memory edits.</>
+              ) : isPendingPreviewMode ? (
+                <>
+                  {" "}
+                  Switching to Preview mode can overwrite your in-memory edits.
+                </>
+              ) : (
+                <>
+                  {" "}
+                  Switching to{" "}
+                  <span
+                    className="font-semibold"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    {pendingSwitchNextLabel}
+                  </span>{" "}
+                  can overwrite your in-memory edits.
+                </>
+              )}
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-black/5"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={closePendingPageSwitchPrompt}
+                disabled={isPageSwitchPromptBusy}
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-rose-500/10"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(251,113,133,0.45)"
+                      : "rgba(225,29,72,0.35)",
+                  color: theme === "dark" ? "#fecdd3" : "#be123c",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={() => {
+                  void resolvePendingPageSwitchWithDiscard();
+                }}
+                disabled={isPageSwitchPromptBusy}
+              >
+                {isPendingRefresh ? "Discard & Refresh" : "Discard & Switch"}
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-cyan-500/15"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.45)"
+                      : "rgba(8,145,178,0.35)",
+                  color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
+                }}
+                onClick={() => {
+                  void resolvePendingPageSwitchWithSave();
+                }}
+                disabled={isPageSwitchPromptBusy}
+              >
+                {isPageSwitchPromptBusy
+                  ? "Working..."
+                  : isPendingRefresh
+                    ? "Save & Refresh"
+                    : "Save & Switch"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- Floating Toolbar --- */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-4 glass-toolbar rounded-full px-6 py-2 transition-all hover:scale-[1.02] animate-slideDown">
-        <div className="flex items-center gap-2 pr-4 border-r border-gray-500/20">
-          <div className="w-2.5 h-2.5 rounded-full bg-red-500/80 shadow-red-500/50 shadow-sm"></div>
-          <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80 shadow-yellow-500/50 shadow-sm"></div>
-          <div className="w-2.5 h-2.5 rounded-full bg-green-500/80 shadow-green-500/50 shadow-sm"></div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            className="glass-icon-btn group"
-            onClick={() => setIsCommandPaletteOpen(true)}
-            title="Command Palette (Ctrl+K)"
-          >
-            <Command
-              size={16}
-              className="group-hover:text-indigo-400 transition-colors"
-            />
-          </button>
-          <button
-            className="glass-icon-btn group"
-            onClick={handleOpenFolder}
-            title="Open Project Folder"
-          >
-            <FolderOpen
-              size={16}
-              className="group-hover:text-indigo-400 transition-colors"
-            />
-          </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className={`glass-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
-            onClick={() => setDeviceMode("tablet")}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setDeviceMode("tablet");
-              setDeviceCtxMenu({ type: "tablet", x: e.clientX, y: e.clientY });
+      {false && (
+        <div
+          className={`absolute top-3 z-[1000] transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+          style={{ left: `${toolbarAnchorLeft}px` }}
+        >
+          <div
+            className="px-3 py-1 flex items-center gap-2 min-w-0 rounded-[16px] border"
+            style={{
+              background:
+                theme === "dark"
+                  ? "rgba(12,18,30,0.96)"
+                  : "rgba(248,250,252,0.96)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(199,208,220,0.42)"
+                  : "rgba(15,23,42,0.14)",
+              boxShadow:
+                theme === "dark"
+                  ? "0 10px 24px rgba(2,6,23,0.34)"
+                  : "0 10px 24px rgba(15,23,42,0.10)",
+              backdropFilter: "blur(14px)",
             }}
-            title="iPad (right-click for model)"
           >
-            <Tablet size={16} />
-          </button>
-          <button
-            className="glass-icon-btn"
-            onClick={() =>
-              setTabletOrientation((prev) =>
-                prev === "landscape" ? "portrait" : "landscape",
-              )
-            }
-            title={`Rotate iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"})`}
-          >
-            <RotateCw size={16} />
-          </button>
-          <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
-            {[50, 75, 100].map((zoom) => (
+            {null}
+            <button
+              className={`glass-icon-btn navbar-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
+              onClick={() => {
+                setDeviceMode("tablet");
+                setTabletOrientation((prev) =>
+                  prev === "landscape" ? "portrait" : "landscape",
+                );
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setDeviceMode("tablet");
+                setDeviceCtxMenu({
+                  type: "tablet",
+                  x: e.clientX,
+                  y: e.clientY,
+                });
+              }}
+              title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
+            >
+              <Tablet
+                size={16}
+                className="transition-transform duration-300 ease-out"
+                style={{
+                  transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
+                }}
+              />
+            </button>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={handlePreviewRefresh}
+              title="Refresh iPad content (Ctrl+T)"
+            >
+              <RotateCw size={16} />
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+              {[50, 75, 100].map((zoom) => (
+                <button
+                  key={zoom}
+                  onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    frameZoom === zoom
+                      ? theme === "light"
+                        ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                        : "bg-indigo-500/25 text-indigo-300"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title={`Set frame zoom to ${zoom}%`}
+                >
+                  {zoom}%
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={toggleThemeWithTransition}
+              title="Toggle Theme"
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={runUndo}
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 size={16} />
+            </button>
+            <button
+              className="glass-icon-btn navbar-icon-btn"
+              onClick={runRedo}
+              title="Redo (Ctrl+U)"
+            >
+              <Redo2 size={16} />
+            </button>
+            <div className="h-4 w-px bg-gray-500/20"></div>
+            <div className="relative" ref={saveMenuRef}>
               <button
-                key={zoom}
-                onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  frameZoom === zoom
-                    ? "bg-indigo-500/25 text-indigo-300"
-                    : "text-gray-300 hover:bg-white/10"
-                }`}
-                title={`Set frame zoom to ${zoom}%`}
+                className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
+                onClick={() => setIsSaveMenuOpen((prev) => !prev)}
+                title="Save settings"
               >
-                {zoom}%
+                <Settings2 size={16} />
               </button>
-            ))}
+              {dirtyFiles.length > 0 && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
+                  aria-hidden="true"
+                />
+              )}
+              {isSaveMenuOpen && (
+                <div
+                  className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+                  style={{
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.98)"
+                        : "rgba(255,255,255,0.98)",
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.35)"
+                        : "rgba(15,23,42,0.15)",
+                    color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                  }}
+                >
+                  <button
+                    className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
+                    onClick={() => {
+                      void saveCodeDraftsRef.current?.();
+                      void flushPendingPreviewSaves();
+                      setIsSaveMenuOpen(false);
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Save size={13} />
+                      Save Now
+                    </span>
+                    <span className="opacity-70">Ctrl+S</span>
+                  </button>
+                  <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                    <span>Auto Save</span>
+                    <input
+                      type="checkbox"
+                      checked={autoSaveEnabled}
+                      onChange={(e) => setAutoSaveEnabled(e.target.checked)}
+                    />
+                  </label>
+                  <div className="px-2 pt-1 text-[10px] opacity-70">
+                    Smart debounce (about 1.2s idle), not every keystroke.
+                  </div>
+                  {dirtyFiles.length > 0 && (
+                    <div className="px-2 pt-2 text-[10px] text-amber-400">
+                      {dirtyFiles.length} unsaved file
+                      {dirtyFiles.length > 1 ? "s" : ""}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {interactionMode === "preview" && (
+              <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+                <button
+                  onClick={() => setPreviewModeWithSync("edit")}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    previewMode === "edit"
+                      ? theme === "light"
+                        ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                        : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title="LIVE Edit mode: select and edit elements"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setPreviewModeWithSync("preview")}
+                  className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                    previewMode === "preview"
+                      ? theme === "light"
+                        ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                        : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                      : theme === "light"
+                        ? "text-slate-500"
+                        : "text-gray-300"
+                  }`}
+                  title="LIVE Preview mode: navigate and interact"
+                >
+                  Preview
+                </button>
+              </div>
+            )}
           </div>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className="glass-icon-btn"
-            onClick={() =>
-              setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-            }
-            title="Toggle Theme"
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
-          <button
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${
-              interactionMode === "preview"
-                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20"
-            }`}
-            onClick={() =>
-              setInteractionMode((prev) =>
-                prev === "preview" ? "edit" : "preview",
-              )
-            }
-            title="Run Project on Device"
-          >
-            <Play
-              size={10}
-              fill={interactionMode === "preview" ? "currentColor" : "none"}
-            />
-            {interactionMode === "preview" ? "LIVE" : "Run"}
-          </button>
         </div>
-      </div>
+      )}
+      {isZenMode && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[999] px-3 py-1 rounded-full text-[10px] font-semibold tracking-wider border backdrop-blur-md bg-black/20 text-white/90 border-white/20">
+          Zen Mode Active • Press Esc to exit
+        </div>
+      )}
 
       {/* Device Context Menu */}
       {deviceCtxMenu && (
@@ -2437,6 +10997,7 @@ const App: React.FC = () => {
           desktopResolution={desktopResolution}
           setDesktopResolution={setDesktopResolution}
           tabletModel={tabletModel}
+          tabletOrientation={tabletOrientation}
           setTabletModel={setTabletModel}
           onClose={() => setDeviceCtxMenu(null)}
         />
@@ -2445,72 +11006,142 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute left-0 top-0 bottom-0 z-40 ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isLeftPanelOpen ? "translate-x-0" : "-translate-x-full"}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "left-0 top-20" : "left-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
           style={{
-            width: "var(--left-panel-width)",
+            transform: isLeftPanelOpen ? "translateX(0)" : "translateX(0)",
+            width: isLeftPanelOpen
+              ? "var(--left-panel-width)"
+              : `${LEFT_PANEL_COLLAPSED_WIDTH}px`,
+            minHeight: isFloatingPanels ? "30vh" : undefined,
+            maxHeight: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            height: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            borderRadius: isFloatingPanels ? "0 1rem 1rem 0" : undefined,
+            border: isFloatingPanels
+              ? theme === "light"
+                ? "1px solid rgba(15, 23, 42, 0.18)"
+                : "1px solid rgba(255, 255, 255, 0.25)"
+              : undefined,
+            background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+            overflowY: "hidden",
+            overflowX: "hidden",
             transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
           }}
         >
-          <div className="h-full glass-panel-strong flex flex-col">
+          <div
+            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+              isFloatingPanels ? "rounded-r-2xl overflow-hidden" : ""
+            }`}
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(248,250,252,0.74) 100%)",
+              backdropFilter: "blur(14px)",
+            }}
+          >
+            <div className="min-h-0 flex-1">
               <Sidebar
                 files={files}
                 projectPath={projectPath}
                 activeFile={previewSyncedFile ?? activeFile}
                 onSelectFile={handleSelectFile}
-              onAddElement={(type) => handleAddElement(type, "inside")}
-              root={root}
-              selectedId={selectedId}
-              onSelectElement={handleSelect}
-              interactionMode={interactionMode}
-              setInteractionMode={setInteractionMode}
-              drawElementTag={drawElementTag}
-              setDrawElementTag={setDrawElementTag}
+                onAddFontToPresentationCss={
+                  handleSidebarAddFontToPresentationCss
+                }
+                onCreateFile={handleCreateFileAtPath}
+                onCreateFolder={handleCreateFolderAtPath}
+                onRenamePath={handleRenamePath}
+                onDeletePath={handleDeletePath}
+                onDuplicateFile={handleDuplicateFile}
+                onRefreshFiles={refreshProjectFiles}
+                onOpenProjectFolder={handleOpenFolder}
+                onOpenCodePanel={openCodePanel}
+                selectedFolderCloneSource={selectedFolderCloneSource}
+                onChooseFolderCloneSource={handleChooseFolderCloneSource}
+                onAddElement={handleSidebarAddElement}
+                root={interactionMode === "preview" ? previewLayersRoot : root}
+                selectedId={
+                  interactionMode === "preview"
+                    ? previewLayerSelectedId
+                    : selectedId
+                }
+                onSelectElement={handleSidebarSelectElement}
+                interactionMode={sidebarInteractionMode}
+                setInteractionMode={handleSidebarInteractionModeChange}
+                drawElementTag={drawElementTag}
+                setDrawElementTag={setDrawElementTag}
+                theme={theme}
+                showConfigButton={isEdaProject(files)}
+                onOpenConfig={handleOpenConfigModal}
+                onLoadImage={handleSidebarLoadImage}
+                isPanelOpen={isLeftPanelOpen}
+                onTogglePanelOpen={setIsLeftPanelOpen}
+                showMasterTools={SHOW_MASTER_TOOLS}
+              />
+            </div>
+            <div
+              className={`pointer-events-none absolute inset-0 ${isFloatingPanels ? "rounded-r-2xl" : ""}`}
+              style={{
+                boxShadow:
+                  theme === "dark"
+                    ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                    : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+              }}
             />
           </div>
           {isLeftPanelOpen && (
             <div
               onMouseDown={handleLeftPanelResizeStart}
-              className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize bg-transparent hover:bg-indigo-400/25 transition-colors"
-              title="Resize panel"
+              onClick={handleLeftPanelStretchToggle}
+              className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              title="Resize panel. Click to stretch or shrink"
             />
           )}
-          <button
-            onClick={() => setIsLeftPanelOpen(!isLeftPanelOpen)}
-            className="absolute -right-6 top-[3.25rem] glass-button p-1 rounded-r-lg border-l-0 shadow-lg z-50 hover:pl-2 transition-all"
-          >
-            {isLeftPanelOpen ? (
-              <PanelLeftClose size={14} />
-            ) : (
-              <PanelLeft size={14} />
-            )}
-          </button>
         </div>
 
         {/* --- Main Canvas Area ("The Stage") --- */}
         {/* Non-mobile: 1 panel = push, both panels = overlay with scrollable content. Mobile: always overlay. */}
         <div
-          className={`flex-1 flex flex-col relative ${isResizingLeftPanel ? "" : "transition-all duration-500"}`}
+          className={`flex-1 flex flex-col relative ${isResizingLeftPanel || isResizingRightPanel ? "" : "transition-all duration-500"}`}
           style={{
             marginLeft:
-              deviceMode !== "mobile" && isLeftPanelOpen && !isRightPanelOpen
+              !isFloatingPanels &&
+              deviceMode !== "mobile" &&
+              isLeftPanelOpen &&
+              !isRightPanelOpen
                 ? "var(--left-panel-width)"
                 : 0,
-            marginRight:
-              deviceMode !== "mobile" && !isLeftPanelOpen && isRightPanelOpen
-                ? "16.5rem"
-                : 0,
+            marginRight: codePanelStageOffset
+              ? `${codePanelStageOffset}px`
+              : consolePanelStageOffset
+                ? `${consolePanelStageOffset}px`
+                : !isFloatingPanels &&
+                    deviceMode !== "mobile" &&
+                    !isLeftPanelOpen &&
+                    isRightPanelOpen
+                  ? "var(--right-panel-width)"
+                  : 0,
             // When both panels open, no margins - content will scroll
           }}
         >
           {/* Background & Scroller */}
           <div
             ref={scrollerRef}
-            className={`flex-1 relative transition-all duration-300 ${showTerminal ? "pb-52" : "pb-10"}`}
+            className="flex-1 relative no-scrollbar transition-all duration-300 pb-10"
             style={{
-              overflow: bothPanelsOpen ? "auto" : "auto",
-              overflowX: bothPanelsOpen ? "scroll" : "auto",
+              overflowX: shouldLockHorizontalScroll ? "hidden" : baseOverflowX,
+              overflowY: shouldLockVerticalScroll ? "hidden" : "auto",
             }}
-            onClick={() => setSelectedId(null)}
+            onClick={() => {
+              setSelectedId(null);
+              setPreviewSelectedPath(null);
+              setPreviewSelectedElement(null);
+              setPreviewSelectedComputedStyles(null);
+            }}
           >
             {/* Dynamic Background */}
             <div className="fixed inset-0 pointer-events-none z-0">
@@ -2525,19 +11156,24 @@ const App: React.FC = () => {
               style={{
                 perspective: "1000px",
                 paddingLeft: `${BASE_STAGE_PADDING}px`,
-                paddingRight: `${BASE_STAGE_PADDING}px`,
+                paddingRight:
+                  isPdfAnnotationPanelOpen && deviceMode !== "tablet"
+                    ? "400px"
+                    : `${BASE_STAGE_PADDING}px`,
                 width: "100%",
                 minWidth: bothPanelsOpen
                   ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
-                  : "100%",
+                  : floatingHorizontalInset > 0
+                    ? `calc(100% + ${floatingHorizontalInset}px)`
+                    : "100%",
               }}
             >
               {/* Safe Spacing for Toolbar */}
-              <div className="w-full shrink-0 h-[3.5rem] pointer-events-none"></div>
+              <div className="w-full shrink-0 h-4 pointer-events-none"></div>
               {/* --- Device Frame Container --- */}
               {/* --- Device Frame Wrapper (Layout Isolation) --- */}
               <div
-                className="relative shrink-0 flex items-center justify-center transition-all duration-700 m-auto"
+                className="relative shrink-0 flex items-center justify-center transition-all duration-700 mx-auto mt-0"
                 style={{
                   width:
                     deviceMode === "mobile"
@@ -2555,45 +11191,381 @@ const App: React.FC = () => {
                         : desktopResolution === "resizable"
                           ? "75vh"
                           : "518.4px",
-                  transform: `scale(${frameScale})`,
+                  transform:
+                    deviceMode === "tablet"
+                      ? `translateX(${clampedTabletShiftX}px) scale(${frameScale})`
+                      : `translateX(${clampedCodeShiftX}px) scale(${frameScale})`,
                   transformOrigin: "top center",
                 }}
               >
+                {showDeviceFrameToolbar && (
+                  <>
+                    <div
+                      className={`absolute left-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+                      style={{ marginBottom: "-10px" }}
+                    >
+                      <div
+                        className="px-3 pt-1 pb-3 flex items-center gap-2 min-w-0 rounded-t-[16px] rounded-b-none border"
+                        style={{
+                          background:
+                            theme === "dark"
+                              ? "rgba(12,18,30,0.96)"
+                              : "rgba(248,250,252,0.96)",
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(199,208,220,0.42)"
+                              : "rgba(15,23,42,0.14)",
+                          boxShadow:
+                            theme === "dark"
+                              ? "0 10px 24px rgba(2,6,23,0.34)"
+                              : "0 10px 24px rgba(15,23,42,0.10)",
+                          backdropFilter: "blur(14px)",
+                          borderBottomWidth: 0,
+                        }}
+                      >
+                        {null}
+                        <button
+                          className={`glass-icon-btn navbar-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
+                          onClick={() => {
+                            setDeviceMode("tablet");
+                            setTabletOrientation((prev) =>
+                              prev === "landscape" ? "portrait" : "landscape",
+                            );
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setDeviceMode("tablet");
+                            setDeviceCtxMenu({
+                              type: "tablet",
+                              x: e.clientX,
+                              y: e.clientY,
+                            });
+                          }}
+                          title={`iPad (${tabletOrientation === "landscape" ? "Landscape" : "Portrait"}) - click to rotate, right-click for model`}
+                        >
+                          <Tablet
+                            size={16}
+                            className="transition-transform duration-300 ease-out"
+                            style={{
+                              transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
+                            }}
+                          />
+                        </button>
+                        <button
+                          className="glass-icon-btn navbar-icon-btn"
+                          onClick={handlePreviewRefresh}
+                          title="Refresh iPad content (Ctrl+T)"
+                        >
+                          <RotateCw size={16} />
+                        </button>
+                      {currentDevicePixelRatio >= 1.5 && (
+                        <>
+                          <div className="h-4 w-px bg-gray-500/20"></div>
+                          <div className="flex items-center gap-0.5 rounded-full px-0.5 py-0.5 border border-gray-500/20">
+                            {[50, 75, 100].map((zoom) => (
+                              <button
+                                key={zoom}
+                                onClick={() =>
+                                  setFrameZoom(zoom as 50 | 75 | 100)
+                                }
+                                className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold transition-all ${
+                                  frameZoom === zoom
+                                    ? theme === "light"
+                                      ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                                      : "bg-indigo-500/25 text-indigo-300"
+                                    : theme === "light"
+                                      ? "text-slate-500"
+                                      : "text-gray-300"
+                                }`}
+                                title={`Set frame zoom to ${zoom}%`}
+                              >
+                                {zoom}%
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={toggleThemeWithTransition}
+                        title="Toggle Theme"
+                      >
+                        {theme === "dark" ? (
+                          <Sun size={16} />
+                        ) : (
+                          <Moon size={16} />
+                        )}
+                      </button>
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={runUndo}
+                        title="Undo (Ctrl+Z)"
+                      >
+                        <Undo2 size={16} />
+                      </button>
+                      <button
+                        className="glass-icon-btn navbar-icon-btn"
+                        onClick={runRedo}
+                        title="Redo (Ctrl+U)"
+                      >
+                        <Redo2 size={16} />
+                      </button>
+                      <div className="h-4 w-px bg-gray-500/20"></div>
+                      <div className="relative" ref={saveMenuRef}>
+                        <button
+                          className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
+                          onClick={() =>
+                            setIsSaveMenuOpen((prev) => !prev)
+                          }
+                          title="Save settings"
+                        >
+                          <Settings2 size={16} />
+                        </button>
+                        {dirtyFiles.length > 0 && (
+                          <span
+                            className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
+                            aria-hidden="true"
+                          />
+                        )}
+                        {isSaveMenuOpen && (
+                          <div
+                            className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
+                            style={{
+                              background:
+                                theme === "dark"
+                                  ? "rgba(15,23,42,0.98)"
+                                  : "rgba(255,255,255,0.98)",
+                              borderColor:
+                                theme === "dark"
+                                  ? "rgba(148,163,184,0.35)"
+                                  : "rgba(15,23,42,0.15)",
+                              color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                            }}
+                          >
+                            <button
+                              className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
+                              onClick={() => {
+                                void saveCodeDraftsRef.current?.();
+                                void flushPendingPreviewSaves();
+                                setIsSaveMenuOpen(false);
+                              }}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Save size={13} />
+                                Save Now
+                              </span>
+                              <span className="opacity-70">Ctrl+S</span>
+                            </button>
+                            <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                              <span>Auto Save</span>
+                              <input
+                                type="checkbox"
+                                checked={autoSaveEnabled}
+                                onChange={(e) =>
+                                  setAutoSaveEnabled(e.target.checked)
+                                }
+                              />
+                            </label>
+                            <div className="px-2 pt-1 text-[10px] opacity-70">
+                              Smart debounce (about 1.2s idle), not every
+                              keystroke.
+                            </div>
+                            {dirtyFiles.length > 0 && (
+                              <div className="px-2 pt-2 text-[10px] text-amber-400">
+                                {dirtyFiles.length} unsaved file
+                                {dirtyFiles.length > 1 ? "s" : ""}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {interactionMode === "preview" && (
+                        <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+                          <button
+                            onClick={() => setPreviewModeWithSync("edit")}
+                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                              previewMode === "edit"
+                                ? theme === "light"
+                                  ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                                  : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                                : theme === "light"
+                                  ? "text-slate-500"
+                                  : "text-gray-300"
+                            }`}
+                            title="LIVE Edit mode: select and edit elements"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => setPreviewModeWithSync("preview")}
+                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                              previewMode === "preview"
+                                ? theme === "light"
+                                  ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                                  : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                                : theme === "light"
+                                  ? "text-slate-500"
+                                  : "text-gray-300"
+                            }`}
+                            title="LIVE Preview mode: navigate and interact"
+                          >
+                            Preview
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                    {deviceMode === "tablet" && SHOW_SCREENSHOT_FEATURES && (
+                      <div
+                        className={`absolute right-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
+                        style={{ marginBottom: "-10px" }}
+                      >
+                        <div
+                          className="px-2.5 pt-1 pb-3 flex items-center gap-2 rounded-t-[10px] rounded-b-none border"
+                          style={{
+                            background:
+                              theme === "dark"
+                                ? "rgba(12,18,30,0.96)"
+                                : "rgba(248,250,252,0.96)",
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(199,208,220,0.42)"
+                                : "rgba(15,23,42,0.14)",
+                            boxShadow:
+                              theme === "dark"
+                                ? "0 10px 24px rgba(2,6,23,0.34)"
+                                : "0 10px 24px rgba(15,23,42,0.10)",
+                            backdropFilter: "blur(14px)",
+                            borderBottomWidth: 0,
+                          }}
+                        >
+                          <button
+                            className={`glass-icon-btn navbar-icon-btn rounded-md ${
+                              screenshotCaptureBusy ? "opacity-60" : ""
+                            }`}
+                            onClick={() => openScreenshotGallery(true)}
+                            disabled={screenshotCaptureBusy || !projectPath}
+                            title={
+                              projectPath
+                                ? "Capture iPad screenshot"
+                                : "Open a presentation first"
+                            }
+                            style={{ borderRadius: "8px" }}
+                          >
+                            <Camera size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
                 {/* Actual Device Frame */}
-                  <div
-                    className={`
+                <div
+                  className={`
                               relative z-10 shrink-0 transition-all duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)]
                               ${
                                 deviceMode === "desktop"
-                                  ? "rounded-xl border-4 border-[#1e293b]"
+                                  ? "rounded-xl border-4"
                                   : deviceMode === "tablet"
-                                    ? "w-full h-full rounded-[42px] border-[10px] border-[#0f172a]"
-                                    : "w-full h-full rounded-[50px] border-[12px] border-black"
+                                    ? "w-full h-full rounded-[42px] border-[10px]"
+                                    : "w-full h-full rounded-[50px] border-[12px]"
                               }
-                              bg-black shadow-[0_20px_50px_-10px_rgba(0,0,0,0.5)]
                           `}
                   style={{
                     position: "relative",
                     width: "100%",
                     height: "100%",
+                    borderColor:
+                      deviceMode === "desktop"
+                        ? "#1e293b"
+                        : deviceMode === "tablet"
+                          ? theme === "dark"
+                            ? "#c7d0dc"
+                            : "#0f172a"
+                          : "#000000",
+                    background:
+                      deviceMode === "tablet" && theme === "dark"
+                        ? [
+                            "linear-gradient(145deg, #eef3fa 0%, #cfd8e5 16%, #9aa7b8 34%, #748396 50%, #9fadbe 68%, #dce4ee 84%, #f3f7fb 100%)",
+                            "linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.06) 24%, rgba(0,0,0,0.12) 100%)",
+                            "radial-gradient(130% 70% at 50% -5%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.0) 62%)",
+                          ].join(", ")
+                        : "#000000",
+                    boxShadow:
+                      deviceMode === "tablet" && theme === "dark"
+                        ? "0 28px 62px -16px rgba(0,0,0,0.62), 0 0 0 1px rgba(203,213,225,0.22), 0 0 28px rgba(148,163,184,0.2), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 rgba(255,255,255,0.22), inset 1px 0 0 rgba(255,255,255,0.2), inset -1px 0 0 rgba(0,0,0,0.26)"
+                        : "0 20px 50px -10px rgba(0,0,0,0.5)",
                     // No transform on the frame itself - it stays fixed visual size
                   }}
                 >
+                  {deviceMode === "tablet" && theme === "dark" && (
+                    <>
+                      <div
+                        className="pointer-events-none absolute inset-[2px] rounded-[34px]"
+                        style={{
+                          background:
+                            "linear-gradient(180deg, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.13) 18%, rgba(255,255,255,0.03) 36%, rgba(0,0,0,0.06) 100%)",
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[1px] rounded-[36px]"
+                        style={{
+                          background: [
+                            "linear-gradient(120deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.0) 28%, rgba(255,255,255,0.0) 72%, rgba(255,255,255,0.22) 100%)",
+                            "repeating-linear-gradient(90deg, rgba(255,255,255,0.055) 0px, rgba(255,255,255,0.055) 1px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 3px)",
+                          ].join(", "),
+                          opacity: 0.3,
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[0px] rounded-[36px]"
+                        style={{
+                          opacity: darkTabletReflectionOpacity,
+                          mixBlendMode: "screen",
+                          background: [
+                            "radial-gradient(60% 26% at 50% -4%, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.0) 78%)",
+                            "radial-gradient(40% 34% at 6% 18%, rgba(147,197,253,0.42) 0%, rgba(147,197,253,0.0) 72%)",
+                            "radial-gradient(40% 34% at 94% 18%, rgba(167,243,208,0.4) 0%, rgba(167,243,208,0.0) 72%)",
+                          ].join(", "),
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[0px] rounded-[36px]"
+                        style={{
+                          opacity: Math.min(
+                            0.56,
+                            darkTabletReflectionOpacity * 0.9,
+                          ),
+                          background:
+                            "linear-gradient(112deg, rgba(255,255,255,0.0) 18%, rgba(255,255,255,0.42) 31%, rgba(255,255,255,0.0) 46%, rgba(255,255,255,0.0) 60%, rgba(255,255,255,0.28) 71%, rgba(255,255,255,0.0) 85%)",
+                        }}
+                      />
+                      <div
+                        className="pointer-events-none absolute inset-[3px] rounded-[33px]"
+                        style={{
+                          boxShadow:
+                            "inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 0 26px rgba(255,255,255,0.08)",
+                        }}
+                      />
+                    </>
+                  )}
                   {/* Morphing Header (Window Bar <-> Notch) */}
                   <div
                     className={`
-                            absolute top-0 left-1/2 -translate-x-1/2 z-20 ${deviceMode === "desktop" ? "bg-[#1e293b]" : deviceMode === "tablet" ? "bg-[#0f172a]" : "bg-black"}
+                            absolute top-0 left-1/2 -translate-x-1/2 z-20 ${deviceMode === "desktop" ? "bg-[#1e293b]" : deviceMode === "tablet" ? (theme === "dark" ? "bg-[#5f6f82]" : "bg-[#0f172a]") : "bg-black"}
                             transition-all duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)] flex items-center justify-center overflow-hidden
                             ${
                               deviceMode === "desktop"
                                 ? "w-full h-9 rounded-t-lg rounded-b-none px-4"
                                 : deviceMode === "tablet"
                                   ? "w-[120px] h-[9px] rounded-full top-[12px] px-0"
-                                : mobileFrameStyle === "dynamic-island"
-                                  ? "w-[120px] h-[35px] rounded-full top-[11px] px-0"
-                                  : mobileFrameStyle === "notch"
-                                    ? "w-[160px] h-[30px] rounded-b-[20px] rounded-t-none px-0"
-                                    : "w-[10px] h-[10px] rounded-full top-[12px] left-1/2 -translate-x-1/2"
+                                  : mobileFrameStyle === "dynamic-island"
+                                    ? "w-[120px] h-[35px] rounded-full top-[11px] px-0"
+                                    : mobileFrameStyle === "notch"
+                                      ? "w-[160px] h-[30px] rounded-b-[20px] rounded-t-none px-0"
+                                      : "w-[10px] h-[10px] rounded-full top-[12px] left-1/2 -translate-x-1/2"
                             }
                         `}
                   >
@@ -2651,29 +11623,29 @@ const App: React.FC = () => {
                             ? "100%"
                             : deviceMode === "tablet"
                               ? `${tabletMetrics.contentWidth}px`
-                            : desktopResolution === "resizable"
-                              ? "100%"
-                              : desktopResolution === "4k"
-                                ? "3840px"
-                                : desktopResolution === "2k"
-                                  ? "2560px"
-                                  : desktopResolution === "1.5k"
-                                    ? "1600px"
-                                    : "1920px",
+                              : desktopResolution === "resizable"
+                                ? "100%"
+                                : desktopResolution === "4k"
+                                  ? "3840px"
+                                  : desktopResolution === "2k"
+                                    ? "2560px"
+                                    : desktopResolution === "1.5k"
+                                      ? "1600px"
+                                      : "1920px",
                         height:
                           deviceMode === "mobile"
                             ? "100%"
                             : deviceMode === "tablet"
                               ? `${tabletMetrics.contentHeight}px`
-                            : desktopResolution === "resizable"
-                              ? "100%"
-                              : desktopResolution === "4k"
-                                ? "2160px"
-                                : desktopResolution === "2k"
-                                  ? "1440px"
-                                  : desktopResolution === "1.5k"
-                                    ? "900px"
-                                    : "1080px",
+                              : desktopResolution === "resizable"
+                                ? "100%"
+                                : desktopResolution === "4k"
+                                  ? "2160px"
+                                  : desktopResolution === "2k"
+                                    ? "1440px"
+                                    : desktopResolution === "1.5k"
+                                      ? "900px"
+                                      : "1080px",
                         transform:
                           deviceMode === "tablet"
                             ? `translateX(-50%) scale(${tabletViewportScale})`
@@ -2692,44 +11664,488 @@ const App: React.FC = () => {
                               })`,
                         transformOrigin:
                           deviceMode === "tablet" ? "top center" : "top left",
-                        position: deviceMode === "tablet" ? "absolute" : "relative",
+                        position:
+                          deviceMode === "tablet" ? "absolute" : "relative",
                         left: deviceMode === "tablet" ? "50%" : undefined,
                         top: deviceMode === "tablet" ? 0 : undefined,
                       }}
                     >
-                      <div className="w-full h-full relative">
+                      <div
+                        ref={previewStageRef}
+                        className="w-full h-full relative"
+                        onDragOver={handlePreviewStageDragOver}
+                        onDrop={handlePreviewStageDrop}
+                      >
+                        {shouldShowFrameWelcome && (
+                          <div className="absolute inset-0 flex items-center justify-center p-12">
+                            <div
+                              className="w-full max-w-6xl rounded-[42px] border px-24 py-24 text-center shadow-[0_42px_140px_rgba(15,23,42,0.16)]"
+                              style={{
+                                background:
+                                  theme === "dark"
+                                    ? "linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.9) 100%)"
+                                    : "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.3)"
+                                    : "rgba(15,23,42,0.12)",
+                                color: "var(--text-main)",
+                                backdropFilter: "blur(16px)",
+                              }}
+                            >
+                              <div
+                                className="text-[44px] font-semibold uppercase tracking-[0.34em]"
+                                style={{ color: "var(--text-muted)" }}
+                              >
+                                Welcome To NoCode X
+                              </div>
+                              <p
+                                className="mt-8 text-[30px] leading-[1.45] max-w-4xl mx-auto"
+                                style={{ color: "var(--text-muted)" }}
+                              >
+                                Open a previous presentation or choose a new
+                                project folder directly from the frame.
+                              </p>
+                              <div className="mt-12 flex items-center justify-center gap-4">
+                                <button
+                                  type="button"
+                                  className="rounded-[22px] px-10 py-5 text-[22px] font-semibold transition-colors"
+                                  style={{
+                                    background: "rgba(14,165,233,0.14)",
+                                    border: "1px solid rgba(14,165,233,0.25)",
+                                    color: "var(--text-main)",
+                                  }}
+                                  onClick={() => {
+                                    void handleOpenFolder();
+                                  }}
+                                >
+                                  Select Presentation
+                                </button>
+                              </div>
+                              {recentProjects.length > 0 && (
+                                <div className="mt-12 text-left">
+                                  <div
+                                    className="text-[18px] font-semibold uppercase tracking-[0.24em] text-center"
+                                    style={{ color: "var(--text-muted)" }}
+                                  >
+                                    Recent Presentations
+                                  </div>
+                                  <div className="mt-6 grid grid-cols-1 gap-4">
+                                    {recentProjects.map((recentPath) => {
+                                      const recentName = recentPath
+                                        .replace(/\\/g, "/")
+                                        .split("/")
+                                        .filter(Boolean)
+                                        .slice(-1)[0];
+                                      return (
+                                        <button
+                                          key={recentPath}
+                                          type="button"
+                                          className="w-full rounded-[22px] border px-6 py-5 text-left transition-colors"
+                                          style={{
+                                            borderColor:
+                                              theme === "dark"
+                                                ? "rgba(148,163,184,0.24)"
+                                                : "rgba(15,23,42,0.12)",
+                                            background:
+                                              theme === "dark"
+                                                ? "rgba(15,23,42,0.48)"
+                                                : "rgba(255,255,255,0.68)",
+                                            color: "var(--text-main)",
+                                          }}
+                                          onClick={() => {
+                                            void handleOpenFolder(recentPath);
+                                          }}
+                                          title={recentPath}
+                                        >
+                                          <div className="text-[24px] font-semibold">
+                                            {recentName}
+                                          </div>
+                                          <div
+                                            className="mt-2 truncate text-[15px]"
+                                            style={{
+                                              color: "var(--text-muted)",
+                                            }}
+                                          >
+                                            {recentPath}
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                              {projectPath ? (
+                                <div
+                                  className="mt-8 text-[18px]"
+                                  style={{ color: "var(--text-muted)" }}
+                                >
+                                  Current project:{" "}
+                                  {
+                                    projectPath
+                                      .replace(/\\/g, "/")
+                                      .split("/")
+                                      .filter(Boolean)
+                                      .slice(-1)[0]
+                                  }
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
                         {hasPreviewContent && (
                           <iframe
+                            key={
+                              selectedPreviewSrc
+                                ? `preview-src:${selectedPreviewSrc}:${previewRefreshNonce}`
+                                : `preview-doc:${selectedPreviewHtml || "none"}:${previewRefreshNonce}`
+                            }
                             ref={previewFrameRef}
                             title="project-preview"
                             src={selectedPreviewSrc || undefined}
-                            srcDoc={selectedPreviewSrc ? undefined : selectedPreviewDoc}
+                            srcDoc={
+                              selectedPreviewSrc
+                                ? undefined
+                                : selectedPreviewDoc
+                            }
                             loading="eager"
                             onLoad={handlePreviewFrameLoad}
-                            className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-200 ${
+                            onDragOver={handlePreviewStageDragOver}
+                            onDrop={handlePreviewStageDrop}
+                            className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-150 ${
                               interactionMode === "preview"
-                                ? "opacity-100 pointer-events-auto"
+                                ? isToolboxDragging
+                                  ? "opacity-100 pointer-events-none"
+                                  : "opacity-100 pointer-events-auto"
                                 : "opacity-0 pointer-events-none"
                             }`}
                           />
                         )}
-                        <div
-                          className={`w-full h-full transition-opacity duration-200 ${
-                            interactionMode === "preview"
-                              ? "opacity-0 pointer-events-none"
-                              : "opacity-100 pointer-events-auto"
-                          }`}
-                        >
-                          <EditorContent
-                            root={root}
-                            selectedId={selectedId}
-                            handleSelect={handleSelect}
-                            handleMoveElement={handleMoveElement}
-                            handleResize={handleResize}
-                            interactionMode={interactionMode}
-                            INJECTED_STYLES={INJECTED_STYLES}
-                          />
-                        </div>
+                        {interactionMode === "preview" &&
+                          isPdfAnnotationPanelOpen &&
+                          filteredAnnotationsForCurrentSlide.map((annotation) => {
+                            const isFocused =
+                              focusedAnnotationForCurrentSlide?.annotationId ===
+                              annotation.annotationId;
+                            const isPopup = isPopupAnnotation(annotation);
+                            return (
+                              <div
+                                key={annotation.annotationId}
+                                className={`absolute pointer-events-none rounded-[18px] border-2 ${
+                                  isFocused ? "z-30" : "z-20"
+                                }`}
+                                style={{
+                                  left: `${annotation.positionPct.left}%`,
+                                  top: `${annotation.positionPct.top}%`,
+                                  width: `${Math.max(2, annotation.positionPct.width)}%`,
+                                  height: `${Math.max(2, annotation.positionPct.height)}%`,
+                                  borderColor: isFocused
+                                    ? "rgba(239,68,68,0.98)"
+                                    : isPopup
+                                      ? "rgba(34,211,238,0.85)"
+                                      : "rgba(34,197,94,0.9)",
+                                  boxShadow: isFocused
+                                    ? "0 0 0 5px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.45), inset 0 0 0 1px rgba(255,255,255,0.82)"
+                                    : isPopup
+                                      ? "0 0 0 3px rgba(34,211,238,0.18), 0 0 22px rgba(34,211,238,0.32), inset 0 0 0 1px rgba(255,255,255,0.65)"
+                                      : "0 0 0 3px rgba(34,197,94,0.2), 0 0 22px rgba(34,197,94,0.34), inset 0 0 0 1px rgba(255,255,255,0.65)",
+                                  background: isFocused
+                                    ? "rgba(239,68,68,0.08)"
+                                    : isPopup
+                                      ? "rgba(34,211,238,0.06)"
+                                      : "rgba(34,197,94,0.06)",
+                                  animation: isFocused
+                                    ? "pulse 1.1s ease-in-out 2"
+                                    : "none",
+                                }}
+                              />
+                            );
+                          })}
+                        {!shouldShowFrameWelcome && (
+                          <div
+                            className={`w-full h-full transition-opacity duration-200 ${
+                              interactionMode === "preview"
+                                ? "opacity-0 pointer-events-none"
+                                : "opacity-100 pointer-events-auto"
+                            }`}
+                          >
+                            <EditorContent
+                              root={root}
+                              selectedId={selectedId}
+                              selectedPathIds={selectedPathIds}
+                              handleSelect={handleSelect}
+                              handleMoveElement={handleMoveElement}
+                              handleMoveElementByPosition={
+                                handleMoveElementByPosition
+                              }
+                              handleResize={handleResize}
+                              interactionMode={interactionMode}
+                              INJECTED_STYLES={INJECTED_STYLES}
+                              vibeUpdateKey={lastVibeUpdateRef.current}
+                              onVibeError={(msg) => setVibeErrorContext(msg)}
+                            />
+                          </div>
+                        )}
+                        {false}
+                        {interactionMode === "preview" &&
+                          previewMode === "edit" &&
+                          Array.isArray(previewSelectedPath) &&
+                          previewSelectedPath.length > 0 &&
+                          previewSelectionBox && (
+                            <div
+                              className="absolute z-30 pointer-events-none"
+                              style={{
+                                left: `${previewSelectionBox.left}px`,
+                                top: `${previewSelectionBox.top}px`,
+                                width: `${previewSelectionBox.width}px`,
+                                height: `${previewSelectionBox.height}px`,
+                                border: "2px solid rgba(34,211,238,0.95)",
+                                boxShadow:
+                                  "0 0 0 1px rgba(6,182,212,0.85), 0 0 0 6px rgba(34,211,238,0.12)",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              {[
+                                [
+                                  "n",
+                                  "Resize from top",
+                                  "ns-resize",
+                                  "absolute left-3 right-3 top-[-6px] h-4",
+                                  "999px",
+                                ],
+                                [
+                                  "s",
+                                  "Resize from bottom",
+                                  "ns-resize",
+                                  "absolute left-3 right-3 bottom-[-6px] h-4",
+                                  "999px",
+                                ],
+                                [
+                                  "e",
+                                  "Resize from right",
+                                  "ew-resize",
+                                  "absolute top-3 bottom-3 right-[-6px] w-4",
+                                  "999px",
+                                ],
+                                [
+                                  "w",
+                                  "Resize from left",
+                                  "ew-resize",
+                                  "absolute top-3 bottom-3 left-[-6px] w-4",
+                                  "999px",
+                                ],
+                                [
+                                  "nw",
+                                  "Resize from top left",
+                                  "nwse-resize",
+                                  "absolute left-[-7px] top-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "ne",
+                                  "Resize from top right",
+                                  "nesw-resize",
+                                  "absolute right-[-7px] top-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "sw",
+                                  "Resize from bottom left",
+                                  "nesw-resize",
+                                  "absolute left-[-7px] bottom-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                                [
+                                  "se",
+                                  "Resize from bottom right",
+                                  "nwse-resize",
+                                  "absolute right-[-7px] bottom-[-7px] w-5 h-5",
+                                  "6px",
+                                ],
+                              ].map(
+                                ([key, title, cursor, className, radius]) => (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    className={`pointer-events-auto absolute ${className}`}
+                                    style={{ cursor }}
+                                    title={title}
+                                    onMouseDown={(event) =>
+                                      handlePreviewResizeHandleMouseDown(
+                                        key as
+                                          | "n"
+                                          | "s"
+                                          | "e"
+                                          | "w"
+                                          | "ne"
+                                          | "nw"
+                                          | "se"
+                                          | "sw",
+                                        event,
+                                      )
+                                    }
+                                  >
+                                    <span
+                                      className="absolute inset-0"
+                                      style={{
+                                        borderRadius: radius,
+                                        background: "rgba(34, 211, 238, 0.82)",
+                                        border:
+                                          "1px solid rgba(255,255,255,0.95)",
+                                        boxShadow:
+                                          "0 0 0 1px rgba(8,145,178,0.42), 0 4px 12px rgba(34,211,238,0.35)",
+                                      }}
+                                    />
+                                  </button>
+                                ),
+                              )}
+                              {false && (
+                                <button
+                                  type="button"
+                                  className="pointer-events-auto absolute right-1 bottom-1 w-7 h-7 rounded-md border-2 border-white/90 bg-amber-500 shadow-[0_0_0_2px_rgba(2,6,23,0.7),0_8px_20px_rgba(245,158,11,0.45)] text-slate-950 font-black text-xs leading-none flex items-center justify-center"
+                                  style={{
+                                    cursor: isPreviewResizing
+                                      ? "nwse-resize"
+                                      : "nwse-resize",
+                                  }}
+                                  title="Resize from bottom right"
+                                  onMouseDown={(event) =>
+                                    handlePreviewResizeHandleMouseDown(
+                                      "se",
+                                      event,
+                                    )
+                                  }
+                                >
+                                  <>{"↘"}</>
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        {false &&
+                          interactionMode === "preview" &&
+                          previewMode === "edit" &&
+                          Array.isArray(previewSelectedPath) &&
+                          (previewSelectedPath?.length ?? 0) > 0 &&
+                          previewSelectedElement && (
+                            <div
+                              className="absolute right-4 top-4 z-40 rounded-2xl border shadow-2xl backdrop-blur-md p-3 flex flex-col gap-2 min-w-[230px]"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.35)"
+                                    : "rgba(15,23,42,0.18)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(2,6,23,0.86)"
+                                    : "rgba(255,255,255,0.96)",
+                                color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
+                              <div className="text-xs font-bold tracking-wide opacity-90">
+                                Quick Controls
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-cyan-500/35 hover:bg-cyan-500/20 flex items-center gap-1"
+                                  title="Duplicate"
+                                  onClick={() => {
+                                    void handlePreviewDuplicateSelected();
+                                  }}
+                                >
+                                  <Copy size={12} />
+                                  Dup
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-slate-500/35 hover:bg-slate-500/20"
+                                  title="Send backward"
+                                  onClick={() => handlePreviewNudgeZIndex(-1)}
+                                >
+                                  <MoveDown size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-slate-500/35 hover:bg-slate-500/20"
+                                  title="Bring forward"
+                                  onClick={() => handlePreviewNudgeZIndex(1)}
+                                >
+                                  <MoveUp size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-red-500/40 hover:bg-red-500/20 flex items-center gap-1"
+                                  title="Delete"
+                                  onClick={handlePreviewDeleteStable}
+                                >
+                                  <Trash2 size={12} />
+                                  Del
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-emerald-500/35 hover:bg-emerald-500/20 flex items-center gap-1"
+                                  title="Narrower"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("width", -12)
+                                  }
+                                >
+                                  <Shrink size={12} />
+                                  W-
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-emerald-500/35 hover:bg-emerald-500/20 flex items-center gap-1"
+                                  title="Wider"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("width", 12)
+                                  }
+                                >
+                                  <Expand size={12} />
+                                  W+
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-violet-500/35 hover:bg-violet-500/20"
+                                  title="Shorter"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("height", -12)
+                                  }
+                                >
+                                  H-
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 h-8 rounded-md text-xs border border-violet-500/35 hover:bg-violet-500/20"
+                                  title="Taller"
+                                  onClick={() =>
+                                    handlePreviewResizeNudge("height", 12)
+                                  }
+                                >
+                                  H+
+                                </button>
+                              </div>
+                              <div className="text-[11px] opacity-80">
+                                {`${Math.round(
+                                  parseNumericCssValue(
+                                    previewSelectedElement?.styles?.width ??
+                                      previewSelectedComputedStyles?.width ??
+                                      0,
+                                  ) || 0,
+                                )} x ${Math.round(
+                                  parseNumericCssValue(
+                                    previewSelectedElement?.styles?.height ??
+                                      previewSelectedComputedStyles?.height ??
+                                      0,
+                                  ) || 0,
+                                )} px`}
+                              </div>
+                            </div>
+                          )}
                       </div>
                     </div>
                   </div>
@@ -2750,276 +12166,882 @@ const App: React.FC = () => {
 
         {/* Right Sidebar */}
         <div
-          className={`absolute right-0 top-0 bottom-0 z-40 transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isRightPanelOpen ? "w-[16.5rem] translate-x-0" : "w-[16.5rem] translate-x-full"}`}
-        >
-          <div className="h-full glass-panel-strong shadow-2xl">
-            {selectedId && interactionMode === "inspect" ? (
-              <StyleInspectorPanel
-                element={selectedElement}
-                onUpdateStyle={handleUpdateStyle}
-              />
-            ) : (
-              <PropertiesPanel
-                element={selectedElement}
-                onUpdateStyle={handleUpdateStyle}
-                onUpdateContent={handleUpdateContent}
-                onUpdateAttributes={handleUpdateAttributes}
-                onUpdateAnimation={handleUpdateAnimation}
-                onDelete={handleDeleteElement}
-                onAddElement={handleAddElement}
-                onMoveOrder={(dir) => {}}
-                resolveImage={(p) => p}
-                availableFonts={[
-                  "Inter",
-                  "Roboto",
-                  "Open Sans",
-                  "Lato",
-                  "Poppins",
-                ]}
-              />
-            )}
-          </div>
-          <button
-            onClick={() => setIsRightPanelOpen(!isRightPanelOpen)}
-            className="absolute -left-6 top-[3.25rem] glass-button p-1 rounded-l-lg border-r-0 shadow-lg z-50 hover:pr-2 transition-all flex justify-end"
-          >
-            {isRightPanelOpen ? (
-              <PanelRightClose size={14} />
-            ) : (
-              <PanelRight size={14} />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Terminal Panel — Glass effect with smooth transition */}
-      <div
-        className={`fixed bottom-0 left-0 right-0 flex flex-col z-[100] backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden ${showTerminal ? "h-52" : "h-8"}`}
-        style={{
-          backgroundColor: "var(--bg-glass-strong)",
-          borderTop: "1px solid var(--border-color)",
-          boxShadow: showTerminal ? "0 -10px 40px rgba(0,0,0,0.3)" : "none",
-        }}
-      >
-        <div
-          className="px-4 py-1.5 flex justify-between items-center text-xs cursor-pointer select-none transition-colors duration-200 hover:bg-black/5 shrink-0"
+          className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? "animate-panelInRight" : ""}`}
           style={{
-            borderBottom: "1px solid var(--border-color)",
-            color: "var(--text-muted)",
+            transform: isRightPanelOpen
+              ? "translateX(0)"
+              : isFloatingPanels
+                ? "translateX(calc(100% + 2.5rem))"
+                : "translateX(100%)",
+            width: isFloatingPanels
+              ? "var(--right-panel-width)"
+              : "var(--right-panel-width)",
+            left: isFloatingPanels
+              ? `${rightPanelFloatingPosition.left}px`
+              : undefined,
+            top: isFloatingPanels
+              ? `${rightPanelFloatingPosition.top}px`
+              : undefined,
+            minHeight: isFloatingPanels ? "30vh" : undefined,
+            maxHeight: isFloatingPanels
+              ? "min(70vh, calc(100vh - 7.5rem))"
+              : undefined,
+            height: isFloatingPanels ? "fit-content" : undefined,
+            borderRadius: isFloatingPanels ? "1rem" : undefined,
+            border: isFloatingPanels
+              ? theme === "light"
+                ? "1px solid rgba(15, 23, 42, 0.18)"
+                : "1px solid rgba(255, 255, 255, 0.25)"
+              : undefined,
+            background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+            overflowY: isFloatingPanels ? "auto" : undefined,
+            overflowX: isFloatingPanels ? "hidden" : undefined,
+            transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
           }}
-          onClick={() => setShowTerminal(!showTerminal)}
         >
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setBottomPanelTab("terminal");
-                if (!showTerminal) setShowTerminal(true);
-              }}
-              className={`font-bold font-mono text-[10px] tracking-widest uppercase px-2 py-1 rounded-md border transition-colors ${
-                bottomPanelTab === "terminal"
-                  ? "bg-black/10"
-                  : "hover:bg-black/5"
-              }`}
-              style={{ borderColor: "var(--border-color)" }}
-            >
-              Terminal
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setBottomPanelTab("console");
-                if (!showTerminal) setShowTerminal(true);
-              }}
-              className={`font-bold font-mono text-[10px] tracking-widest uppercase px-2 py-1 rounded-md border transition-colors flex items-center gap-2 ${
-                bottomPanelTab === "console" ? "bg-black/10" : "hover:bg-black/5"
-              }`}
-              style={{ borderColor: "var(--border-color)" }}
-            >
-              Console
-              {previewConsoleErrorCount > 0 && (
-                <span className="inline-flex min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] leading-4 justify-center">
-                  {previewConsoleErrorCount}
-                </span>
-              )}
-            </button>
-          </div>
-          <span
-            className={`transition-transform duration-300 ${showTerminal ? "rotate-180" : ""}`}
+          <div
+            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+              isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
+            }`}
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
+              backdropFilter: "blur(14px)",
+            }}
           >
-            {showTerminal ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </span>
-        </div>
-        {/* Always mounted, visibility controlled by parent height */}
-        <div
-          className={`flex-1 overflow-hidden transition-opacity duration-300 ${showTerminal ? "opacity-100" : "opacity-0"}`}
-        >
-          {bottomPanelTab === "terminal" ? (
-            <Terminal />
-          ) : (
-            <div className="h-full flex flex-col bg-[linear-gradient(180deg,rgba(15,23,42,0.06)_0%,rgba(15,23,42,0.02)_100%)]">
-              <div
-                className="px-3 py-2 text-[11px] font-mono flex items-center justify-between"
-                style={{
-                  borderBottom: "1px solid var(--border-color)",
-                  background:
-                    "linear-gradient(90deg, rgba(59,130,246,0.08) 0%, rgba(16,185,129,0.04) 100%)",
-                }}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-slate-400/20 bg-slate-500/10 text-slate-700">
-                    Logs {previewConsoleEntries.length}
-                  </span>
-                  {previewConsoleWarnCount > 0 && (
-                    <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-amber-400/30 bg-amber-500/15 text-amber-700">
-                      Warn {previewConsoleWarnCount}
-                    </span>
-                  )}
-                  {previewConsoleErrorCount > 0 && (
-                    <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border border-red-400/30 bg-red-500/15 text-red-700">
-                      Error {previewConsoleErrorCount}
-                    </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="px-2.5 py-1 rounded-md border text-[10px] uppercase tracking-wider hover:bg-black/5 transition-colors"
+            <div
+              className="h-11 shrink-0 px-3 flex items-center justify-between"
+              onMouseDown={handleRightPanelDragStart}
+              style={{
+                borderBottom:
+                  theme === "dark"
+                    ? "1px solid rgba(148,163,184,0.28)"
+                    : "1px solid rgba(0,0,0,0.1)",
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(90deg, rgba(99,102,241,0.2), rgba(16,185,129,0.16), rgba(15,23,42,0.0))"
+                    : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-2 h-2 rounded-full"
                   style={{
-                    borderColor: "var(--border-color)",
-                    color: "var(--text-muted)",
-                    backgroundColor: "rgba(255,255,255,0.35)",
+                    backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
+                    boxShadow:
+                      theme === "dark"
+                        ? "0 0 10px rgba(255,255,255,0.8)"
+                        : "0 0 10px rgba(139,92,246,0.8)",
                   }}
-                  onClick={() => {
-                    previewConsoleSeqRef.current = 0;
-                    setPreviewConsoleEntries([]);
-                  }}
+                />
+                <span
+                  className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                  style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
                 >
-                  Clear
-                </button>
+                  {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
+                </span>
               </div>
-              <div className="flex-1 overflow-y-auto p-2.5 font-mono text-[11px] space-y-1.5 custom-scrollbar">
-                {previewConsoleEntries.length === 0 ? (
-                  <div className="h-full min-h-[110px] flex items-center justify-center rounded-xl border border-dashed border-slate-400/25 bg-white/30">
-                    <div className="text-center">
-                      <div className="text-[12px] font-semibold text-slate-600">No project logs yet</div>
-                      <div className="text-[10px] mt-1 text-slate-500">
-                        Interact with the preview to stream console output here
-                      </div>
-                    </div>
-                  </div>
+              <div className="flex items-center gap-2">
+                {rightPanelMode === "gallery" ? (
+                  <button
+                    type="button"
+                    className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(248,113,113,0.12)"
+                          : "rgba(248,113,113,0.18)",
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(248,113,113,0.4)"
+                          : "rgba(248,113,113,0.35)",
+                      color: theme === "dark" ? "#fecdd3" : "#be123c",
+                    }}
+                    onClick={closeScreenshotGallery}
+                    title="Close gallery"
+                  >
+                    Close
+                  </button>
                 ) : (
-                  previewConsoleEntries.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="whitespace-pre-wrap break-words px-2.5 py-2 rounded-lg border shadow-[0_1px_0_rgba(255,255,255,0.15)_inset]"
-                      style={{
-                        backgroundColor:
-                          entry.level === "error"
-                            ? "rgba(239, 68, 68, 0.10)"
-                            : entry.level === "warn"
-                              ? "rgba(245, 158, 11, 0.10)"
-                              : entry.level === "info"
-                                ? "rgba(14, 165, 233, 0.10)"
-                                : "rgba(15, 23, 42, 0.05)",
-                        borderColor:
-                          entry.level === "error"
-                            ? "rgba(239, 68, 68, 0.35)"
-                            : entry.level === "warn"
-                              ? "rgba(245, 158, 11, 0.35)"
-                              : entry.level === "info"
-                                ? "rgba(14, 165, 233, 0.35)"
-                                : "rgba(100, 116, 139, 0.22)",
-                        color:
-                          entry.level === "error"
-                            ? "#dc2626"
-                            : entry.level === "warn"
-                              ? "#d97706"
-                              : entry.level === "info"
-                                ? "#0369a1"
-                              : "var(--text-main)",
-                      }}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span
-                          className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded border"
-                          style={{
-                            borderColor:
-                              entry.level === "error"
-                                ? "rgba(239, 68, 68, 0.5)"
-                                : entry.level === "warn"
-                                  ? "rgba(245, 158, 11, 0.5)"
-                                  : entry.level === "info"
-                                    ? "rgba(14, 165, 233, 0.5)"
-                                    : "rgba(100, 116, 139, 0.35)",
-                            backgroundColor:
-                              entry.level === "error"
-                                ? "rgba(239,68,68,0.12)"
-                                : entry.level === "warn"
-                                  ? "rgba(245,158,11,0.12)"
-                                  : entry.level === "info"
-                                    ? "rgba(14,165,233,0.12)"
-                                    : "rgba(100,116,139,0.10)",
-                          }}
-                        >
-                          {entry.level}
-                        </span>
-                        <span className="text-[10px] opacity-70">
-                          {new Date(entry.time).toLocaleTimeString()}
-                        </span>
-                        <span className="text-[10px] opacity-60">{entry.source}</span>
-                      </div>
-                      <div className="leading-5">{entry.message}</div>
-                    </div>
-                  ))
+                  <button
+                    type="button"
+                    className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.7)"
+                          : "rgba(255,255,255,0.7)",
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.32)"
+                          : "rgba(0,0,0,0.1)",
+                      color: theme === "dark" ? "#94a3b8" : "#64748b",
+                    }}
+                    onClick={() => {
+                      setIsRightPanelOpen(false);
+                      setRightPanelMode("inspector");
+                    }}
+                    title="Close inspector panel"
+                  >
+                    <X size={12} />
+                  </button>
                 )}
               </div>
             </div>
+            {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <div
+                  className="shrink-0 px-3 py-2 border-b"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(0,0,0,0.1)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.42)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div
+                      className="text-[10px] font-semibold uppercase tracking-[0.2em]"
+                      style={{
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    >
+                      Screenshots
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(148,163,184,0.38)"
+                              : "rgba(15,23,42,0.18)",
+                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                        }}
+                        onClick={() => void loadGalleryItems()}
+                        title="Refresh gallery"
+                      >
+                        Refresh
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(34,211,238,0.45)"
+                              : "rgba(8,145,178,0.3)",
+                          color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                          opacity: screenshotCaptureBusy ? 0.6 : 1,
+                        }}
+                        onClick={() => void handleScreenshotCapture()}
+                        disabled={screenshotCaptureBusy}
+                        title="Capture screenshot"
+                      >
+                        {screenshotCaptureBusy ? "Capturing..." : "Capture"}
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(148,163,184,0.38)"
+                              : "rgba(15,23,42,0.18)",
+                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                        }}
+                        onClick={() => void handleRevealScreenshotsFolder()}
+                        title="Reveal screenshots folder"
+                      >
+                        Reveal
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-2 text-[10px] uppercase tracking-[0.12em]"
+                    style={{
+                      color: theme === "dark" ? "#94a3b8" : "#64748b",
+                    }}
+                  >
+                    {screenshotItems.length} items
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
+                  {screenshotItems.length === 0 ? (
+                    <div
+                      className="rounded-xl border px-4 py-6 text-center text-xs"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.3)"
+                            : "rgba(15,23,42,0.12)",
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    >
+                      No screenshots yet. Capture one from the iPad button.
+                    </div>
+                  ) : (
+                    screenshotItems.map((item) => {
+                      const imageUrl = screenshotPreviewUrls[item.id] || "";
+                      return (
+                        <div
+                          key={item.id}
+                          className="rounded-2xl border overflow-hidden"
+                          style={{
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(148,163,184,0.3)"
+                                : "rgba(15,23,42,0.12)",
+                            background:
+                              theme === "dark"
+                                ? "rgba(15,23,42,0.65)"
+                                : "rgba(255,255,255,0.7)",
+                          }}
+                        >
+                          {imageUrl && (
+                            <img
+                              src={imageUrl}
+                              alt={item.imageFileName}
+                              className="w-full h-40 object-cover"
+                            />
+                          )}
+                          <div className="p-3 space-y-2">
+                            <div className="text-xs font-semibold">
+                              {item.slideId || "Unknown slide"}
+                              {item.popupId ? ` • ${item.popupId}` : ""}
+                            </div>
+                            <div className="text-[10px] opacity-70">
+                              {new Date(item.createdAt).toLocaleString()}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(34,211,238,0.45)"
+                                      : "rgba(8,145,178,0.3)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#a5f3fc"
+                                      : "#0e7490",
+                                }}
+                                onClick={() =>
+                                  void handleOpenScreenshotItem(item)
+                                }
+                              >
+                                Open
+                              </button>
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(148,163,184,0.38)"
+                                      : "rgba(15,23,42,0.18)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#e2e8f0"
+                                      : "#0f172a",
+                                }}
+                                onClick={() =>
+                                  void handleRevealScreenshotsFolder()
+                                }
+                              >
+                                Reveal
+                              </button>
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(248,113,113,0.45)"
+                                      : "rgba(248,113,113,0.35)",
+                                  color:
+                                    theme === "dark"
+                                      ? "#fecdd3"
+                                      : "#be123c",
+                                }}
+                                onClick={() =>
+                                  void handleDeleteScreenshotItem(item)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div
+                  className="shrink-0 px-3 py-3 border-t"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(0,0,0,0.1)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.42)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(14,165,233,0.45)"
+                          : "rgba(8,145,178,0.3)",
+                      color: theme === "dark" ? "#bae6fd" : "#0e7490",
+                      opacity: isPdfExporting ? 0.6 : 1,
+                    }}
+                    onClick={() => void handleExportEditablePdf()}
+                    disabled={isPdfExporting || !projectPath}
+                  >
+                    <FileDown size={14} />
+                    {isPdfExporting
+                      ? "Exporting Editable PDF..."
+                      : "Export Editable PDF"}
+                  </button>
+                  {pdfExportLogs.length > 0 && (
+                    <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
+                      {pdfExportLogs.map((log, index) => (
+                        <div key={`${index}-${log}`} className="opacity-80">
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                {interactionMode === "preview" && (
+                  <div
+                    className="shrink-0 px-2.5 py-2 border-b"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(0,0,0,0.1)",
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.42)"
+                          : "rgba(255,255,255,0.72)",
+                    }}
+                  >
+                    <div
+                      className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
+                      style={{
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                    ></div>
+                    <div className="mt-1 grid grid-cols-4 gap-1">
+                      {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => setPreviewSelectionMode(option.value)}
+                          className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
+                          style={{
+                            color:
+                              previewSelectionMode === option.value
+                                ? theme === "dark"
+                                  ? "#ecfeff"
+                                  : "#155e75"
+                                : theme === "dark"
+                                  ? "#cbd5e1"
+                                  : "#475569",
+                            background:
+                              previewSelectionMode === option.value
+                                ? theme === "dark"
+                                  ? "rgba(34,211,238,0.2)"
+                                  : "rgba(14,165,233,0.16)"
+                                : theme === "dark"
+                                  ? "rgba(15,23,42,0.68)"
+                                  : "rgba(241,245,249,0.9)",
+                            border:
+                              previewSelectionMode === option.value
+                                ? "1px solid rgba(34,211,238,0.55)"
+                                : theme === "dark"
+                                  ? "1px solid rgba(148,163,184,0.28)"
+                                  : "1px solid rgba(148,163,184,0.26)",
+                          }}
+                          title={option.label}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {interactionMode === "inspect" && selectedId ? (
+                    <StyleInspectorPanel
+                      element={inspectorElement}
+                      onUpdateStyle={handleUpdateStyle}
+                      computedStyles={null}
+                    />
+                  ) : (
+                    <PropertiesPanel
+                      element={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? previewSelectedElement
+                          : selectedElement
+                      }
+                      requestedTab={propertiesPanelRequestedTab}
+                      requestedTabNonce={propertiesPanelRequestedTabNonce}
+                      onUpdateStyle={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewStyleUpdateStable
+                          : handleUpdateStyle
+                      }
+                      onUpdateContent={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewContentUpdateStable
+                          : handleUpdateContent
+                      }
+                      onUpdateAttributes={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewAttributesUpdateStable
+                          : handleUpdateAttributes
+                      }
+                      onUpdateAnimation={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewAnimationUpdateStable
+                          : handleUpdateAnimation
+                      }
+                      onDelete={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewDeleteStable
+                          : handleDeleteElement
+                      }
+                      onAddElement={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? noopPropertiesAction
+                          : handleAddElement
+                      }
+                      onMoveOrder={noopMoveOrder}
+                      resolveImage={resolvePreviewImagePath}
+                      availableFonts={availableFonts}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+            <div
+              className="pointer-events-none absolute inset-0 rounded-2xl"
+              style={{
+                boxShadow:
+                  theme === "dark"
+                    ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                    : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+              }}
+            />
+          </div>
+          {isRightPanelOpen && (
+            <div
+              onMouseDown={handleRightPanelResizeStart}
+              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              title="Resize panel"
+            />
           )}
         </div>
       </div>
+
+      {/* Code Panel */}
+      <div
+        className={`absolute z-50 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24 bottom-3" : "right-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isCodePanelOpen ? "animate-panelInRight" : ""}`}
+        style={{
+          transform: isCodePanelOpen
+            ? "translateX(0)"
+            : isFloatingPanels
+              ? "translateX(calc(100% + 2.5rem))"
+              : "translateX(100%)",
+          width: isFloatingPanels
+            ? "min(42rem, calc(100vw - 6rem))"
+            : `${CODE_PANEL_WIDTH}px`,
+          borderRadius: isFloatingPanels ? "1rem" : undefined,
+          border: isFloatingPanels
+            ? theme === "light"
+              ? "1px solid rgba(15, 23, 42, 0.18)"
+              : "1px solid rgba(255, 255, 255, 0.24)"
+            : undefined,
+          background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          className={`h-full min-h-full relative flex flex-col overflow-hidden ${
+            isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
+          }`}
+          style={{
+            background:
+              theme === "dark"
+                ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                : "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(248,250,252,0.82) 100%)",
+            backdropFilter: "blur(14px)",
+          }}
+        >
+          <div
+            className="h-11 shrink-0 px-3 flex items-center justify-between"
+            style={{
+              borderBottom:
+                theme === "dark"
+                  ? "1px solid rgba(148,163,184,0.28)"
+                  : "1px solid rgba(0,0,0,0.1)",
+              background:
+                theme === "dark"
+                  ? "linear-gradient(90deg, rgba(139,92,246,0.2), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
+                  : "linear-gradient(90deg,rgba(139,92,246,0.12),rgba(99,102,241,0.1),transparent)",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <div
+                className="w-2 h-2 rounded-full"
+                style={{
+                  backgroundColor: theme === "dark" ? "#c4b5fd" : "#7c3aed",
+                  boxShadow:
+                    theme === "dark"
+                      ? "0 0 10px rgba(196,181,253,0.85)"
+                      : "0 0 10px rgba(124,58,237,0.55)",
+                }}
+              />
+              <span
+                className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                style={{ color: theme === "dark" ? "#e9d5ff" : "#5b21b6" }}
+              >
+                Code Studio
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={() => {
+                  if (!activeCodeFilePath) return;
+                  void saveCodeDraftAtPath(activeCodeFilePath);
+                }}
+              >
+                Save File
+              </button>
+              <button
+                type="button"
+                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={() => {
+                  void saveCodeDraftsRef.current?.();
+                }}
+              >
+                Save All
+              </button>
+              <button
+                type="button"
+                className="h-7 w-7 rounded-md border flex items-center justify-center transition-colors hover:bg-violet-500/15"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={closeCodePanel}
+                title="Close code panel"
+              >
+                <PanelRightClose size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <ColorCodeEditor
+              value={activeCodeContent}
+              onChange={handleCodeDraftChange}
+              language={
+                activeCodeFilePath?.endsWith(".ts")
+                  ? "ts"
+                  : activeCodeFilePath?.endsWith(".tsx")
+                    ? "tsx"
+                    : activeCodeFilePath?.endsWith(".jsx")
+                      ? "jsx"
+                      : activeCodeFilePath?.endsWith(".js")
+                        ? "js"
+                        : activeCodeFilePath?.endsWith(".css")
+                          ? "css"
+                          : activeCodeFilePath?.endsWith(".html")
+                            ? "html"
+                            : activeCodeFilePath?.endsWith(".json")
+                              ? "json"
+                              : activeCodeFilePath?.endsWith(".svg")
+                                ? "svg"
+                                : "text"
+              }
+              theme={theme}
+              minHeight="100%"
+              readOnly={!activeCodeFilePath}
+            />
+          </div>
+          <div
+            className="pointer-events-none absolute inset-0 rounded-2xl"
+            style={{
+              boxShadow:
+                theme === "dark"
+                  ? "inset 0 0 0 1px rgba(196,181,253,0.2)"
+                  : "inset 0 0 0 1px rgba(139,92,246,0.2)",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Console Panel — Chrome-like side panel */}
+      <div
+        ref={bottomPanelRef}
+        className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isZenMode || isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
+        style={{
+          right: "1rem",
+          bottom: "1rem",
+        }}
+      >
+        <button
+          type="button"
+          className={`relative z-10 h-14 w-14 rounded-full backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
+          style={{
+            background:
+              theme === "light"
+                ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
+                : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
+            border: "1px solid var(--border-color)",
+            boxShadow: "0 8px 20px rgba(15,23,42,0.2)",
+            color: "var(--text-muted)",
+          }}
+          onClick={() => {
+            setIsCompactConsoleOpening(true);
+            handleDetachConsoleWindow();
+          }}
+          title="Open console in a separate window"
+        >
+          <PanelRight
+            size={18}
+            className="shrink-0"
+            style={{ color: theme === "dark" ? "#67e8f9" : "#0891b2" }}
+          />
+          {previewConsoleErrorCount > 0 && (
+            <span className="absolute -top-1 -right-1 inline-flex min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] leading-[18px] justify-center">
+              {previewConsoleErrorCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      <ConfigEditorModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        initialTab={configModalInitialTab}
+        slidesOnlyMode={isConfigModalSlidesOnly}
+        configContent={(files[configPathForModal]?.content as string) || null}
+        portfolioContent={
+          (files[portfolioPathForModal]?.content as string) || null
+        }
+        onSave={handleSaveConfig}
+        theme={theme}
+        aiBackend={aiBackend}
+        onAiBackendChange={(val) => {
+          setAiBackend(val);
+          localStorage.setItem(AI_BACKEND_STORAGE_KEY, val);
+        }}
+        colabUrl={colabUrl}
+        onColabUrlChange={(val) => {
+          setColabUrl(val);
+          localStorage.setItem(COLAB_URL_STORAGE_KEY, val);
+        }}
+        showAiOptions={SHOW_AI_FEATURES}
+        hasProjectConfig={Boolean(projectPath)}
+        selectedSlideCloneSource={selectedFolderCloneSource}
+        onSelectSlideCloneSource={setSelectedFolderCloneSource}
+        files={files}
+      />
+
+      <DetachedCodeEditorWindow
+        isOpen={isDetachedEditorOpen}
+        onClose={closeCodePanel}
+        theme={theme}
+        files={files}
+        activeFilePath={activeDetachedEditorFilePath}
+        content={activeDetachedEditorContent}
+        isDirty={activeDetachedEditorIsDirty}
+        onSelectFile={handleDetachedEditorSelectFile}
+        onChange={handleDetachedEditorChange}
+        onSave={() => {
+          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
+            return;
+          void saveCodeDraftAtPath(activeDetachedEditorFilePath);
+        }}
+        onReload={() => {
+          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
+            return;
+          if (isSvgPath(activeDetachedEditorFilePath)) {
+            handleDetachedEditorSelectFile(activeDetachedEditorFilePath);
+            return;
+          }
+          void loadFileContent(activeDetachedEditorFilePath, {
+            persistToState: true,
+          });
+          setCodeDraftByPath((prev) => {
+            const next = { ...prev };
+            delete next[activeDetachedEditorFilePath];
+            return next;
+          });
+          setCodeDirtyPathSet((prev) => {
+            const next = { ...prev };
+            delete next[activeDetachedEditorFilePath];
+            return next;
+          });
+        }}
+        isTextEditable={detachedEditorIsTextEditable}
+      />
+
+      {SHOW_AI_FEATURES ? (
+        <button
+          type="button"
+          className={`fixed z-[2147483647] right-6 bottom-24 flex items-center gap-2 px-3 py-2 rounded-full text-xs font-semibold border shadow-lg transition-all ${
+            isVibeAssistantOpen
+              ? theme === "dark"
+                ? "bg-cyan-500/25 text-cyan-200 border-cyan-400/40"
+                : "bg-cyan-500/20 text-cyan-700 border-cyan-500/30"
+              : theme === "dark"
+                ? "bg-slate-900/80 text-slate-200 border-slate-600/40 hover:bg-slate-900"
+                : "bg-white/95 text-slate-700 border-slate-300/70 hover:bg-white"
+          }`}
+          style={{ pointerEvents: "auto" }}
+          onClick={() => setIsVibeAssistantOpen((prev) => !prev)}
+          title="AI Assistant"
+        >
+          <Sparkles size={14} />
+          AI Assistant
+        </button>
+      ) : null}
+
+      {SHOW_AI_FEATURES ? (
+        <VibeAssistant
+          isOpen={isVibeAssistantOpen}
+          onClose={() => setIsVibeAssistantOpen(false)}
+          currentRoot={interactionMode === "preview" ? previewLayersRoot : root}
+          selectedElement={previewSelectedElement}
+          fileMap={files}
+          onVibeUpdate={async (response) => {
+            if (response.updatedRoot) {
+              lastVibeUpdateRef.current = Date.now();
+              setVibeErrorContext(undefined);
+              if (interactionMode === "preview") {
+                const currentPath = selectedPreviewHtmlRef.current;
+                if (currentPath) {
+                  const tempDoc = document.implementation.createHTMLDocument();
+                  const node = materializeVirtualElement(
+                    tempDoc,
+                    response.updatedRoot,
+                  );
+                  const serialized = (node as HTMLElement).innerHTML || "";
+                  // @ts-ignore
+                  await persistPreviewHtmlContent(currentPath, serialized, {
+                    refreshPreviewDoc: true,
+                    saveNow: true,
+                  });
+                }
+              } else {
+                setRoot(response.updatedRoot);
+              }
+            }
+          }}
+          lastErrorContext={vibeErrorContext}
+          aiBackend={aiBackend}
+          colabUrl={colabUrl}
+        />
+      ) : null}
+
+      {(isPdfExporting || pdfExportLogs.length > 0) && (
+        <div
+          className="fixed right-6 bottom-6 z-[1200] w-[320px] rounded-2xl border shadow-2xl p-3 text-xs"
+          style={{
+            background:
+              theme === "dark"
+                ? "rgba(15,23,42,0.92)"
+                : "rgba(255,255,255,0.95)",
+            borderColor:
+              theme === "dark"
+                ? "rgba(148,163,184,0.35)"
+                : "rgba(15,23,42,0.15)",
+            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+          }}
+        >
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-[0.2em] font-semibold opacity-70">
+              PDF Export
+            </div>
+            {pdfExportLogs.length > 0 && (
+              <button
+                type="button"
+                className="text-[10px] font-semibold opacity-70 hover:opacity-100"
+                onClick={clearPdfExportLogs}
+              >
+                Close
+              </button>
+            )}
+          </div>
+          <div className="mt-2 space-y-1 max-h-32 overflow-auto">
+            {pdfExportLogs.length === 0 ? (
+              <div className="opacity-70">Exporting...</div>
+            ) : (
+              pdfExportLogs.slice(-6).map((log, index) => (
+                <div key={`${index}-${log}`} className="opacity-80">
+                  {log}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* PDF Selector — top-right header pill */}
+      <PdfSelector
+        onSelectPdf={handleOpenPdfAnnotationsPicker}
+        onRefreshPdf={handleRefreshPdfAnnotationMapping}
+        onExportEditablePdf={handleExportEditablePdf}
+        isExporting={isPdfExporting}
+        showExportEditablePdf={SHOW_SCREENSHOT_FEATURES}
+        projectPath={projectPath}
+        theme={theme as "light" | "dark"}
+      />
+
+      {/* PDF Annotations Overlay — compact left-side overlay */}
+      <PdfAnnotationsOverlay
+        currentPreviewSlideId={currentPreviewSlideId ?? null}
+        theme={theme as "light" | "dark"}
+        onJumpToAnnotation={handleJumpToPdfAnnotation}
+      />
     </div>
   );
 };
 
-// --- Sub-Component for Content (Dry) ---
-const EditorContent: React.FC<{
-  root: VirtualElement;
-  selectedId: string | null;
-  handleSelect: any;
-  handleMoveElement: any;
-  handleResize: any;
-  interactionMode: any;
-  INJECTED_STYLES: string;
-}> = ({
-  root,
-  selectedId,
-  handleSelect,
-  handleMoveElement,
-  handleResize,
-  interactionMode,
-  INJECTED_STYLES,
-}) => (
-  <>
-    <style dangerouslySetInnerHTML={{ __html: INJECTED_STYLES }} />
-    <style
-      dangerouslySetInnerHTML={{
-        __html: `* { outline: none; } ${selectedId ? `[data-id="${selectedId}"] { outline: 2px solid #6366f1 !important; z-index: 10; cursor: default; }` : ""}`,
-      }}
-    />
-    <div className="w-full h-full overflow-auto custom-scrollbar bg-white">
-      <EditorCanvas
-        element={root}
-        selectedId={selectedId}
-        onSelect={handleSelect}
-        resolveImage={(path) => path}
-        onMoveElement={handleMoveElement}
-        onResize={handleResize}
-        interactionMode={interactionMode}
-      />
-    </div>
-  </>
+const AppRoot: React.FC = () => (
+  <Provider store={store}>
+    <App />
+  </Provider>
 );
 
-export default App;
+export default AppRoot;

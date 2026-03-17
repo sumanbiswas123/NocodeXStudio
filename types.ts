@@ -8,6 +8,7 @@ export interface VirtualElement {
   type: ElementType;
   name: string;
   content?: string;
+  html?: string;
   src?: string;
   href?: string;
   styles: React.CSSProperties;
@@ -35,7 +36,7 @@ export interface EditorState {
 export type ActionType =
   | { type: 'SELECT_ELEMENT'; payload: string | null }
   | { type: 'UPDATE_STYLE'; payload: { id: string; styles: Partial<React.CSSProperties> } }
-  | { type: 'UPDATE_CONTENT'; payload: { id: string; content?: string; src?: string; href?: string } }
+  | { type: 'UPDATE_CONTENT'; payload: { id: string; content?: string; html?: string; src?: string; href?: string } }
   | { type: 'ADD_ELEMENT'; payload: { parentId: string; element: VirtualElement } }
   | { type: 'DELETE_ELEMENT'; payload: string }
   | { type: 'SET_ROOT'; payload: VirtualElement }

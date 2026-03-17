@@ -7,21 +7,23 @@ interface LayersPanelProps {
     root: VirtualElement;
     selectedId: string | null;
     onSelect: (id: string) => void;
+    theme: 'light' | 'dark';
 }
 
-const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect }) => {
+const LayersPanelBase: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect, theme }) => {
     const [expanded, setExpanded] = useState<Set<string>>(new Set(['root']));
     const [searchQuery, setSearchQuery] = useState('');
     const [searchFocused, setSearchFocused] = useState(false);
     const selectedRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (selectedId) {
-            const newExpanded = new Set(expanded);
+        if (!selectedId) return;
+        setExpanded((prev) => {
+            const nextExpanded = new Set(prev);
             const findAndExpandPath = (element: VirtualElement, path: string[] = []): boolean => {
                 if (element.id === selectedId) {
-                    path.forEach(id => newExpanded.add(id));
-                    newExpanded.add(selectedId);
+                    path.forEach(id => nextExpanded.add(id));
+                    nextExpanded.add(selectedId);
                     return true;
                 }
                 for (const child of element.children) {
@@ -30,10 +32,13 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect })
                 return false;
             };
             findAndExpandPath(root);
-            setExpanded(newExpanded);
-            setTimeout(() => selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
-        }
-    }, [selectedId]);
+            return nextExpanded;
+        });
+        const timer = window.setTimeout(() => {
+            selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+        return () => window.clearTimeout(timer);
+    }, [root, selectedId]);
 
     const toggleExpand = (id: string) => {
         const newExpanded = new Set(expanded);
@@ -124,7 +129,13 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect })
                             {element.type}
                         </span>
                         {element.name && element.type !== element.name && (
-                            <span className="text-[9px] truncate opacity-60" style={{ color: 'var(--text-muted)' }}>
+                            <span
+                                className="text-[9px] truncate"
+                                style={{
+                                    color: theme === 'dark' ? '#94a3b8' : 'var(--text-muted)',
+                                    opacity: theme === 'dark' ? 1 : 0.6,
+                                }}
+                            >
                                 {element.name}
                             </span>
                         )}
@@ -152,14 +163,14 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect })
     };
 
     return (
-        <div className="h-full flex flex-col" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
+        <div className="h-full min-h-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}>
             {/* Search */}
             <div className="p-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
                 <div 
                     className={`relative rounded-lg transition-all duration-200 ${searchFocused ? 'ring-1' : ''}`}
                     style={{ 
                         backgroundColor: 'var(--input-bg)', 
-                        ringColor: searchFocused ? 'var(--accent-primary)' : undefined 
+                        boxShadow: searchFocused ? '0 0 0 1px var(--accent-primary)' : 'none'
                     }}
                 >
                     <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
@@ -186,11 +197,29 @@ const LayersPanel: React.FC<LayersPanelProps> = ({ root, selectedId, onSelect })
             </div>
 
             {/* Tree */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <div
+                className="flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+                style={{ overscrollBehavior: 'contain' }}
+            >
                 {renderElement(root)}
             </div>
         </div>
     );
 };
+
+const areLayersPanelPropsEqual = (
+    prev: Readonly<LayersPanelProps>,
+    next: Readonly<LayersPanelProps>,
+): boolean => {
+    return (
+        prev.root === next.root &&
+        prev.selectedId === next.selectedId &&
+        prev.onSelect === next.onSelect &&
+        prev.theme === next.theme
+    );
+};
+
+const LayersPanel = React.memo(LayersPanelBase, areLayersPanelPropsEqual);
+LayersPanel.displayName = 'LayersPanel';
 
 export default LayersPanel;

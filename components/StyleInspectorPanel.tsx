@@ -198,10 +198,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         <div className="flex flex-col h-full backdrop-blur-xl text-sm font-sans" style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }} onClick={() => setActiveSuggestionField(null)}>
             <div className="p-3 border-b font-semibold flex justify-between items-center text-[10px] uppercase tracking-wider" style={{ backgroundColor: 'var(--bg-glass)', borderColor: 'var(--border-color)', color: 'var(--text-muted)' }}>
                 Styles
-                <span className="bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full border border-violet-500/30">INSPECT MODE</span>
+                <span className="bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded-full border border-cyan-500/30">INSPECT MODE</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto p-2 no-scrollbar">
                 <div className="space-y-4">
                     <div className="space-y-1">
                         <div className="text-xs text-slate-500 mb-2 px-1">Element: <strong>{element.name}</strong> (#{element.id})</div>
@@ -212,7 +212,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                     <div key={index} className="flex items-center group relative">
                                         <div className="relative">
                                             <input
-                                                className="w-[100px] text-indigo-400 border-b border-transparent focus:border-indigo-500/50 outline-none bg-transparent"
+                                                className="w-[100px] text-cyan-400 border-b border-transparent focus:border-cyan-500/50 outline-none bg-transparent"
                                                 value={style.key}
                                                 onChange={(e) => handleStyleChange(index, 'key', e.target.value)}
                                                 onKeyDown={(e) => handleKeyDown(e, index, 'key')}
@@ -237,7 +237,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                                 </div>
                                             )}
                                             <input
-                                                className="w-full text-slate-300 border-b border-transparent focus:border-indigo-500/50 outline-none bg-transparent"
+                                                className="w-full text-slate-300 border-b border-transparent focus:border-cyan-500/50 outline-none bg-transparent"
                                                 value={style.value}
                                                 onChange={(e) => handleStyleChange(index, 'value', e.target.value)}
                                                 onKeyDown={(e) => handleKeyDown(e, index, 'value')}
@@ -260,7 +260,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 <div className="flex items-center mt-2 group relative">
                                     <div className="relative">
                                         <input
-                                            className="w-[100px] text-indigo-400/70 border-b border-white/10 focus:border-indigo-500/50 outline-none bg-transparent placeholder:text-slate-600"
+                                            className="w-[100px] text-cyan-400/70 border-b border-white/10 focus:border-cyan-500/50 outline-none bg-transparent placeholder:text-slate-600"
                                             value={newPropName}
                                             onChange={(e) => handleNewPropChange('key', e.target.value)}
                                             onFocus={() => handleNewPropFocus('key')}
@@ -284,7 +284,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                     <span className="mx-1 text-slate-500">:</span>
                                     <div className="relative flex-1">
                                         <input
-                                            className="w-full text-slate-300 border-b border-white/10 focus:border-indigo-500/50 outline-none bg-transparent placeholder:text-slate-600"
+                                            className="w-full text-slate-300 border-b border-white/10 focus:border-cyan-500/50 outline-none bg-transparent placeholder:text-slate-600"
                                             value={newPropValue}
                                             onChange={(e) => handleNewPropChange('value', e.target.value)}
                                             onFocus={() => handleNewPropFocus('value')}
