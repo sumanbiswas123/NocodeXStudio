@@ -116,6 +116,7 @@ const FileExplorerBase: React.FC<FileExplorerProps> = ({
   projectPath,
   theme,
 }) => {
+  const useCompactSlideExplorer = true;
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ExplorerContextMenu | null>(null);
   const currentProjectLabel = useMemo(() => {
@@ -232,6 +233,81 @@ const FileExplorerBase: React.FC<FileExplorerProps> = ({
     if (!topFolder) return '';
     return getProjectBaseLabel(topFolder);
   }, [activeFile, projectPath]);
+
+  const compactSlideFolders = useMemo(() => {
+    const slideMap = new Map<string, { folderKey: string; label: string; path: string; sortKey: number; isNumeric: boolean }>();
+
+    (Object.values(files) as ProjectFile[]).forEach((file) => {
+      if (file.isDirectory || file.type !== 'html') return;
+
+      let relativePath = file.path.replace(/\\/g, '/');
+      if (projectPath) {
+        const normalizedRoot = projectPath.replace(/\\/g, '/');
+        if (relativePath.startsWith(normalizedRoot)) {
+          relativePath = relativePath.slice(normalizedRoot.length);
+          if (relativePath.startsWith('/')) relativePath = relativePath.slice(1);
+        }
+      }
+
+      if (/(^|\/)shared(\/|$)/i.test(relativePath)) return;
+
+      const parts = relativePath.split('/').filter(Boolean);
+      if (parts.length < 2) return;
+
+      const folderKey = parts[0];
+      const displayLabel = getCompactNodeLabel({
+        name: folderKey,
+        path: folderKey,
+        type: 'folder',
+        relativePath: folderKey,
+        children: {},
+      });
+      const sortKey = Number.parseFloat(displayLabel);
+      const isNumeric = /^[0-9]+(?:\.[0-9]+)?$/.test(displayLabel);
+      const existing = slideMap.get(folderKey);
+      const isBetterPath =
+        parts[parts.length - 1].toLowerCase() === 'index.html' &&
+        (!existing || !existing.path.replace(/\\/g, '/').toLowerCase().endsWith('/index.html'));
+
+      if (!existing || isBetterPath) {
+        slideMap.set(folderKey, {
+          folderKey,
+          label: displayLabel,
+          path: file.path,
+          sortKey: Number.isFinite(sortKey) ? sortKey : Number.MAX_SAFE_INTEGER,
+          isNumeric,
+        });
+      }
+    });
+
+    return Array.from(slideMap.values()).sort((a, b) => {
+      if (a.isNumeric !== b.isNumeric) return a.isNumeric ? -1 : 1;
+      if (a.isNumeric && b.isNumeric && a.sortKey !== b.sortKey) return a.sortKey - b.sortKey;
+      return a.label.localeCompare(b.label);
+    });
+  }, [files, projectPath]);
+
+  const activeCompactSlide = useMemo(() => {
+    let normalizedActive = (activeFile || '').replace(/\\/g, '/');
+    if (projectPath) {
+      const normalizedRoot = projectPath.replace(/\\/g, '/');
+      if (normalizedActive.startsWith(normalizedRoot)) {
+        normalizedActive = normalizedActive.slice(normalizedRoot.length);
+        if (normalizedActive.startsWith('/')) normalizedActive = normalizedActive.slice(1);
+      }
+    }
+    return compactSlideFolders.find((entry) => {
+      let entryPath = entry.path.replace(/\\/g, '/');
+      if (projectPath) {
+        const normalizedRoot = projectPath.replace(/\\/g, '/');
+        if (entryPath.startsWith(normalizedRoot)) {
+          entryPath = entryPath.slice(normalizedRoot.length);
+          if (entryPath.startsWith('/')) entryPath = entryPath.slice(1);
+        }
+      }
+      return normalizedActive === entryPath || normalizedActive.startsWith(`${entry.folderKey}/`);
+    })?.folderKey || '';
+  }, [activeFile, compactSlideFolders, projectPath]);
 
   const toggleFolder = (path: string, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -462,7 +538,7 @@ const FileExplorerBase: React.FC<FileExplorerProps> = ({
           <RefreshCw size={14} />
         </button>
       </div>
-      {selectedMainFolderLabel ? (
+      {!useCompactSlideExplorer && selectedMainFolderLabel ? (
         <div
           className="px-3 py-1.5 text-[10px] uppercase tracking-[0.16em]"
           style={{
@@ -477,7 +553,50 @@ const FileExplorerBase: React.FC<FileExplorerProps> = ({
         className="flex-1 min-h-0 overflow-y-auto p-2 custom-scrollbar"
         style={{ overscrollBehavior: 'contain' }}
       >
-        {Object.keys(fileTree.children).length === 0 ? (
+        {useCompactSlideExplorer ? (
+          compactSlideFolders.length === 0 ? (
+            <div className="text-xs text-center mt-10" style={{ color: 'var(--text-muted)' }}>
+              No slide folders found.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {compactSlideFolders.map((entry) => {
+                const isSelected = activeCompactSlide === entry.folderKey;
+                return (
+                  <button
+                    key={entry.folderKey}
+                    type="button"
+                    className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors"
+                    style={{
+                      backgroundColor: isSelected
+                        ? theme === 'dark'
+                          ? 'rgba(79, 70, 229, 0.45)'
+                          : 'var(--accent-glow)'
+                        : 'transparent',
+                      color: isSelected
+                        ? theme === 'dark'
+                          ? '#eef2ff'
+                          : 'var(--accent-primary)'
+                        : 'var(--text-main)',
+                      border: isSelected
+                        ? theme === 'dark'
+                          ? '1px solid rgba(129, 140, 248, 0.55)'
+                          : '1px solid rgba(8,145,178,0.16)'
+                        : '1px solid transparent',
+                    }}
+                    onClick={() => onSelectFile(entry.path)}
+                    title={entry.folderKey}
+                  >
+                    <Folder size={15} className="shrink-0" />
+                    <span className="text-sm font-medium tracking-[0.12em]">
+                      {entry.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )
+        ) : Object.keys(fileTree.children).length === 0 ? (
           <div className="text-xs text-center mt-10" style={{ color: 'var(--text-muted)' }}>
             No files loaded.
             <br />

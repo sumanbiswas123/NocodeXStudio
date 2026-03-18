@@ -2441,6 +2441,83 @@ export const buildPreviewRuntimeScript = (
       return out;
     }
 
+    function getStyleSheetSourceLabel(sheet) {
+      if (!sheet) return 'stylesheet';
+      try {
+        if (sheet.href) {
+          var href = String(sheet.href);
+          var cleanHref = href.split('?')[0].split('#')[0];
+          var parts = cleanHref.split('/');
+          return parts[parts.length - 1] || cleanHref || 'stylesheet';
+        }
+        var ownerNode = sheet.ownerNode;
+        if (ownerNode && ownerNode.getAttribute) {
+          var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
+          if (dataSource) return dataSource;
+        }
+      } catch (e) {}
+      return 'inline stylesheet';
+    }
+
+    function collectMatchedCssRulesForElement(el) {
+      var matches = [];
+      if (!el || !el.matches || !document.styleSheets) return matches;
+
+      function visitRules(ruleList, sourceLabel) {
+        if (!ruleList) return;
+        for (var i = 0; i < ruleList.length; i++) {
+          var rule = ruleList[i];
+          if (!rule) continue;
+          try {
+            if (rule.type === 1 && rule.selectorText) {
+              var selectorText = String(rule.selectorText || '').trim();
+              if (!selectorText) continue;
+              try {
+                if (!el.matches(selectorText)) continue;
+              } catch (selectorError) {
+                continue;
+              }
+              var declarations = [];
+              var style = rule.style;
+              if (style) {
+                for (var j = 0; j < style.length; j++) {
+                  var prop = style[j];
+                  var val = style.getPropertyValue(prop);
+                  if (!prop || !val) continue;
+                  declarations.push({
+                    property: prop,
+                    value: val,
+                    important: style.getPropertyPriority(prop) === 'important'
+                  });
+                }
+              }
+              if (declarations.length) {
+                matches.push({
+                  selector: selectorText,
+                  source: sourceLabel,
+                  declarations: declarations
+                });
+              }
+              continue;
+            }
+            if (rule.cssRules && rule.cssRules.length) {
+              visitRules(rule.cssRules, sourceLabel);
+            }
+          } catch (ruleError) {}
+        }
+      }
+
+      for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
+        var sheet = document.styleSheets[sheetIndex];
+        if (!sheet) continue;
+        try {
+          visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+        } catch (sheetError) {}
+      }
+
+      return matches;
+    }
+
     function getCustomAttributes(el) {
       var out = {};
       if (!el || !el.attributes) return out;
@@ -2709,7 +2786,8 @@ export const buildPreviewRuntimeScript = (
           src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
           href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
           inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
-          computedStyles: getElementComputedStyles(__previewSelectedEl)
+          computedStyles: getElementComputedStyles(__previewSelectedEl),
+          matchedCssRules: collectMatchedCssRulesForElement(__previewSelectedEl)
         });
       }
 
@@ -3086,7 +3164,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       src: extractImageSource(el),
       href: el.getAttribute ? (el.getAttribute('href') || '') : '',
       inlineStyle: el.getAttribute ? (el.getAttribute('style') || '') : '',
-      computedStyles: getElementComputedStyles(el)
+      computedStyles: getElementComputedStyles(el),
+      matchedCssRules: collectMatchedCssRulesForElement(el)
     });
   }
 
@@ -3395,6 +3474,83 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
     } catch (e) {}
     return out;
+  }
+
+  function getStyleSheetSourceLabel(sheet) {
+    if (!sheet) return 'stylesheet';
+    try {
+      if (sheet.href) {
+        var href = String(sheet.href);
+        var cleanHref = href.split('?')[0].split('#')[0];
+        var parts = cleanHref.split('/');
+        return parts[parts.length - 1] || cleanHref || 'stylesheet';
+      }
+      var ownerNode = sheet.ownerNode;
+      if (ownerNode && ownerNode.getAttribute) {
+        var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
+        if (dataSource) return dataSource;
+      }
+    } catch (e) {}
+    return 'inline stylesheet';
+  }
+
+  function collectMatchedCssRulesForElement(el) {
+    var matches = [];
+    if (!el || !el.matches || !document.styleSheets) return matches;
+
+    function visitRules(ruleList, sourceLabel) {
+      if (!ruleList) return;
+      for (var i = 0; i < ruleList.length; i++) {
+        var rule = ruleList[i];
+        if (!rule) continue;
+        try {
+          if (rule.type === 1 && rule.selectorText) {
+            var selectorText = String(rule.selectorText || '').trim();
+            if (!selectorText) continue;
+            try {
+              if (!el.matches(selectorText)) continue;
+            } catch (selectorError) {
+              continue;
+            }
+            var declarations = [];
+            var style = rule.style;
+            if (style) {
+              for (var j = 0; j < style.length; j++) {
+                var prop = style[j];
+                var val = style.getPropertyValue(prop);
+                if (!prop || !val) continue;
+                declarations.push({
+                  property: prop,
+                  value: val,
+                  important: style.getPropertyPriority(prop) === 'important'
+                });
+              }
+            }
+            if (declarations.length) {
+              matches.push({
+                selector: selectorText,
+                source: sourceLabel,
+                declarations: declarations
+              });
+            }
+            continue;
+          }
+          if (rule.cssRules && rule.cssRules.length) {
+            visitRules(rule.cssRules, sourceLabel);
+          }
+        } catch (ruleError) {}
+      }
+    }
+
+    for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
+      var sheet = document.styleSheets[sheetIndex];
+      if (!sheet) continue;
+      try {
+        visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+      } catch (sheetError) {}
+    }
+
+    return matches;
   }
 
   function getCustomAttributes(el) {
@@ -3836,7 +3992,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         text: newEl.textContent || '',
         html: newEl.innerHTML || '',
         inlineStyle: newEl.getAttribute('style') || '',
-        computedStyles: computedStyles
+        computedStyles: computedStyles,
+        matchedCssRules: collectMatchedCssRulesForElement(newEl)
       }), '*');
     }
     if (payload.type === 'PREVIEW_APPLY_HTML' && payload.html) {

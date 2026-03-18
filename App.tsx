@@ -39,6 +39,8 @@ import {
   Wifi,
   Sun,
   Moon,
+  FileText,
+  Upload,
   Save,
   Undo2,
   Redo2,
@@ -55,6 +57,8 @@ import {
   X,
   Camera,
   FileDown,
+  MousePointer2,
+  Move,
 } from "lucide-react";
 
 import VibeAssistant from "./components/VibeAssistant";
@@ -63,7 +67,6 @@ import { AIPipeline } from "./utils/ai/AIPipeline";
 import EditorContent from "./app/EditorContent";
 import { Provider } from "react-redux";
 import { store } from "./src/store";
-import PdfSelector from "./src/components/PdfSelector";
 import PdfAnnotationsOverlay from "./src/components/PdfAnnotationsOverlay";
 import {
   setRecords,
@@ -240,6 +243,99 @@ type ScreenshotMetadata = {
   imagePath: string;
   imageFileName: string;
 };
+
+type PreviewMatchedCssDeclaration = {
+  property: string;
+  value: string;
+  important?: boolean;
+};
+
+type PreviewMatchedCssRule = {
+  selector: string;
+  source: string;
+  declarations: PreviewMatchedCssDeclaration[];
+};
+
+const collectMatchedCssRulesFromElement = (
+  element: Element | null,
+): PreviewMatchedCssRule[] => {
+  if (!element || !(element instanceof Element) || typeof element.matches !== "function") {
+    return [];
+  }
+
+  const getSourceLabel = (sheet: CSSStyleSheet) => {
+    if (sheet.href) {
+      const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
+      const parts = cleanHref.split("/");
+      return parts[parts.length - 1] || cleanHref || "stylesheet";
+    }
+    const ownerNode = sheet.ownerNode;
+    if (ownerNode instanceof Element) {
+      return (
+        ownerNode.getAttribute("data-source") ||
+        ownerNode.getAttribute("data-href") ||
+        "inline stylesheet"
+      );
+    }
+    return "inline stylesheet";
+  };
+
+  const results: PreviewMatchedCssRule[] = [];
+
+  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+    if (!rules) return;
+    Array.from(rules).forEach((rule) => {
+      try {
+        if (rule instanceof CSSStyleRule) {
+          const selector = String(rule.selectorText || "").trim();
+          if (!selector) return;
+          try {
+            if (!element.matches(selector)) return;
+          } catch {
+            return;
+          }
+          const declarations: PreviewMatchedCssDeclaration[] = [];
+          Array.from(rule.style).forEach((property) => {
+            const value = rule.style.getPropertyValue(property);
+            if (!property || !value) return;
+            declarations.push({
+              property,
+              value,
+              important: rule.style.getPropertyPriority(property) === "important",
+            });
+          });
+          if (declarations.length) {
+            results.push({ selector, source, declarations });
+          }
+          return;
+        }
+
+        if (
+          rule instanceof CSSMediaRule ||
+          rule instanceof CSSSupportsRule ||
+          rule instanceof CSSLayerBlockRule
+        ) {
+          visitRules(rule.cssRules, source);
+        }
+      } catch {
+        // Ignore inaccessible or unsupported rules.
+      }
+    });
+  };
+
+  const doc = element.ownerDocument;
+  if (!doc) return [];
+
+  Array.from(doc.styleSheets).forEach((sheet) => {
+    try {
+      visitRules((sheet as CSSStyleSheet).cssRules, getSourceLabel(sheet as CSSStyleSheet));
+    } catch {
+      // Ignore inaccessible stylesheet rules.
+    }
+  });
+
+  return results;
+};
 const ANNOTATION_INTENT_OPTIONS = [
   "stylingChange",
   "textualChange",
@@ -271,6 +367,7 @@ const App: React.FC = () => {
     typeFilter: pdfAnnotationTypeFilter,
     typeOverrides: pdfAnnotationTypeOverrides,
     classifierMetrics: pdfAnnotationClassifierMetrics,
+    processingLogs: pdfAnnotationProcessingLogs,
   } = useSelector((state: RootState) => state.annotations);
 
   // --- Neutralino Setup ---
@@ -359,6 +456,8 @@ const App: React.FC = () => {
   const [isZenMode, setIsZenMode] = useState(false);
   const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
   const [isDetachedEditorOpen, setIsDetachedEditorOpen] = useState(false);
+  const [isStyleInspectorSectionOpen, setIsStyleInspectorSectionOpen] =
+    useState(true);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
@@ -549,6 +648,8 @@ const App: React.FC = () => {
     useState<VirtualElement | null>(null);
   const [previewSelectedComputedStyles, setPreviewSelectedComputedStyles] =
     useState<React.CSSProperties | null>(null);
+  const [previewSelectedMatchedCssRules, setPreviewSelectedMatchedCssRules] =
+    useState<PreviewMatchedCssRule[]>([]);
   const [propertiesPanelRequestedTab, setPropertiesPanelRequestedTab] =
     useState<"content" | "style" | "advanced" | null>(null);
   const [
@@ -2719,6 +2820,23 @@ const App: React.FC = () => {
     },
     [root, selectedId, pushHistory],
   );
+  const handleUpdateIdentity = useCallback(
+    (identity: { id: string; className: string }) => {
+      if (!selectedId) return;
+      const nextId = identity.id.trim() || selectedId;
+      const nextClassName = identity.className.trim();
+      const newRoot = updateElementInTree(root, selectedId, (el) => ({
+        ...el,
+        id: nextId,
+        className: nextClassName || undefined,
+      }));
+      pushHistory(newRoot);
+      if (nextId !== selectedId) {
+        setSelectedId(nextId);
+      }
+    },
+    [root, selectedId, pushHistory],
+  );
 
   const handleUpdateAnimation = useCallback(
     (animation: string) => {
@@ -4851,10 +4969,7 @@ const App: React.FC = () => {
       target.getAttribute("style") || "",
     );
     const computedStyles = extractComputedStylesFromElement(target);
-    const mergedStyles: React.CSSProperties = {
-      ...(computedStyles || {}),
-      ...inlineStyles,
-    };
+    const matchedCssRules = collectMatchedCssRulesFromElement(target);
     const nextElement: VirtualElement = {
       id:
         target.getAttribute("id") ||
@@ -4875,12 +4990,13 @@ const App: React.FC = () => {
       ...(extractCustomAttributesFromElement(target)
         ? { attributes: extractCustomAttributesFromElement(target) || {} }
         : {}),
-      styles: mergedStyles,
+      styles: inlineStyles,
       children: [],
     };
     setPreviewSelectedPath(path);
     setPreviewSelectedElement(nextElement);
     setPreviewSelectedComputedStyles(computedStyles);
+    setPreviewSelectedMatchedCssRules(matchedCssRules);
     setSelectedId(null);
     setIsCodePanelOpen(false);
     setIsRightPanelOpen(true);
@@ -6441,11 +6557,6 @@ const App: React.FC = () => {
         !/^none(?:\s|$)/i.test(computedAnimationCandidate)
           ? computedAnimationCandidate
           : "");
-      const mergedStyles: React.CSSProperties = {
-        ...(snapshotComputedStyles || {}),
-        ...snapshotInlineStyles,
-      };
-
       setPreviewSelectedPath(normalizedPath);
       setPreviewSelectedComputedStyles(snapshotComputedStyles);
       setPreviewSelectedElement({
@@ -6462,7 +6573,7 @@ const App: React.FC = () => {
         ...(snapshotClassName ? { className: snapshotClassName } : {}),
         ...(snapshotAttributes ? { attributes: snapshotAttributes } : {}),
         ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-        styles: mergedStyles,
+        styles: snapshotInlineStyles,
         children: [],
       });
     },
@@ -8870,6 +8981,7 @@ const App: React.FC = () => {
         },
       });
       setPreviewSelectedComputedStyles(null);
+      setPreviewSelectedMatchedCssRules([]);
       setSelectedId(null);
       setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
@@ -8968,6 +9080,15 @@ const App: React.FC = () => {
             altKey?: boolean;
             editable?: boolean;
             computedStyles?: Record<string, string>;
+            matchedCssRules?: Array<{
+              selector?: string;
+              source?: string;
+              declarations?: Array<{
+                property?: string;
+                value?: string;
+                important?: boolean;
+              }>;
+            }>;
             parentPath?: number[];
             styles?: Record<string, string | number>;
           }
@@ -9254,10 +9375,6 @@ const App: React.FC = () => {
         const inlineStyles = parseInlineStyleText(
           liveElement.getAttribute("style") || "",
         );
-        const mergedStyles: React.CSSProperties = {
-          ...(computedStyles || {}),
-          ...inlineStyles,
-        };
         const liveAttributes =
           extractCustomAttributesFromElement(liveElement) || undefined;
         const liveSrc = liveElement.getAttribute("src") || "";
@@ -9291,7 +9408,7 @@ const App: React.FC = () => {
             : {}),
           ...(liveAttributes ? { attributes: liveAttributes } : {}),
           ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-          styles: mergedStyles,
+          styles: inlineStyles,
           children: [],
         }));
         return;
@@ -9340,11 +9457,42 @@ const App: React.FC = () => {
           payload.computedStyles && typeof payload.computedStyles === "object"
             ? (payload.computedStyles as React.CSSProperties)
             : null;
+        const payloadMatchedCssRules = Array.isArray(payload.matchedCssRules)
+          ? (payload.matchedCssRules
+              .map((rule) => {
+                if (!rule || typeof rule !== "object") return null;
+                const selector =
+                  typeof rule.selector === "string" ? rule.selector : "";
+                const source = typeof rule.source === "string" ? rule.source : "stylesheet";
+                const declarations = Array.isArray(rule.declarations)
+                  ? rule.declarations
+                      .map((declaration) => {
+                        if (!declaration || typeof declaration !== "object") return null;
+                        return typeof declaration.property === "string" &&
+                          typeof declaration.value === "string"
+                          ? {
+                              property: declaration.property,
+                              value: declaration.value,
+                              important: Boolean(declaration.important),
+                            }
+                          : null;
+                      })
+                      .filter(Boolean) as PreviewMatchedCssDeclaration[]
+                  : [];
+                if (!selector || declarations.length === 0) return null;
+                return { selector, source, declarations };
+              })
+              .filter(Boolean) as PreviewMatchedCssRule[])
+          : [];
 
         const liveElement = getLivePreviewSelectedElement(nextPath);
         const computedStyles =
           payloadComputedStyles ||
           extractComputedStylesFromElement(liveElement);
+        const matchedCssRules =
+          payloadMatchedCssRules.length > 0
+            ? payloadMatchedCssRules
+            : collectMatchedCssRulesFromElement(liveElement);
 
         // Prefer the text sent directly from the iframe at click time (el.textContent)
         // since it's the most reliable source. Fall back to DOM extraction if needed.
@@ -9434,10 +9582,6 @@ const App: React.FC = () => {
           Object.keys(mergedAttributes).length > 0
             ? mergedAttributes
             : undefined;
-        const mergedStyles: React.CSSProperties = {
-          ...(computedStyles || {}),
-          ...inlineStyles,
-        };
         const inlineAnimation =
           typeof inlineStyles.animation === "string"
             ? inlineStyles.animation.trim()
@@ -9467,7 +9611,7 @@ const App: React.FC = () => {
               ? payload.className
               : undefined,
           ...(resolvedAttributes ? { attributes: resolvedAttributes } : {}),
-          styles: mergedStyles,
+          styles: inlineStyles,
           ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
           children: [],
         };
@@ -9475,6 +9619,7 @@ const App: React.FC = () => {
         setPreviewSelectedPath(nextPath);
         setPreviewSelectedElement(nextElement);
         setPreviewSelectedComputedStyles(computedStyles);
+        setPreviewSelectedMatchedCssRules(matchedCssRules);
         setSelectedId(null);
         setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
@@ -10021,7 +10166,10 @@ const App: React.FC = () => {
     if (!shouldPushTabletFrame) return 0;
 
     const rightActive =
-      isRightPanelOpen || isPdfAnnotationPanelOpen || isScreenshotGalleryOpen;
+      rightPanelMode === "inspector" ||
+      isRightPanelOpen ||
+      isPdfAnnotationPanelOpen ||
+      isScreenshotGalleryOpen;
     if (isLeftPanelOpen === rightActive) return 0;
 
     // Calculate push amount based on panel widths
@@ -10029,6 +10177,7 @@ const App: React.FC = () => {
     return isLeftPanelOpen ? pushAmount : -pushAmount;
   }, [
     isLeftPanelOpen,
+    rightPanelMode,
     isRightPanelOpen,
     isPdfAnnotationPanelOpen,
     isScreenshotGalleryOpen,
@@ -10037,6 +10186,15 @@ const App: React.FC = () => {
     deviceMode,
   ]);
   const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
+  const hasPdfAnnotationsLoaded = pdfAnnotationRecords.length > 0;
+  const isRightInspectorAttached = rightPanelMode === "inspector";
+  const showEmbeddedPdfAnnotations =
+    isPdfAnnotationPanelOpen &&
+    (hasPdfAnnotationsLoaded ||
+      isPdfAnnotationLoading ||
+      Boolean(pdfAnnotationError) ||
+      pdfAnnotationProcessingLogs.length > 0);
+  const showStyleInspectorSection = isStyleInspectorSectionOpen;
   const isTabletZoomMode = deviceMode === "tablet";
   const lockAllScrollAt50 = isTabletZoomMode && frameZoom === 50;
   const lockVerticalAt75Landscape =
@@ -10108,6 +10266,92 @@ const App: React.FC = () => {
         estimatedFrameWidthPx / 2 +
         20,
     ),
+  );
+  const applyPreviewIdentityUpdate = useCallback(
+    async (identity: { id: string; className: string }) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
+
+      const nextId = identity.id.trim();
+      const nextClassName = identity.className.trim();
+
+      if (target) {
+        if (nextId) target.setAttribute("id", nextId);
+        else target.removeAttribute("id");
+        if (nextClassName) target.setAttribute("class", nextClassName);
+        else target.removeAttribute("class");
+      }
+      if (liveTarget) {
+        if (nextId) liveTarget.setAttribute("id", nextId);
+        else liveTarget.removeAttribute("id");
+        if (nextClassName) liveTarget.setAttribute("class", nextClassName);
+        else liveTarget.removeAttribute("class");
+      }
+
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              id: nextId || prev.id,
+              className: nextClassName || undefined,
+            }
+          : prev,
+      );
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const handlePreviewIdentityUpdateStable = useCallback(
+    (identity: { id: string; className: string }) => {
+      void applyPreviewIdentityUpdate(identity);
+    },
+    [applyPreviewIdentityUpdate],
+  );
+  const handlePreviewMatchedRulePropertyAdd = useCallback(
+    (
+      _rule: { selector: string; source: string },
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      if (!previewSelectedPath || !Array.isArray(previewSelectedPath)) return;
+      void applyPreviewLocalCssPatchAtPath(previewSelectedPath, styles, {
+        syncSelectedElement: true,
+      });
+    },
+    [applyPreviewLocalCssPatchAtPath, previewSelectedPath],
   );
   const showDeviceFrameToolbar = true;
 
@@ -11107,6 +11351,10 @@ const App: React.FC = () => {
                 ? `${consolePanelStageOffset}px`
                 : !isFloatingPanels &&
                     deviceMode !== "mobile" &&
+                    isRightInspectorAttached
+                  ? "var(--right-panel-width)"
+                : !isFloatingPanels &&
+                    deviceMode !== "mobile" &&
                     ((isPanelsSwapped && isLeftPanelOpen && !isRightPanelOpen) ||
                       (!isPanelsSwapped && !isLeftPanelOpen && isRightPanelOpen))
                   ? isPanelsSwapped
@@ -11145,10 +11393,9 @@ const App: React.FC = () => {
                 perspective: "1000px",
                 paddingLeft: `${BASE_STAGE_PADDING}px`,
                 paddingRight:
-                  isPdfAnnotationPanelOpen && deviceMode !== "tablet"
-                    ? "400px"
-                    : `${BASE_STAGE_PADDING}px`,
+                  `${BASE_STAGE_PADDING}px`,
                 width: "100%",
+                paddingBottom: `${BASE_STAGE_PADDING}px`,
                 minWidth: bothPanelsOpen
                   ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
                   : floatingHorizontalInset > 0
@@ -11345,7 +11592,7 @@ const App: React.FC = () => {
                       )}
                     </div>
                   </div>
-                    {deviceMode === "tablet" && SHOW_SCREENSHOT_FEATURES && (
+                    {deviceMode === "tablet" && (
                       <div
                         className={`absolute right-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
                         style={{ marginBottom: "-10px" }}
@@ -11369,21 +11616,83 @@ const App: React.FC = () => {
                             borderBottomWidth: 0,
                           }}
                         >
-                          <button
-                            className={`glass-icon-btn navbar-icon-btn rounded-md ${
-                              screenshotCaptureBusy ? "opacity-60" : ""
-                            }`}
-                            onClick={() => openScreenshotGallery(true)}
-                            disabled={screenshotCaptureBusy || !projectPath}
-                            title={
-                              projectPath
-                                ? "Capture iPad screenshot"
-                                : "Open a presentation first"
-                            }
-                            style={{ borderRadius: "8px" }}
+                          <div
+                            className="flex items-center gap-1 rounded-[10px] px-1 py-1 border"
+                            style={{
+                              borderColor:
+                                theme === "dark"
+                                  ? "rgba(148,163,184,0.28)"
+                                  : "rgba(15,23,42,0.12)",
+                              background:
+                                theme === "dark"
+                                  ? "rgba(15,23,42,0.55)"
+                                  : "rgba(255,255,255,0.82)",
+                            }}
                           >
-                            <Camera size={16} />
-                          </button>
+                            <button
+                              type="button"
+                              className="glass-icon-btn navbar-icon-btn rounded-md"
+                              onClick={() => handleSidebarInteractionModeChange("inspect")}
+                              title="Select Element"
+                              style={{
+                                borderRadius: "8px",
+                                color:
+                                  sidebarInteractionMode === "inspect"
+                                    ? theme === "dark"
+                                      ? "#67e8f9"
+                                      : "#0891b2"
+                                    : undefined,
+                                background:
+                                  sidebarInteractionMode === "inspect"
+                                    ? theme === "dark"
+                                      ? "rgba(34,211,238,0.18)"
+                                      : "rgba(6,182,212,0.14)"
+                                    : undefined,
+                              }}
+                            >
+                              <MousePointer2 size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className="glass-icon-btn navbar-icon-btn rounded-md"
+                              onClick={() => handleSidebarInteractionModeChange("move")}
+                              title="Move Element"
+                              style={{
+                                borderRadius: "8px",
+                                color:
+                                  sidebarInteractionMode === "move"
+                                    ? theme === "dark"
+                                      ? "#fbbf24"
+                                      : "#b45309"
+                                    : undefined,
+                                background:
+                                  sidebarInteractionMode === "move"
+                                    ? theme === "dark"
+                                      ? "rgba(245,158,11,0.2)"
+                                      : "rgba(245,158,11,0.14)"
+                                    : undefined,
+                              }}
+                            >
+                              <Move size={16} />
+                            </button>
+                          </div>
+                          {SHOW_SCREENSHOT_FEATURES && (
+                            <button
+                              className={`glass-icon-btn navbar-icon-btn rounded-md ${
+                                screenshotCaptureBusy ? "opacity-60" : ""
+                              }`}
+                              onClick={() => openScreenshotGallery(true)}
+                              disabled={screenshotCaptureBusy || !projectPath}
+                              title={
+                                projectPath
+                                  ? "Capture iPad screenshot"
+                                  : "Open a presentation first"
+                              }
+                              style={{ borderRadius: "8px" }}
+                            >
+                              <Camera size={16} />
+                            </button>
+                          )}
                         </div>
                       </div>
                     )}
@@ -12092,7 +12401,248 @@ const App: React.FC = () => {
         </div>
         {/* end stage */}
 
+        {isRightInspectorAttached && (
+          <div
+            className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-500"} right-0 top-0 bottom-0 ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+            style={{
+              width: "var(--right-panel-width)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              className="h-full min-h-full relative flex flex-col overflow-hidden"
+              style={{
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                    : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
+                backdropFilter: "blur(14px)",
+                borderTopLeftRadius: "28px",
+                borderBottomLeftRadius: "28px",
+              }}
+            >
+              <div
+                className="shrink-0 border-b px-3 py-2"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(148,163,184,0.22)"
+                      : "rgba(15,23,42,0.08)",
+                  background:
+                    theme === "dark"
+                      ? "rgba(15,23,42,0.42)"
+                      : "rgba(255,255,255,0.78)",
+                }}
+              >
+                <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className="h-9 min-w-[44px] rounded-xl border px-2 flex items-center justify-center transition-colors text-[11px] font-semibold tracking-[0.14em]"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.28)"
+                            : "rgba(15,23,42,0.12)",
+                        color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                        background: showStyleInspectorSection
+                          ? theme === "dark"
+                            ? "rgba(99,102,241,0.2)"
+                            : "rgba(99,102,241,0.14)"
+                          : "transparent",
+                      }}
+                      onClick={() =>
+                        setIsStyleInspectorSectionOpen((current) => !current)
+                      }
+                      title={
+                        showStyleInspectorSection
+                          ? "Hide styles section"
+                          : "Show styles section"
+                      }
+                    >
+                      CSS
+                    </button>
+                    <button
+                      type="button"
+                      className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.28)"
+                            : "rgba(15,23,42,0.12)",
+                        color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                        background: showEmbeddedPdfAnnotations
+                          ? theme === "dark"
+                            ? "rgba(34,211,238,0.18)"
+                            : "rgba(14,165,233,0.14)"
+                          : "transparent",
+                      }}
+                      onClick={() => {
+                        if (hasPdfAnnotationsLoaded) {
+                          dispatch(setIsOpen(!isPdfAnnotationPanelOpen));
+                          return;
+                        }
+                        handleOpenPdfAnnotationsPicker();
+                      }}
+                      disabled={!projectPath || isPdfAnnotationLoading}
+                      title={
+                        projectPath
+                          ? hasPdfAnnotationsLoaded
+                            ? isPdfAnnotationPanelOpen
+                              ? "Hide PDF annotations"
+                              : "Show PDF annotations"
+                            : "Load annotated PDF"
+                          : "Open a presentation first"
+                      }
+                    >
+                      {isPdfAnnotationLoading ? (
+                        <RotateCw size={15} className="animate-spin" />
+                      ) : (
+                        <FileText size={15} />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.28)"
+                            : "rgba(15,23,42,0.12)",
+                        color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                      }}
+                      onClick={handleRefreshPdfAnnotationMapping}
+                      disabled={!projectPath || isPdfAnnotationLoading}
+                      title="Upload annotated PDF"
+                    >
+                      <Upload size={15} />
+                    </button>
+                </div>
+              </div>
+
+              {showEmbeddedPdfAnnotations ? (
+                <>
+                  <div
+                    className="min-h-0 overflow-hidden"
+                    style={{
+                      flex: showStyleInspectorSection ? "0 0 48%" : "1 1 auto",
+                      background:
+                        theme === "dark"
+                          ? "rgba(2,6,23,0.18)"
+                          : "rgba(248,250,252,0.62)",
+                    }}
+                  >
+                    <PdfAnnotationsOverlay
+                      currentPreviewSlideId={currentPreviewSlideId ?? null}
+                      theme={theme as "light" | "dark"}
+                      onJumpToAnnotation={handleJumpToPdfAnnotation}
+                      embedded
+                    />
+                  </div>
+                  {showStyleInspectorSection ? (
+                    <div
+                      className="shrink-0 h-[8px]"
+                      style={{
+                        background:
+                          theme === "dark"
+                            ? "linear-gradient(90deg, rgba(34,211,238,0.1) 0%, rgba(56,189,248,0.42) 22%, rgba(14,165,233,0.2) 50%, rgba(34,211,238,0.42) 78%, rgba(34,211,238,0.1) 100%)"
+                            : "linear-gradient(90deg, rgba(125,211,252,0.18) 0%, rgba(14,165,233,0.55) 22%, rgba(6,182,212,0.22) 50%, rgba(14,165,233,0.55) 78%, rgba(125,211,252,0.18) 100%)",
+                        boxShadow:
+                          theme === "dark"
+                            ? "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(255,255,255,0.03)"
+                            : "inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(14,165,233,0.08)",
+                      }}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+
+              {showStyleInspectorSection ? (
+                <div
+                  className="min-h-0 flex-1 overflow-hidden px-2 pt-2 pb-2"
+                  style={{
+                    borderTop: showEmbeddedPdfAnnotations
+                      ? "none"
+                      : theme === "dark"
+                        ? "1px solid rgba(148,163,184,0.12)"
+                        : "1px solid rgba(15,23,42,0.05)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(2,6,23,0.3)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <div
+                    className="h-full overflow-hidden rounded-[20px]"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.3)"
+                          : "rgba(255,255,255,0.8)",
+                    }}
+                  >
+                    <StyleInspectorPanel
+                      element={inspectorElement}
+                      onUpdateStyle={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewStyleUpdateStable
+                          : handleUpdateStyle
+                      }
+                      onUpdateIdentity={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewIdentityUpdateStable
+                          : handleUpdateIdentity
+                      }
+                      onAddMatchedRuleProperty={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? handlePreviewMatchedRulePropertyAdd
+                          : undefined
+                      }
+                      matchedCssRules={
+                        interactionMode === "preview"
+                          ? previewSelectedMatchedCssRules
+                          : []
+                      }
+                      computedStyles={
+                        interactionMode === "preview"
+                          ? previewSelectedComputedStyles
+                          : null
+                      }
+                    />
+                  </div>
+                </div>
+              ) : !showEmbeddedPdfAnnotations ? (
+                <div
+                  className="min-h-0 flex-1 flex items-center justify-center px-6 text-center"
+                  style={{
+                    color: theme === "dark" ? "#94a3b8" : "#64748b",
+                  }}
+                >
+                  <div className="text-[12px] tracking-[0.16em] uppercase">
+                    Enable CSS or PDF to inspect this slide
+                  </div>
+                </div>
+              ) : null}
+
+              <div
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  boxShadow:
+                    theme === "dark"
+                      ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                      : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+                }}
+              />
+            </div>
+            <div
+              onMouseDown={handleRightPanelResizeStart}
+              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              title="Resize panel"
+            />
+          </div>
+        )}
+
         {/* Right Sidebar */}
+        {rightPanelMode === "gallery" && (
         <div
           className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
           style={{
@@ -12103,9 +12653,7 @@ const App: React.FC = () => {
                 : isPanelsSwapped
                   ? "translateX(-100%)"
                   : "translateX(100%)",
-            width: isFloatingPanels
-              ? "var(--right-panel-width)"
-              : "var(--right-panel-width)",
+            width: "var(--right-panel-width)",
             left: isFloatingPanels
               ? `${rightPanelFloatingPosition.left}px`
               : undefined,
@@ -12130,9 +12678,7 @@ const App: React.FC = () => {
           }}
         >
           <div
-            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-              isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
-            }`}
+            className={`h-full min-h-full relative flex flex-col overflow-hidden ${isFloatingPanels ? "rounded-2xl overflow-hidden" : ""}`}
             style={{
               background:
                 theme === "dark"
@@ -12523,6 +13069,9 @@ const App: React.FC = () => {
                     <StyleInspectorPanel
                       element={inspectorElement}
                       onUpdateStyle={handleUpdateStyle}
+                      onUpdateIdentity={handleUpdateIdentity}
+                      onAddMatchedRuleProperty={undefined}
+                      matchedCssRules={[]}
                       computedStyles={null}
                     />
                   ) : (
@@ -12590,6 +13139,7 @@ const App: React.FC = () => {
             />
           )}
         </div>
+        )}
       </div>
 
       {/* Code Panel */}
@@ -12957,24 +13507,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* PDF Selector — top-right header pill */}
-      <PdfSelector
-        onSelectPdf={handleOpenPdfAnnotationsPicker}
-        onRefreshPdf={handleRefreshPdfAnnotationMapping}
-        onExportEditablePdf={handleExportEditablePdf}
-        isExporting={isPdfExporting}
-        showExportEditablePdf={SHOW_SCREENSHOT_FEATURES}
-        projectPath={projectPath}
-        theme={theme as "light" | "dark"}
-        side={isPanelsSwapped ? "left" : "right"}
-      />
-
-      {/* PDF Annotations Overlay — compact left-side overlay */}
-      <PdfAnnotationsOverlay
-        currentPreviewSlideId={currentPreviewSlideId ?? null}
-        theme={theme as "light" | "dark"}
-        onJumpToAnnotation={handleJumpToPdfAnnotation}
-      />
     </div>
   );
 };

@@ -4,7 +4,7 @@ import Toolbox from './Toolbox';
 import ImagesPanel from './ImagesPanel';
 import MasterFeaturePanel from './MasterFeaturePanel';
 import { FileMap, VirtualElement } from '../types';
-import { FolderOpen, Box, MousePointer2, Sparkles, Move, Settings, Image as ImageIcon, Wand2 } from 'lucide-react';
+import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2 } from 'lucide-react';
 
 interface SidebarProps {
   files: FileMap;
@@ -117,37 +117,6 @@ const SidebarBase: React.FC<SidebarProps> = ({
           borderColor: 'var(--border-color)'
         }}
       >
-        {/* Mode Toggles */}
-        <div className="flex flex-col gap-1 mb-3 pb-3 border-b w-8" style={{ borderColor: 'var(--border-color)' }}>
-          <button
-            onClick={() => setInteractionMode('edit')}
-            title="Select / Edit"
-            className={`p-2 rounded-lg transition-all duration-200 group relative ${interactionMode === 'edit' || interactionMode === 'inspect'
-                ? 'tab-active-glow animate-neonPulse'
-                : 'hover:bg-black/5'
-              }`}
-            style={{
-              color:
-                (interactionMode === 'edit' || interactionMode === 'inspect')
-                  ? selectedAccent
-                  : 'var(--icon-color)'
-            }}
-          >
-            <MousePointer2 size={16} />
-          </button>
-          <button
-            onClick={() => setInteractionMode('move')}
-            title="Move Element"
-            className={`p-2 rounded-lg transition-all duration-200 group relative ${interactionMode === 'move'
-                ? 'bg-amber-500/20 text-amber-400 shadow-lg shadow-amber-500/10'
-                : 'hover:bg-black/5'
-              }`}
-            style={{ color: interactionMode === 'move' ? undefined : 'var(--icon-color)' }}
-          >
-            <Move size={16} />
-          </button>
-        </div>
-
         {/* Tab Icons */}
         {visibleTabs.map(({ key, icon: Icon, label }) => (
           <button
