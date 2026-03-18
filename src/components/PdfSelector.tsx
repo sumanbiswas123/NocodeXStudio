@@ -12,16 +12,17 @@ interface PdfSelectorProps {
   showExportEditablePdf: boolean;
   projectPath: string | null;
   theme: 'light' | 'dark';
+  side?: 'left' | 'right';
 }
 
-const PdfSelector: React.FC<PdfSelectorProps> = ({ onSelectPdf, onRefreshPdf, onExportEditablePdf, isExporting, showExportEditablePdf, projectPath, theme }) => {
+const PdfSelector: React.FC<PdfSelectorProps> = ({ onSelectPdf, onRefreshPdf, onExportEditablePdf, isExporting, showExportEditablePdf, projectPath, theme, side = 'right' }) => {
   const dispatch = useDispatch();
   const { records, isLoading, fileName, isOpen } = useSelector((state: RootState) => state.annotations);
 
   const hasRecords = records.length > 0;
 
   return (
-    <div className={`absolute top-4 right-4 z-50 flex items-center gap-2 p-1.5 rounded-2xl border shadow-lg backdrop-blur-xl ${theme === 'dark' ? 'bg-slate-900/80 border-slate-700/50' : 'bg-white/80 border-slate-200/50'}`}>
+    <div className={`absolute top-4 ${side === 'left' ? 'left-4' : 'right-4'} z-50 flex items-center gap-2 p-1.5 rounded-2xl border shadow-lg backdrop-blur-xl ${theme === 'dark' ? 'bg-slate-900/80 border-slate-700/50' : 'bg-white/80 border-slate-200/50'}`}>
       
       {hasRecords && (
         <div className="flex flex-col justify-center px-3 max-w-[150px]">

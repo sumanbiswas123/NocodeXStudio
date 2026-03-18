@@ -3,6 +3,20 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { rcedit } from 'rcedit';
 
+const copyDir = (src, dest) => {
+    if (!fs.existsSync(src)) return;
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+            copyDir(srcPath, destPath);
+        } else if (entry.isFile()) {
+            fs.copyFileSync(srcPath, destPath);
+        }
+    }
+};
+
 const configFile = 'neutralino.config.json';
 const devConfig = fs.readFileSync(configFile, 'utf8');
 const config = JSON.parse(devConfig);
@@ -14,7 +28,7 @@ const clean = args.has('--clean');
 // Switch to Prod settings
 config.documentRoot = 'dist/';
 config.url = '/';
-config.modes.window.enableInspector = false; // Disable inspector for prod
+    config.modes.window.enableInspector = true; // Enable inspector for prod debugging
 
 console.log('Switching to Production Config...');
 fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
@@ -41,6 +55,38 @@ try {
     const binaryName = config?.cli?.binaryName || 'nocode-x-studio';
     const exePath = path.join(process.cwd(), 'dist', binaryName, `${binaryName}-win_x64.exe`);
     const iconPath = path.join(process.cwd(), 'installer', 'assets', 'app.ico');
+    const appRoot = path.join(process.cwd(), 'dist', binaryName);
+    const nodeSource = process.execPath;
+    const nodeDir = path.join(appRoot, 'node');
+    const nodeTarget = path.join(nodeDir, 'node.exe');
+    try {
+      if (!fs.existsSync(nodeDir)) fs.mkdirSync(nodeDir, { recursive: true });
+      fs.copyFileSync(nodeSource, nodeTarget);
+      console.log(`Bundled node.exe at ${nodeTarget}`);
+    } catch (err) {
+      console.warn('Failed to bundle node.exe:', err?.message || err);
+    }
+
+    try {
+      const workerSrc = path.join(process.cwd(), 'scripts', 'pdf_annotation_worker.mjs');
+      const workerDir = path.join(appRoot, 'scripts');
+      if (!fs.existsSync(workerDir)) fs.mkdirSync(workerDir, { recursive: true });
+      if (fs.existsSync(workerSrc)) {
+        fs.copyFileSync(workerSrc, path.join(workerDir, 'pdf_annotation_worker.mjs'));
+        console.log('Bundled pdf_annotation_worker.mjs');
+      }
+    } catch (err) {
+      console.warn('Failed to bundle pdf_annotation_worker.mjs:', err?.message || err);
+    }
+
+    try {
+      const pdfjsSrc = path.join(process.cwd(), 'node_modules', 'pdfjs-dist');
+      const pdfjsDest = path.join(appRoot, 'node_modules', 'pdfjs-dist');
+      copyDir(pdfjsSrc, pdfjsDest);
+      console.log('Bundled pdfjs-dist for PDF worker.');
+    } catch (err) {
+      console.warn('Failed to bundle pdfjs-dist:', err?.message || err);
+    }
     if (fs.existsSync(exePath) && fs.existsSync(iconPath)) {
       console.log(`Patching EXE icon: ${exePath}`);
       await rcedit(exePath, { icon: iconPath });
