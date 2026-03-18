@@ -106,6 +106,7 @@ import {
   PREVIEW_AUTOSAVE_STORAGE_KEY,
   AI_BACKEND_STORAGE_KEY,
   COLAB_URL_STORAGE_KEY,
+  PANEL_SIDE_STORAGE_KEY,
   SHOW_AI_FEATURES,
   SHOW_SCREENSHOT_FEATURES,
   SHOW_MASTER_TOOLS,
@@ -386,6 +387,16 @@ const App: React.FC = () => {
       return false;
     }
   });
+  const [panelSide, setPanelSide] = useState<"default" | "swapped">(() => {
+    try {
+      return localStorage.getItem(PANEL_SIDE_STORAGE_KEY) === "swapped"
+        ? "swapped"
+        : "default";
+    } catch {
+      return "default";
+    }
+  });
+  const isPanelsSwapped = panelSide === "swapped";
   const [aiBackend, setAiBackend] = useState<"local" | "colab">(() => {
     try {
       const saved = localStorage.getItem(AI_BACKEND_STORAGE_KEY);
@@ -2649,6 +2660,10 @@ const App: React.FC = () => {
       setPreviewSelectedPath(null);
       setPreviewSelectedElement(null);
       setPreviewSelectedComputedStyles(null);
+      if (interactionModeRef.current === "inspect") {
+        setInteractionMode("edit");
+        setSidebarToolMode("edit");
+      }
       if (deviceMode === "tablet" && interactionModeRef.current === "edit") {
         setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
@@ -2888,10 +2903,27 @@ const App: React.FC = () => {
             ? `${normalizePath(projectPath)}/.nx_tmp_pdf_annotations_${Date.now()}.json`
             : "";
           if (workerScriptPath && workerOutputPath) {
-            const command = `node "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
+            let nodeExecutable = "node";
+            if (appRoot) {
+              const bundledNode = normalizePath(`${appRoot}/node/node.exe`);
+              try {
+                await (Neutralino as any).filesystem.getStats(bundledNode);
+                nodeExecutable = `"${bundledNode}"`;
+              } catch {
+                nodeExecutable = "node";
+              }
+            }
+            appendPdfAnnotationLog(
+              `PDF worker paths: node=${nodeExecutable}, script=${workerScriptPath}`,
+            );
+            console.log("[PDF Worker] node:", nodeExecutable);
+            console.log("[PDF Worker] script:", workerScriptPath);
+            console.log("[PDF Worker] output:", workerOutputPath);
+            const command = `${nodeExecutable} "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
             const execResult = await (Neutralino as any).os.execCommand(
               command,
             );
+            console.log("[PDF Worker] execResult:", execResult);
             if ((execResult?.exitCode ?? 1) === 0) {
               appendPdfAnnotationLog("Parsing extractor output.");
               const workerRaw = await (Neutralino as any).filesystem.readFile(
@@ -2917,9 +2949,11 @@ const App: React.FC = () => {
           );
         }
         if (!preExtractedAnnotations || preExtractedAnnotations.length === 0) {
-          throw new Error(
-            "Background PDF extractor failed or returned no annotations. In-app PDF worker fallback is disabled.",
+          appendPdfAnnotationLog(
+            "Background extractor returned no annotations. Falling back to in-app worker.",
+            "warn",
           );
+          preExtractedAnnotations = null;
         }
         appendPdfAnnotationLog("Mapping annotations to project files.");
         const details = await buildMappedPdfAnnotations({
@@ -10881,69 +10915,11 @@ const App: React.FC = () => {
               <Redo2 size={16} />
             </button>
             <div className="h-4 w-px bg-gray-500/20"></div>
-            <div className="relative" ref={saveMenuRef}>
-              <button
-                className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
-                onClick={() => setIsSaveMenuOpen((prev) => !prev)}
-                title="Save settings"
-              >
-                <Settings2 size={16} />
-              </button>
-              {dirtyFiles.length > 0 && (
-                <span
-                  className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
-                  aria-hidden="true"
-                />
-              )}
-              {isSaveMenuOpen && (
-                <div
-                  className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
-                  style={{
-                    background:
-                      theme === "dark"
-                        ? "rgba(15,23,42,0.98)"
-                        : "rgba(255,255,255,0.98)",
-                    borderColor:
-                      theme === "dark"
-                        ? "rgba(148,163,184,0.35)"
-                        : "rgba(15,23,42,0.15)",
-                    color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                  }}
-                >
-                  <button
-                    className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
-                    onClick={() => {
-                      void saveCodeDraftsRef.current?.();
-                      void flushPendingPreviewSaves();
-                      setIsSaveMenuOpen(false);
-                    }}
-                  >
-                    <span className="flex items-center gap-2">
-                      <Save size={13} />
-                      Save Now
-                    </span>
-                    <span className="opacity-70">Ctrl+S</span>
-                  </button>
-                  <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
-                    <span>Auto Save</span>
-                    <input
-                      type="checkbox"
-                      checked={autoSaveEnabled}
-                      onChange={(e) => setAutoSaveEnabled(e.target.checked)}
-                    />
-                  </label>
-                  <div className="px-2 pt-1 text-[10px] opacity-70">
-                    Smart debounce (about 1.2s idle), not every keystroke.
-                  </div>
-                  {dirtyFiles.length > 0 && (
-                    <div className="px-2 pt-2 text-[10px] text-amber-400">
-                      {dirtyFiles.length} unsaved file
-                      {dirtyFiles.length > 1 ? "s" : ""}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            <span
+              className="w-2.5 h-2.5 rounded-full"
+              style={{ backgroundColor: dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e" }}
+              aria-hidden="true"
+            />
             {interactionMode === "preview" && (
               <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
                 <button
@@ -11006,7 +10982,7 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "left-0 top-20" : "left-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : (isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0")} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
           style={{
             transform: isLeftPanelOpen ? "translateX(0)" : "translateX(0)",
             width: isLeftPanelOpen
@@ -11019,7 +10995,11 @@ const App: React.FC = () => {
             height: isFloatingPanels
               ? "min(70vh, calc(100vh - 7.5rem))"
               : undefined,
-            borderRadius: isFloatingPanels ? "0 1rem 1rem 0" : undefined,
+            borderRadius: isFloatingPanels
+              ? isPanelsSwapped
+                ? "1rem 0 0 1rem"
+                : "0 1rem 1rem 0"
+              : undefined,
             border: isFloatingPanels
               ? theme === "light"
                 ? "1px solid rgba(15, 23, 42, 0.18)"
@@ -11033,7 +11013,11 @@ const App: React.FC = () => {
         >
           <div
             className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-              isFloatingPanels ? "rounded-r-2xl overflow-hidden" : ""
+              isFloatingPanels
+                ? isPanelsSwapped
+                  ? "rounded-l-2xl overflow-hidden"
+                  : "rounded-r-2xl overflow-hidden"
+                : ""
             }`}
             style={{
               background:
@@ -11097,7 +11081,7 @@ const App: React.FC = () => {
             <div
               onMouseDown={handleLeftPanelResizeStart}
               onClick={handleLeftPanelStretchToggle}
-              className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              className={`absolute top-0 ${isPanelsSwapped ? "left-0" : "right-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
               title="Resize panel. Click to stretch or shrink"
             />
           )}
@@ -11111,9 +11095,11 @@ const App: React.FC = () => {
             marginLeft:
               !isFloatingPanels &&
               deviceMode !== "mobile" &&
-              isLeftPanelOpen &&
-              !isRightPanelOpen
-                ? "var(--left-panel-width)"
+              ((isPanelsSwapped && !isLeftPanelOpen && isRightPanelOpen) ||
+                (!isPanelsSwapped && isLeftPanelOpen && !isRightPanelOpen))
+                ? isPanelsSwapped
+                  ? "var(--right-panel-width)"
+                  : "var(--left-panel-width)"
                 : 0,
             marginRight: codePanelStageOffset
               ? `${codePanelStageOffset}px`
@@ -11121,9 +11107,11 @@ const App: React.FC = () => {
                 ? `${consolePanelStageOffset}px`
                 : !isFloatingPanels &&
                     deviceMode !== "mobile" &&
-                    !isLeftPanelOpen &&
-                    isRightPanelOpen
-                  ? "var(--right-panel-width)"
+                    ((isPanelsSwapped && isLeftPanelOpen && !isRightPanelOpen) ||
+                      (!isPanelsSwapped && !isLeftPanelOpen && isRightPanelOpen))
+                  ? isPanelsSwapped
+                    ? "var(--left-panel-width)"
+                    : "var(--right-panel-width)"
                   : 0,
             // When both panels open, no margins - content will scroll
           }}
@@ -11313,74 +11301,14 @@ const App: React.FC = () => {
                         <Redo2 size={16} />
                       </button>
                       <div className="h-4 w-px bg-gray-500/20"></div>
-                      <div className="relative" ref={saveMenuRef}>
-                        <button
-                          className={`glass-icon-btn navbar-icon-btn ${dirtyFiles.length > 0 ? "text-amber-400" : ""}`}
-                          onClick={() =>
-                            setIsSaveMenuOpen((prev) => !prev)
-                          }
-                          title="Save settings"
-                        >
-                          <Settings2 size={16} />
-                        </button>
-                        {dirtyFiles.length > 0 && (
-                          <span
-                            className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500"
-                            aria-hidden="true"
-                          />
-                        )}
-                        {isSaveMenuOpen && (
-                          <div
-                            className="absolute top-10 right-0 w-56 rounded-xl border p-2 shadow-2xl z-[1200]"
-                            style={{
-                              background:
-                                theme === "dark"
-                                  ? "rgba(15,23,42,0.98)"
-                                  : "rgba(255,255,255,0.98)",
-                              borderColor:
-                                theme === "dark"
-                                  ? "rgba(148,163,184,0.35)"
-                                  : "rgba(15,23,42,0.15)",
-                              color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                            }}
-                          >
-                            <button
-                              className="w-full text-left px-2 py-2 rounded-md text-xs font-semibold hover:bg-cyan-500/15 flex items-center justify-between"
-                              onClick={() => {
-                                void saveCodeDraftsRef.current?.();
-                                void flushPendingPreviewSaves();
-                                setIsSaveMenuOpen(false);
-                              }}
-                            >
-                              <span className="flex items-center gap-2">
-                                <Save size={13} />
-                                Save Now
-                              </span>
-                              <span className="opacity-70">Ctrl+S</span>
-                            </button>
-                            <label className="mt-1 w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
-                              <span>Auto Save</span>
-                              <input
-                                type="checkbox"
-                                checked={autoSaveEnabled}
-                                onChange={(e) =>
-                                  setAutoSaveEnabled(e.target.checked)
-                                }
-                              />
-                            </label>
-                            <div className="px-2 pt-1 text-[10px] opacity-70">
-                              Smart debounce (about 1.2s idle), not every
-                              keystroke.
-                            </div>
-                            {dirtyFiles.length > 0 && (
-                              <div className="px-2 pt-2 text-[10px] text-amber-400">
-                                {dirtyFiles.length} unsaved file
-                                {dirtyFiles.length > 1 ? "s" : ""}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                      <span
+                        className="w-2.5 h-2.5 rounded-full"
+                        style={{
+                          backgroundColor:
+                            dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e",
+                        }}
+                        aria-hidden="true"
+                      />
                       {interactionMode === "preview" && (
                         <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
                           <button
@@ -12166,13 +12094,15 @@ const App: React.FC = () => {
 
         {/* Right Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? "animate-panelInRight" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
           style={{
             transform: isRightPanelOpen
               ? "translateX(0)"
               : isFloatingPanels
                 ? "translateX(calc(100% + 2.5rem))"
-                : "translateX(100%)",
+                : isPanelsSwapped
+                  ? "translateX(-100%)"
+                  : "translateX(100%)",
             width: isFloatingPanels
               ? "var(--right-panel-width)"
               : "var(--right-panel-width)",
@@ -12655,7 +12585,7 @@ const App: React.FC = () => {
           {isRightPanelOpen && (
             <div
               onMouseDown={handleRightPanelResizeStart}
-              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              className={`absolute top-0 ${isPanelsSwapped ? "right-0" : "left-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
               title="Resize panel"
             />
           )}
@@ -12870,6 +12800,16 @@ const App: React.FC = () => {
           setColabUrl(val);
           localStorage.setItem(COLAB_URL_STORAGE_KEY, val);
         }}
+        autoSaveEnabled={autoSaveEnabled}
+        onAutoSaveChange={(val) => {
+          setAutoSaveEnabled(val);
+          localStorage.setItem(PREVIEW_AUTOSAVE_STORAGE_KEY, val ? "1" : "0");
+        }}
+        panelSide={panelSide}
+        onPanelSideChange={(val) => {
+          setPanelSide(val);
+          localStorage.setItem(PANEL_SIDE_STORAGE_KEY, val);
+        }}
         showAiOptions={SHOW_AI_FEATURES}
         hasProjectConfig={Boolean(projectPath)}
         selectedSlideCloneSource={selectedFolderCloneSource}
@@ -13026,6 +12966,7 @@ const App: React.FC = () => {
         showExportEditablePdf={SHOW_SCREENSHOT_FEATURES}
         projectPath={projectPath}
         theme={theme as "light" | "dark"}
+        side={isPanelsSwapped ? "left" : "right"}
       />
 
       {/* PDF Annotations Overlay — compact left-side overlay */}

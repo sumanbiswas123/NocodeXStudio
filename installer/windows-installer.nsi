@@ -9,6 +9,9 @@
 !ifndef APP_EXE
   !error "APP_EXE is required. Pass /DAPP_EXE=... to makensis"
 !endif
+!ifndef APP_DIR
+  !error "APP_DIR is required. Pass /DAPP_DIR=... to makensis"
+!endif
 
 !ifndef APP_BINARY_NAME
   !define APP_BINARY_NAME "nocode-x-studio-win_x64.exe"
@@ -39,6 +42,9 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "${APP_EXE}"
   File /oname=app.ico "${APP_ICON}"
+  File /r "${APP_DIR}\node"
+  File /r "${APP_DIR}\scripts"
+  File /r "${APP_DIR}\node_modules\pdfjs-dist"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -61,6 +67,9 @@ Section "Uninstall"
   SetShellVarContext current
   Delete "$INSTDIR\${APP_BINARY_NAME}"
   Delete "$INSTDIR\app.ico"
+  RMDir /r "$INSTDIR\node"
+  RMDir /r "$INSTDIR\scripts"
+  RMDir /r "$INSTDIR\node_modules\pdfjs-dist"
   Delete "$INSTDIR\Uninstall.exe"
 
   Delete "$DESKTOP\${APP_NAME}.lnk"

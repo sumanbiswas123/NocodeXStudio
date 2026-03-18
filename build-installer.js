@@ -20,6 +20,7 @@ const binaryName = config?.cli?.binaryName || 'nocode-x-studio';
 const appName = config?.modes?.window?.title || 'Nocode X Studio';
 const appVersion = config?.version || '1.0.0';
 const iconPath = path.join(root, 'installer', 'assets', 'app.ico');
+const appDir = path.join(root, 'dist', binaryName);
 
 const winExeName = `${binaryName}-win_x64.exe`;
 const winExePath = path.join(root, 'dist', binaryName, winExeName);
@@ -92,6 +93,7 @@ const command = [
   `/DAPP_VERSION=${q(appVersion)}`,
   `/DAPP_BINARY_NAME=${q(winExeName)}`,
   `/DAPP_EXE=${q(winExePath)}`,
+  `/DAPP_DIR=${q(appDir)}`,
   `/DAPP_ICON=${q(iconPath)}`,
   `/DOUTPUT_FILE=${q(outputPath)}`,
   q(scriptPath),

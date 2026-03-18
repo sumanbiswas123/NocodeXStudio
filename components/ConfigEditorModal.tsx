@@ -17,6 +17,10 @@ interface ConfigEditorModalProps {
   onAiBackendChange: (val: "local" | "colab") => void;
   colabUrl: string;
   onColabUrlChange: (val: string) => void;
+  autoSaveEnabled: boolean;
+  onAutoSaveChange: (val: boolean) => void;
+  panelSide: "default" | "swapped";
+  onPanelSideChange: (val: "default" | "swapped") => void;
   showAiOptions?: boolean;
   hasProjectConfig?: boolean;
   selectedSlideCloneSource?: string | null;
@@ -36,9 +40,11 @@ type TabKey =
   | "references"
   | "slides"
   | "configRaw"
-  | "ai";
+  | "ai"
+  | "general";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
+  { key: "general", label: "General" },
   { key: "references", label: "References" },
   { key: "slides", label: "Slides" },
   { key: "configRaw", label: "Config.js" },
@@ -203,13 +209,17 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   onAiBackendChange,
   colabUrl,
   onColabUrlChange,
+  autoSaveEnabled,
+  onAutoSaveChange,
+  panelSide,
+  onPanelSideChange,
   showAiOptions = true,
   hasProjectConfig = true,
   selectedSlideCloneSource = null,
   onSelectSlideCloneSource,
   files,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabKey>("configRaw");
+  const [activeTab, setActiveTab] = useState<TabKey>("general");
   const [configDraft, setConfigDraft] = useState<MtConfigPayload | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [rawConfig, setRawConfig] = useState("");
@@ -272,12 +282,12 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       } else if (hasProjectConfig) {
         setActiveTab("references");
       } else {
-        setActiveTab("configRaw");
+        setActiveTab("general");
       }
     } else {
       setReferenceDrafts({});
-      // If parsing failed, fallback to configRaw tab to allow user to fix the config
-      setActiveTab("configRaw");
+      // If parsing failed, fallback to configRaw tab only when a project is loaded
+      setActiveTab(hasProjectConfig ? "configRaw" : "general");
     }
   }, [isOpen, configContent, portfolioContent, hasProjectConfig]);
 
@@ -603,7 +613,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   const visibleTabs = TABS.filter((tab) => {
     if (tab.key === "ai") return showAiOptions;
     if (slidesOnlyMode) return tab.key === "slides";
-    if (!hasProjectConfig) return tab.key === "configRaw";
+    if (!hasProjectConfig) return tab.key === "general";
     return true;
   });
 
@@ -654,14 +664,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-5 pb-28 custom-scrollbar">
-          {!hasProjectConfig ? (
-            <div className="mb-5 rounded-xl border px-4 py-3" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
-              <p className="text-sm font-medium">No presentation selected</p>
-              <p className="mt-1 text-xs" style={{ color: textMuted }}>
-                Project config tabs stay hidden until you open a presentation. Global app settings are still available here.
-              </p>
-            </div>
-          ) : null}
+          {null}
           {(activeTab === "references" || activeTab === "slides") && parseError ? (
             <div className="mb-4 rounded-xl border px-4 py-3" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)" }}>
               <div className="flex items-center gap-2 text-amber-400 mb-1"><ShieldAlert size={15} /><span className="text-sm font-semibold">Config parsing warning</span></div>
@@ -826,6 +829,52 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
             </div>
           ) : null}
 
+          {activeTab === "general" ? (
+            <div className="animate-fadeIn">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border p-4" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
+                  <div className="text-sm font-semibold mb-2">Auto Save</div>
+                  <label className="w-full px-2 py-2 rounded-md text-xs flex items-center justify-between gap-2 cursor-pointer hover:bg-cyan-500/10">
+                    <span>Enable Auto Save</span>
+                    <input
+                      type="checkbox"
+                      checked={autoSaveEnabled}
+                      onChange={(e) => onAutoSaveChange(e.target.checked)}
+                    />
+                  </label>
+                  <p className="text-[11px] mt-2" style={{ color: textMuted }}>
+                    Smart debounce (about 1.2s idle), not every keystroke.
+                  </p>
+                </div>
+
+                <div className="rounded-xl border p-4" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
+                  <div className="text-sm font-semibold mb-2">Panel Position</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onPanelSideChange("default")}
+                      className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${panelSide === "default" ? "bg-indigo-500 text-white border-indigo-500" : ""}`}
+                      style={{ borderColor: panelSide === "default" ? undefined : borderCol, color: panelSide === "default" ? undefined : textMain }}
+                    >
+                      Left / Right
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onPanelSideChange("swapped")}
+                      className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${panelSide === "swapped" ? "bg-indigo-500 text-white border-indigo-500" : ""}`}
+                      style={{ borderColor: panelSide === "swapped" ? undefined : borderCol, color: panelSide === "swapped" ? undefined : textMain }}
+                    >
+                      Right / Left
+                    </button>
+                  </div>
+                  <p className="text-[11px] mt-2" style={{ color: textMuted }}>
+                    Swap Explorer and Inspector panel sides.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {activeTab === "ai" ? (
             <div className="space-y-4 animate-fadeIn">
               <div className="rounded-xl border p-4" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
@@ -868,6 +917,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                   Only needed if you want to use a remote Colab backend.
                 </p>
               </div>
+
             </div>
           ) : null}
 

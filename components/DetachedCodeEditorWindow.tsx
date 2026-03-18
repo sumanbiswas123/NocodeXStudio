@@ -618,7 +618,13 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
             }}
           >
             <span>{activeFile ? String(activeFile.type).toUpperCase() : "NO FILE"}</span>
-            <span>{activeFile ? (isDirty ? "Unsaved changes" : "Saved") : "Ready"}</span>
+            <span
+              className="w-2.5 h-2.5 rounded-full"
+              style={{
+                backgroundColor: isDirty ? "#f59e0b" : "#22c55e",
+              }}
+              aria-hidden="true"
+            />
           </div>
         </section>
       </div>
