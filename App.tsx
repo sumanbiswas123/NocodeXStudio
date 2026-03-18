@@ -54,7 +54,6 @@ import {
   Shrink,
   Expand,
   StickyNote,
-  X,
   Camera,
   FileDown,
   MousePointer2,
@@ -206,7 +205,6 @@ import {
   PreviewSelectionMode,
   PreviewSyncSource,
   PendingPageSwitch,
-  PREVIEW_SELECTION_MODE_OPTIONS,
 } from "./app/appHelpers";
 import { resourceScanner } from "./utils/ai/ResourceScanner";
 const escapeConsoleHtml = (value: string): string =>
@@ -347,6 +345,19 @@ const ANNOTATION_INTENT_OPTIONS = [
   "piChange",
   "siChange",
 ];
+
+const extractAssetSourceFromElement = (element: VirtualElement | null) => {
+  if (!element) return "";
+  if (typeof element.src === "string" && element.src.trim()) {
+    return element.src.trim();
+  }
+  const backgroundImage =
+    typeof element.styles?.backgroundImage === "string"
+      ? String(element.styles.backgroundImage)
+      : "";
+  const match = backgroundImage.match(/url\((['"]?)(.*?)\1\)/i);
+  return match?.[2] ? match[2] : "";
+};
 
 const ALLOW_POPUP_OPEN_FROM_PDF = false;
 
@@ -672,6 +683,7 @@ const App: React.FC = () => {
   }>({ open: false, x: 0, y: 0 });
   const quickTextEditRef = useRef<HTMLDivElement | null>(null);
   const quickTextRangeRef = useRef<Range | null>(null);
+  const lastAutoAssetReplaceKeyRef = useRef<string | null>(null);
   const QUICK_TEXT_PANEL_WIDTH = 320;
   const QUICK_TEXT_PANEL_HEIGHT = 220;
   const showQuickTextEdit = useCallback((x: number, y: number) => {
@@ -6744,6 +6756,7 @@ const App: React.FC = () => {
       content?: string;
       html?: string;
       src?: string;
+      liveSrc?: string;
       href?: string;
     }) => {
       if (
@@ -6840,6 +6853,10 @@ const App: React.FC = () => {
         (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
       ) {
         const sourceValue = data.src.trim();
+        const liveResolvedSource =
+          (typeof data.liveSrc === "string" && data.liveSrc.trim()) ||
+          resolvePreviewAssetUrl(sourceValue) ||
+          sourceValue;
         const lowerTag =
           target instanceof HTMLElement
             ? target.tagName.toLowerCase()
@@ -6858,8 +6875,8 @@ const App: React.FC = () => {
           }
           if (liveTarget instanceof HTMLElement) {
             const previousSrc = liveTarget.getAttribute("src") || "";
-            if (previousSrc !== sourceValue) {
-              liveTarget.setAttribute("src", sourceValue);
+            if (previousSrc !== liveResolvedSource) {
+              liveTarget.setAttribute("src", liveResolvedSource);
               didChangeSrc = true;
             }
           }
@@ -6880,12 +6897,26 @@ const App: React.FC = () => {
               }
             }
             if (liveTarget instanceof HTMLElement) {
+              const liveBackground =
+                sourceValue.length === 0
+                  ? ""
+                  : /^url\(/i.test(sourceValue)
+                    ? sourceValue.replace(
+                        /url\((['"]?)(.*?)\1\)/i,
+                        (_match, quote, rawUrl) => {
+                          const resolved =
+                            resolvePreviewAssetUrl(rawUrl) || rawUrl;
+                          const nextQuote = quote || '"';
+                          return `url(${nextQuote}${resolved}${nextQuote})`;
+                        },
+                      )
+                    : `url("${liveResolvedSource}")`;
               const previous =
                 liveTarget.style.getPropertyValue("background-image");
-              if (previous !== nextBackground) {
+              if (previous !== liveBackground) {
                 liveTarget.style.setProperty(
                   "background-image",
-                  nextBackground,
+                  liveBackground,
                 );
                 didChangeSrc = true;
               }
@@ -6968,9 +6999,117 @@ const App: React.FC = () => {
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedPath,
+      resolvePreviewAssetUrl,
       selectedPreviewHtml,
     ],
   );
+  const handleReplacePreviewAsset = useCallback(async () => {
+    if (
+      !projectPath ||
+      !selectedPreviewHtml ||
+      !previewSelectedElement ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return false;
+    }
+
+    const selections = await (Neutralino as any).os.showOpenDialog(
+      "Select replacement asset",
+      {
+        multiSelections: false,
+        filters: [
+          { name: "Assets", extensions: ["png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "webm", "mov"] },
+          { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "svg"] },
+          { name: "Video", extensions: ["mp4", "webm", "mov"] },
+        ],
+      },
+    );
+    const sourceAbsolutePath = Array.isArray(selections)
+      ? selections[0]
+      : selections;
+    if (!sourceAbsolutePath) {
+      lastAutoAssetReplaceKeyRef.current = null;
+      return false;
+    }
+
+    const htmlAbsolutePath = filePathIndexRef.current[selectedPreviewHtml];
+    const htmlDirAbsolute = htmlAbsolutePath
+      ? getParentPath(normalizePath(htmlAbsolutePath))
+      : null;
+    const htmlDirRelative = getParentPath(selectedPreviewHtml) || "";
+    if (!htmlDirAbsolute) return false;
+
+    const sourceName =
+      normalizePath(String(sourceAbsolutePath)).split("/").pop() || "asset";
+    const dotIndex = sourceName.lastIndexOf(".");
+    const rawBaseName =
+      dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
+    const extension = dotIndex > 0 ? sourceName.slice(dotIndex) : "";
+    const safeBaseName = rawBaseName
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "asset";
+    const uniqueFileName = `${safeBaseName}-${Date.now()}${extension}`;
+    const targetAbsolutePath = `${htmlDirAbsolute}/${uniqueFileName}`;
+    const targetRelativePath = htmlDirRelative
+      ? `${htmlDirRelative}/${uniqueFileName}`
+      : uniqueFileName;
+
+    await ensureDirectoryForFile(targetAbsolutePath);
+    try {
+      await (Neutralino as any).filesystem.copy(
+        normalizePath(String(sourceAbsolutePath)),
+        targetAbsolutePath,
+      );
+    } catch {
+      const binary = await (Neutralino as any).filesystem.readBinaryFile(
+        normalizePath(String(sourceAbsolutePath)),
+      );
+      await (Neutralino as any).filesystem.writeBinaryFile(
+        targetAbsolutePath,
+        binary,
+      );
+    }
+
+    filePathIndexRef.current[targetRelativePath] = targetAbsolutePath;
+    setFiles((prev) => ({
+      ...prev,
+      [targetRelativePath]: {
+        path: targetRelativePath,
+        name: uniqueFileName,
+        type: /\.(mp4|webm|mov)$/i.test(extension) ? "unknown" : "image",
+        content: "",
+      },
+    }));
+
+    try {
+      await loadFileContent(targetRelativePath, { persistToState: true });
+    } catch {
+      // Ignore preview cache warmup failures; the HTML patch below is the source of truth.
+    }
+
+    const nextLiveSrc =
+      typeof binaryAssetUrlCacheRef.current[targetRelativePath] === "string" &&
+      binaryAssetUrlCacheRef.current[targetRelativePath].length > 0
+        ? binaryAssetUrlCacheRef.current[targetRelativePath]
+        : resolvePreviewAssetUrl(uniqueFileName) || uniqueFileName;
+
+    await applyPreviewContentUpdate({
+      src: uniqueFileName,
+      liveSrc: nextLiveSrc,
+    });
+    return true;
+  }, [
+    applyPreviewContentUpdate,
+    ensureDirectoryForFile,
+    loadFileContent,
+    previewSelectedElement,
+    previewSelectedPath,
+    projectPath,
+    selectedPreviewHtml,
+  ]);
   const sanitizeQuickEditDocument = useCallback((doc: Document) => {
     const editables = doc.querySelectorAll<HTMLElement>("[contenteditable]");
     editables.forEach((el) => el.removeAttribute("contenteditable"));
@@ -6993,6 +7132,32 @@ const App: React.FC = () => {
     );
     overlays.forEach((el) => el.remove());
   }, []);
+  useEffect(() => {
+    if (previewSelectionMode !== "image") {
+      lastAutoAssetReplaceKeyRef.current = null;
+      return;
+    }
+    if (
+      interactionMode !== "preview" ||
+      !previewSelectedElement ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath)
+    ) {
+      return;
+    }
+    const assetSource = extractAssetSourceFromElement(previewSelectedElement);
+    if (!assetSource) return;
+    const selectionKey = previewSelectedPath.join(".");
+    if (lastAutoAssetReplaceKeyRef.current === selectionKey) return;
+    lastAutoAssetReplaceKeyRef.current = selectionKey;
+    void handleReplacePreviewAsset();
+  }, [
+    handleReplacePreviewAsset,
+    interactionMode,
+    previewSelectedElement,
+    previewSelectedPath,
+    previewSelectionMode,
+  ]);
   const applyQuickTextWrapTag = useCallback(
     async (tagName: "sup" | "sub") => {
       const frame = previewFrameRef.current;
@@ -10187,7 +10352,8 @@ const App: React.FC = () => {
   ]);
   const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
   const hasPdfAnnotationsLoaded = pdfAnnotationRecords.length > 0;
-  const isRightInspectorAttached = rightPanelMode === "inspector";
+  const isRightInspectorMode = rightPanelMode === "inspector";
+  const isRightInspectorAttached = isRightInspectorMode && isRightPanelOpen;
   const showEmbeddedPdfAnnotations =
     isPdfAnnotationPanelOpen &&
     (hasPdfAnnotationsLoaded ||
@@ -11226,9 +11392,13 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : (isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0")} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-700"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : (isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0")} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
           style={{
-            transform: isLeftPanelOpen ? "translateX(0)" : "translateX(0)",
+            transform: isLeftPanelOpen
+              ? "translateX(0) scale(1)"
+              : isPanelsSwapped
+                ? "translateX(8px) scale(0.985)"
+                : "translateX(-8px) scale(0.985)",
             width: isLeftPanelOpen
               ? "var(--left-panel-width)"
               : `${LEFT_PANEL_COLLAPSED_WIDTH}px`,
@@ -11253,6 +11423,7 @@ const App: React.FC = () => {
             overflowY: "hidden",
             overflowX: "hidden",
             transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+            transformOrigin: isPanelsSwapped ? "right center" : "left center",
           }}
         >
           <div
@@ -11309,6 +11480,7 @@ const App: React.FC = () => {
                 isPanelOpen={isLeftPanelOpen}
                 onTogglePanelOpen={setIsLeftPanelOpen}
                 showMasterTools={SHOW_MASTER_TOOLS}
+                showCollapseControl
               />
             </div>
             <div
@@ -11595,40 +11767,142 @@ const App: React.FC = () => {
                     {deviceMode === "tablet" && (
                       <div
                         className={`absolute right-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
-                        style={{ marginBottom: "-10px" }}
+                        style={{
+                          marginBottom: "-20px",
+                          transform: "translateY(3px)",
+                        }}
                       >
                         <div
-                          className="px-2.5 pt-1 pb-3 flex items-center gap-2 rounded-t-[10px] rounded-b-none border"
+                          className="px-0.5 pt-1 pb-3 flex items-end gap-3"
                           style={{
-                            background:
-                              theme === "dark"
-                                ? "rgba(12,18,30,0.96)"
-                                : "rgba(248,250,252,0.96)",
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(199,208,220,0.42)"
-                                : "rgba(15,23,42,0.14)",
-                            boxShadow:
-                              theme === "dark"
-                                ? "0 10px 24px rgba(2,6,23,0.34)"
-                                : "0 10px 24px rgba(15,23,42,0.10)",
-                            backdropFilter: "blur(14px)",
-                            borderBottomWidth: 0,
+                            background: "transparent",
+                            border: "none",
+                            boxShadow: "none",
+                            backdropFilter: "none",
                           }}
                         >
                           <div
-                            className="flex items-center gap-1 rounded-[10px] px-1 py-1 border"
+                            className="shrink-0 overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                            style={{
+                              maxWidth:
+                                sidebarInteractionMode === "inspect"
+                                  ? "18rem"
+                                  : "0rem",
+                              opacity:
+                                sidebarInteractionMode === "inspect" ? 1 : 0,
+                              transform:
+                                sidebarInteractionMode === "inspect"
+                                  ? "translateY(0) scale(1)"
+                                  : "translateY(16px) scale(0.96)",
+                              transformOrigin: "bottom right",
+                            }}
+                          >
+                            <div
+                              className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(199,208,220,0.42)"
+                                    : "rgba(15,23,42,0.14)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(12,18,30,0.96)"
+                                    : "rgba(248,250,252,0.96)",
+                                boxShadow:
+                                  theme === "dark"
+                                    ? "0 10px 24px rgba(2,6,23,0.34)"
+                                    : "0 10px 24px rgba(15,23,42,0.10)",
+                                backdropFilter: "blur(14px)",
+                                borderBottomWidth: 0,
+                              }}
+                            >
+                              <div
+                                className="flex items-center gap-1 rounded-full border px-1.5 py-[2px]"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(148,163,184,0.28)"
+                                      : "rgba(15,23,42,0.12)",
+                                  background:
+                                    theme === "dark"
+                                      ? "rgba(15,23,42,0.55)"
+                                      : "rgba(255,255,255,0.82)",
+                                }}
+                              >
+                                {[
+                                  { value: "default", label: "Default" },
+                                  { value: "text", label: "Text" },
+                                  { value: "image", label: "Assets" },
+                                ].map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className="rounded-full px-2 py-[3px] text-[8px] font-semibold uppercase tracking-[0.12em] transition-all"
+                                    style={{
+                                      color:
+                                        previewSelectionMode === option.value
+                                          ? theme === "dark"
+                                            ? "#ecfeff"
+                                            : "#155e75"
+                                          : theme === "dark"
+                                            ? "#cbd5e1"
+                                            : "#475569",
+                                      background:
+                                        previewSelectionMode === option.value
+                                          ? theme === "dark"
+                                            ? "rgba(34,211,238,0.2)"
+                                            : "rgba(14,165,233,0.16)"
+                                          : "transparent",
+                                      border:
+                                        previewSelectionMode === option.value
+                                          ? "1px solid rgba(34,211,238,0.42)"
+                                          : "1px solid transparent",
+                                    }}
+                                    onClick={() =>
+                                      setPreviewSelectionMode(
+                                        option.value as PreviewSelectionMode,
+                                      )
+                                    }
+                                    title={option.label}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
                             style={{
                               borderColor:
                                 theme === "dark"
-                                  ? "rgba(148,163,184,0.28)"
-                                  : "rgba(15,23,42,0.12)",
+                                  ? "rgba(199,208,220,0.42)"
+                                  : "rgba(15,23,42,0.14)",
                               background:
                                 theme === "dark"
-                                  ? "rgba(15,23,42,0.55)"
-                                  : "rgba(255,255,255,0.82)",
+                                  ? "rgba(12,18,30,0.96)"
+                                  : "rgba(248,250,252,0.96)",
+                              boxShadow:
+                                theme === "dark"
+                                  ? "0 10px 24px rgba(2,6,23,0.34)"
+                                  : "0 10px 24px rgba(15,23,42,0.10)",
+                              backdropFilter: "blur(14px)",
+                              borderBottomWidth: 0,
                             }}
                           >
+                            <div
+                              className="flex items-center gap-1 rounded-[10px] px-1 py-1 border"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.28)"
+                                    : "rgba(15,23,42,0.12)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(15,23,42,0.55)"
+                                    : "rgba(255,255,255,0.82)",
+                              }}
+                            >
                             <button
                               type="button"
                               className="glass-icon-btn navbar-icon-btn rounded-md"
@@ -11675,6 +11949,7 @@ const App: React.FC = () => {
                             >
                               <Move size={16} />
                             </button>
+                            </div>
                           </div>
                           {SHOW_SCREENSHOT_FEATURES && (
                             <button
@@ -12401,12 +12676,18 @@ const App: React.FC = () => {
         </div>
         {/* end stage */}
 
-        {isRightInspectorAttached && (
+        {isRightInspectorMode && (
           <div
-            className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-500"} right-0 top-0 bottom-0 ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+            className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-700"} right-0 top-0 bottom-0 ${isZenMode || isCodePanelOpen || !isRightPanelOpen ? "pointer-events-none" : ""}`}
             style={{
               width: "var(--right-panel-width)",
               overflow: "hidden",
+              transform: isRightPanelOpen
+                ? "translateX(0) scale(1)"
+                : "translateX(calc(100% + 0.75rem)) scale(0.985)",
+              opacity: isRightPanelOpen ? 1 : 0,
+              transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+              transformOrigin: "right center",
             }}
           >
             <div
@@ -12592,6 +12873,13 @@ const App: React.FC = () => {
                           ? handlePreviewIdentityUpdateStable
                           : handleUpdateIdentity
                       }
+                      onReplaceAsset={
+                        interactionMode === "preview" && previewSelectedElement
+                          ? () => {
+                              void handleReplacePreviewAsset();
+                            }
+                          : undefined
+                      }
                       onAddMatchedRuleProperty={
                         interactionMode === "preview" && previewSelectedElement
                           ? handlePreviewMatchedRulePropertyAdd
@@ -12632,6 +12920,32 @@ const App: React.FC = () => {
                       : "inset 0 0 0 1px rgba(255,255,255,0.45)",
                 }}
               />
+              {isRightInspectorAttached ? (
+                <button
+                  type="button"
+                  onClick={() => setIsRightPanelOpen(false)}
+                className="absolute top-3 left-3 z-20 h-8 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(15,23,42,0.12)",
+                    color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.88)"
+                        : "rgba(255,255,255,0.92)",
+                    boxShadow:
+                      theme === "dark"
+                        ? "0 8px 18px rgba(2,6,23,0.24)"
+                        : "0 8px 18px rgba(15,23,42,0.08)",
+                  }}
+                  title="Collapse right panel"
+                >
+                  <PanelRightClose size={14} />
+                  <span>Hide</span>
+                </button>
+              ) : null}
             </div>
             <div
               onMouseDown={handleRightPanelResizeStart}
@@ -12740,7 +13054,7 @@ const App: React.FC = () => {
                   >
                     Close
                   </button>
-                ) : (
+                ) : !isFloatingPanels ? (
                   <button
                     type="button"
                     className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
@@ -12759,11 +13073,11 @@ const App: React.FC = () => {
                       setIsRightPanelOpen(false);
                       setRightPanelMode("inspector");
                     }}
-                    title="Close inspector panel"
+                    title="Collapse right panel"
                   >
-                    <X size={12} />
+                    <PanelRightClose size={12} />
                   </button>
-                )}
+                ) : null}
               </div>
             </div>
             {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
@@ -13006,70 +13320,13 @@ const App: React.FC = () => {
               </div>
             ) : (
               <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                {interactionMode === "preview" && (
-                  <div
-                    className="shrink-0 px-2.5 py-2 border-b"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(0,0,0,0.1)",
-                      background:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.42)"
-                          : "rgba(255,255,255,0.72)",
-                    }}
-                  >
-                    <div
-                      className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
-                      style={{
-                        color: theme === "dark" ? "#94a3b8" : "#64748b",
-                      }}
-                    ></div>
-                    <div className="mt-1 grid grid-cols-4 gap-1">
-                      {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          onClick={() => setPreviewSelectionMode(option.value)}
-                          className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
-                          style={{
-                            color:
-                              previewSelectionMode === option.value
-                                ? theme === "dark"
-                                  ? "#ecfeff"
-                                  : "#155e75"
-                                : theme === "dark"
-                                  ? "#cbd5e1"
-                                  : "#475569",
-                            background:
-                              previewSelectionMode === option.value
-                                ? theme === "dark"
-                                  ? "rgba(34,211,238,0.2)"
-                                  : "rgba(14,165,233,0.16)"
-                                : theme === "dark"
-                                  ? "rgba(15,23,42,0.68)"
-                                  : "rgba(241,245,249,0.9)",
-                            border:
-                              previewSelectionMode === option.value
-                                ? "1px solid rgba(34,211,238,0.55)"
-                                : theme === "dark"
-                                  ? "1px solid rgba(148,163,184,0.28)"
-                                  : "1px solid rgba(148,163,184,0.26)",
-                          }}
-                          title={option.label}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {interactionMode === "inspect" && selectedId ? (
                     <StyleInspectorPanel
                       element={inspectorElement}
                       onUpdateStyle={handleUpdateStyle}
                       onUpdateIdentity={handleUpdateIdentity}
+                      onReplaceAsset={undefined}
                       onAddMatchedRuleProperty={undefined}
                       matchedCssRules={[]}
                       computedStyles={null}
@@ -13289,12 +13546,52 @@ const App: React.FC = () => {
         </div>
       </div>
 
+      {!isRightPanelOpen && isRightInspectorMode && !isZenMode && !isCodePanelOpen ? (
+        <div
+          className="fixed z-[95] transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          style={{
+            right: "1rem",
+            top: "1rem",
+            opacity: 1,
+            transform: "translateY(0)",
+          }}
+        >
+          <button
+            type="button"
+            className="h-12 px-3 rounded-2xl border backdrop-blur-xl flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+            style={{
+              background:
+                theme === "light"
+                  ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
+              border: "1px solid var(--border-color)",
+              boxShadow: "0 8px 20px rgba(15,23,42,0.14)",
+              color: "var(--text-muted)",
+            }}
+            onClick={() => {
+              setRightPanelMode("inspector");
+              setIsRightPanelOpen(true);
+              setIsCodePanelOpen(false);
+            }}
+            title="Show right inspector"
+          >
+            <PanelRight size={16} style={{ color: theme === "dark" ? "#67e8f9" : "#0891b2", transform: "scaleX(-1)" }} />
+            <span
+              className="text-[10px] font-semibold uppercase tracking-[0.16em]"
+              style={{ color: theme === "dark" ? "#a5f3fc" : "#0e7490" }}
+            >
+              Show
+            </span>
+          </button>
+        </div>
+      ) : null}
+
       {/* Console Panel — Chrome-like side panel */}
       <div
         ref={bottomPanelRef}
         className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isZenMode || isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
         style={{
-          right: "1rem",
+          left: "1rem",
           bottom: "1rem",
         }}
       >

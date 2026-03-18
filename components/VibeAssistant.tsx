@@ -1,3 +1,9 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Send, Sparkles, X, Loader2, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Target } from 'lucide-react';
+import { VirtualElement, FileMap } from '../types';
+import { submitVibeCommand, checkOllamaStatus, VibeResponse, OllamaStatus } from '../utils/ollamaService';
+import { aiPipeline } from '../utils/ai/AIPipeline';
+
 // Error boundary for React components
 class VibeErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error?: any}> {
     constructor(props: any) {
@@ -18,11 +24,6 @@ class VibeErrorBoundary extends React.Component<{children: React.ReactNode}, {ha
         return this.props.children;
     }
 }
-import React, { useState, useEffect, useRef } from 'react';
-import { Send, Sparkles, X, Loader2, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Target } from 'lucide-react';
-import { VirtualElement, FileMap } from '../types';
-import { submitVibeCommand, checkOllamaStatus, VibeResponse, OllamaStatus } from '../utils/ollamaService';
-import { aiPipeline } from '../utils/ai/AIPipeline';
 
 interface VibeAssistantProps {
     isOpen: boolean;

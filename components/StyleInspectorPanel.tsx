@@ -11,6 +11,7 @@ interface StyleInspectorPanelProps {
   element: VirtualElement | null;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
   onUpdateIdentity?: (identity: { id: string; className: string }) => void;
+  onReplaceAsset?: () => void;
   computedStyles?: React.CSSProperties | null;
   onAddMatchedRuleProperty?: (
     rule: { selector: string; source: string },
@@ -49,6 +50,12 @@ const toReactName = (key: string) =>
   key.trim().replace(/-([a-z])/g, (_, char: string) => char.toUpperCase());
 
 const normalizeKey = (key: string) => toCssName(toReactName(key)).toLowerCase();
+
+const extractUrlFromBackground = (raw?: string) => {
+  if (!raw || typeof raw !== "string") return "";
+  const match = raw.match(/url\((['"]?)(.*?)\1\)/i);
+  return match?.[2] ? match[2] : "";
+};
 
 const buildSelectorLabel = (element: VirtualElement | null) => {
   if (!element) return "";
@@ -197,6 +204,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   element,
   onUpdateStyle,
   onUpdateIdentity,
+  onReplaceAsset,
   computedStyles,
   onAddMatchedRuleProperty,
   matchedCssRules = [],
@@ -333,6 +341,17 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   };
 
   const selectorLabel = useMemo(() => buildSelectorLabel(element), [element]);
+  const assetSource = useMemo(() => {
+    if (!element) return "";
+    if (typeof element.src === "string" && element.src.trim()) {
+      return element.src.trim();
+    }
+    const backgroundImage =
+      typeof element.styles?.backgroundImage === "string"
+        ? String(element.styles.backgroundImage)
+        : "";
+    return extractUrlFromBackground(backgroundImage);
+  }, [element]);
 
   const filteredStyles = useMemo(() => {
     const query = filterText.trim().toLowerCase();
@@ -599,6 +618,24 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 </button>
               )}
             </div>
+          </div>
+        ) : null}
+
+        {assetSource && onReplaceAsset ? (
+          <div className="border-b px-3 py-2" style={{ borderColor: "var(--border-color)" }}>
+            <button
+              type="button"
+              onClick={onReplaceAsset}
+              className="w-full rounded-md border px-2.5 py-2 text-left text-[12px] font-semibold transition-colors hover:bg-black/5"
+              style={{
+                borderColor: "rgba(14,165,233,0.24)",
+                color: "#0e7490",
+                background: "rgba(14,165,233,0.06)",
+              }}
+              title={assetSource}
+            >
+              Replace Asset
+            </button>
           </div>
         ) : null}
 

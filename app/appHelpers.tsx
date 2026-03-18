@@ -6778,7 +6778,7 @@ export const PREVIEW_SELECTION_MODE_OPTIONS: Array<{
 }> = [
     { value: "default", label: "Default" },
     { value: "text", label: "Text" },
-    { value: "image", label: "Image" },
+    { value: "image", label: "Assets" },
     { value: "css", label: "CSS" },
   ];
 

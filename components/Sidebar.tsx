@@ -4,7 +4,7 @@ import Toolbox from './Toolbox';
 import ImagesPanel from './ImagesPanel';
 import MasterFeaturePanel from './MasterFeaturePanel';
 import { FileMap, VirtualElement } from '../types';
-import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2 } from 'lucide-react';
+import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2, PanelLeftClose } from 'lucide-react';
 
 interface SidebarProps {
   files: FileMap;
@@ -37,6 +37,7 @@ interface SidebarProps {
   isPanelOpen: boolean;
   onTogglePanelOpen: (next: boolean) => void;
   showMasterTools?: boolean;
+  showCollapseControl?: boolean;
 }
 
 const TAB_ITEMS = [
@@ -79,6 +80,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
   isPanelOpen,
   onTogglePanelOpen,
   showMasterTools = true,
+  showCollapseControl = false,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('files');
   const visibleTabs = showMasterTools
@@ -201,6 +203,25 @@ const SidebarBase: React.FC<SidebarProps> = ({
               ) : null}
             </span>
           </div>
+          {showCollapseControl && isPanelOpen ? (
+            <button
+              type="button"
+              onClick={() => onTogglePanelOpen(false)}
+              className="h-7 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
+              style={{
+                borderColor: 'var(--border-color)',
+                color: selectedAccent,
+                backgroundColor:
+                  theme === 'dark'
+                    ? 'rgba(103,232,249,0.12)'
+                    : 'rgba(8,145,178,0.1)',
+              }}
+              title="Collapse left panel"
+            >
+              <PanelLeftClose size={14} />
+              <span>Hide</span>
+            </button>
+          ) : null}
         </div>
 
         {/* Draw Mode Selector (only when draw mode active) */}
