@@ -77,6 +77,76 @@ const buildMatchedDeclarationDraftKey = (
 ) =>
   `${buildMatchedRuleInstanceKey(rule)}::${normalizeKey(originalProperty)}`;
 
+const CSS_NUMERIC_TOKEN_PATTERN = /-?(?:\d+\.?\d*|\.\d+)/g;
+
+const countDecimalPlaces = (value: string) => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized.includes("e")) {
+    const [basePart, exponentPart] = normalized.split("e");
+    const exponent = Number(exponentPart || "0");
+    const baseDecimals = countDecimalPlaces(basePart);
+    return exponent >= 0 ? Math.max(0, baseDecimals - exponent) : 0;
+  }
+  const decimalIndex = normalized.indexOf(".");
+  return decimalIndex >= 0 ? normalized.length - decimalIndex - 1 : 0;
+};
+
+const trimNumericString = (value: string) =>
+  value.includes(".")
+    ? value.replace(/(\.\d*?[1-9])0+$/u, "$1").replace(/\.0+$/u, "")
+    : value;
+
+const adjustNumericValueAtCursor = (
+  rawValue: string,
+  cursorIndex: number | null,
+  direction: 1 | -1,
+  options?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean },
+) => {
+  const source = String(rawValue || "");
+  const matches = Array.from(source.matchAll(CSS_NUMERIC_TOKEN_PATTERN));
+  if (matches.length === 0) return null;
+
+  const caret = Math.max(
+    0,
+    Math.min(source.length, cursorIndex ?? source.length),
+  );
+  const selected =
+    matches.find((match) => {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      return caret >= start && caret <= end;
+    }) ||
+    [...matches]
+      .reverse()
+      .find((match) => (match.index ?? 0) <= caret) ||
+    matches[0];
+
+  const start = selected.index ?? 0;
+  const end = start + selected[0].length;
+  const currentNumericText = selected[0];
+  const currentValue = Number(currentNumericText);
+  if (!Number.isFinite(currentValue)) return null;
+
+  const magnitude =
+    options?.ctrlKey || options?.metaKey
+      ? 100
+      : options?.shiftKey
+        ? 10
+        : 1;
+  const nextValue = currentValue + direction * magnitude;
+  const decimals = countDecimalPlaces(currentNumericText);
+  const nextNumericText =
+    decimals > 0
+      ? trimNumericString(nextValue.toFixed(decimals))
+      : String(Math.round(nextValue));
+
+  return {
+    value: `${source.slice(0, start)}${nextNumericText}${source.slice(end)}`,
+    selectionStart: start,
+    selectionEnd: start + nextNumericText.length,
+  };
+};
+
 const extractUrlFromBackground = (raw?: string) => {
   if (!raw || typeof raw !== "string") return "";
   const match = raw.match(/url\((['"]?)(.*?)\1\)/i);
@@ -824,6 +894,96 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
   };
 
+  const handleInlineStyleValueStep = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+    index: number,
+    style: StyleRow,
+  ) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const next = adjustNumericValueAtCursor(
+      style.value,
+      event.currentTarget.selectionStart,
+      event.key === "ArrowUp" ? 1 : -1,
+      {
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+      },
+    );
+    if (!next) return;
+    event.preventDefault();
+    handleStyleChange(index, "value", next.value);
+    window.requestAnimationFrame(() => {
+      event.currentTarget.setSelectionRange(
+        next.selectionStart,
+        next.selectionEnd,
+      );
+    });
+  };
+
+  const handleMatchedDeclarationValueStep = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+    rule: AnnotatedMatchedRule,
+    occurrenceIndex: number,
+  ) => {
+    if (
+      !editingMatchedDeclaration ||
+      (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+    ) {
+      return false;
+    }
+    const next = adjustNumericValueAtCursor(
+      editingMatchedDeclaration.value,
+      event.currentTarget.selectionStart,
+      event.key === "ArrowUp" ? 1 : -1,
+      {
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+      },
+    );
+    if (!next) return false;
+    event.preventDefault();
+    const nextDraft = {
+      ...editingMatchedDeclaration,
+      value: next.value,
+    };
+    setEditingMatchedDeclaration(nextDraft);
+    pushMatchedDeclarationDraft(rule, occurrenceIndex, nextDraft);
+    window.requestAnimationFrame(() => {
+      event.currentTarget.setSelectionRange(
+        next.selectionStart,
+        next.selectionEnd,
+      );
+    });
+    return true;
+  };
+
+  const handleNewPropertyValueStep = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const next = adjustNumericValueAtCursor(
+      newPropValue,
+      event.currentTarget.selectionStart,
+      event.key === "ArrowUp" ? 1 : -1,
+      {
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+      },
+    );
+    if (!next) return;
+    event.preventDefault();
+    handleNewPropertyChange("value", next.value);
+    window.requestAnimationFrame(() => {
+      event.currentTarget.setSelectionRange(
+        next.selectionStart,
+        next.selectionEnd,
+      );
+    });
+  };
+
   const addProperty = () => {
     if (!newPropName.trim() || !newPropValue.trim()) return;
     const key = newPropName.trim();
@@ -1054,6 +1214,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       onChange={(event) =>
                         handleStyleChange(index, "value", event.target.value)
                       }
+                      onKeyDown={(event) =>
+                        handleInlineStyleValueStep(event, index, style)
+                      }
                       onFocus={() =>
                         showValueSuggestions(index, style.key, style.value)
                       }
@@ -1154,6 +1317,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   }}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => {
+                    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                      handleNewPropertyValueStep(event);
+                      return;
+                    }
                     if (event.key === "Enter") addProperty();
                   }}
                   placeholder="value"
@@ -1298,6 +1465,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               )
                             }
                             onKeyDown={(event) => {
+                              if (
+                                handleMatchedDeclarationValueStep(
+                                  event,
+                                  rule,
+                                  occurrenceIndex,
+                                )
+                              ) {
+                                return;
+                              }
                               if (event.key === "Enter") {
                                 commitMatchedDeclarationEdit(
                                   rule,
