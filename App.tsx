@@ -6121,12 +6121,12 @@ const App: React.FC = () => {
         previewFrameRef.current?.contentWindow?.document ??
         null;
       if (!frameDocument?.body) return null;
-      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
-      if (byMarker) return byMarker;
       if (Array.isArray(path) && path.length > 0) {
         const byPath = readElementByPath(frameDocument.body, path);
         if (byPath) return byPath;
       }
+      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
+      if (byMarker) return byMarker;
       return null;
     },
     [],
@@ -6596,6 +6596,57 @@ const App: React.FC = () => {
       selectedPreviewHtml,
     ],
   );
+  const syncPreviewSelectionSnapshotFromLiveElement = useCallback(
+    (elementPath: number[]) => {
+      const liveElement = getLivePreviewSelectedElement(elementPath);
+      if (!(liveElement instanceof HTMLElement)) return false;
+
+      const inlineStyles = parseInlineStyleText(
+        liveElement.getAttribute("style") || "",
+      );
+      const computedStyles = extractComputedStylesFromElement(liveElement) || null;
+      const matchedCssRules = collectMatchedCssRulesFromElement(liveElement);
+      const liveAttributes =
+        extractCustomAttributesFromElement(liveElement) || undefined;
+      const liveSrc = liveElement.getAttribute("src") || "";
+      const liveHref = liveElement.getAttribute("href") || "";
+      const liveTag = String(liveElement.tagName || "div").toLowerCase();
+      const inlineAnimation =
+        typeof inlineStyles.animation === "string"
+          ? inlineStyles.animation.trim()
+          : "";
+      const computedAnimationCandidate =
+        computedStyles && typeof computedStyles.animation === "string"
+          ? computedStyles.animation.trim()
+          : "";
+      const resolvedAnimation =
+        inlineAnimation ||
+        (computedAnimationCandidate &&
+        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+          ? computedAnimationCandidate
+          : "");
+
+      setPreviewSelectedComputedStyles(computedStyles);
+      setPreviewSelectedMatchedCssRules(matchedCssRules);
+      setPreviewSelectedElement((prev) => ({
+        id: liveElement.id || prev?.id || `preview-${Date.now()}`,
+        type: liveTag,
+        name: liveTag.toUpperCase(),
+        content: normalizeEditorMultilineText(extractTextWithBreaks(liveElement)),
+        html: liveElement.innerHTML || prev?.html || "",
+        ...(liveSrc ? { src: liveSrc } : {}),
+        ...(liveHref ? { href: liveHref } : {}),
+        ...(liveElement.className ? { className: liveElement.className } : {}),
+        ...(liveAttributes ? { attributes: liveAttributes } : {}),
+        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+        styles: inlineStyles,
+        children: [],
+      }));
+
+      return true;
+    },
+    [getLivePreviewSelectedElement],
+  );
   const applyPreviewStyleUpdateAtPath = useCallback(
     async (
       elementPath: number[],
@@ -6610,27 +6661,8 @@ const App: React.FC = () => {
         return;
       }
 
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
       const liveTarget = getLivePreviewSelectedElement(elementPath);
-      if (
-        !(target instanceof HTMLElement) &&
-        !(liveTarget instanceof HTMLElement)
-      )
-        return;
-      const previewStylePatch: Record<string, string> = {};
-
-      for (const [key, rawValue] of Object.entries(styles)) {
+      const normalizedStyles = Object.entries(styles).map(([key, rawValue]) => {
         const cssKey = toCssPropertyName(key);
         const valueRaw =
           rawValue === undefined || rawValue === null ? "" : String(rawValue);
@@ -6638,42 +6670,27 @@ const App: React.FC = () => {
           cssKey === "font-family"
             ? normalizeFontFamilyCssValue(valueRaw)
             : valueRaw;
+        return { key, cssKey, value };
+      });
+      const previewStylePatch: Record<string, string> = {};
+      for (const { key, cssKey, value } of normalizedStyles) {
         previewStylePatch[key] = value;
+        if (!(liveTarget instanceof HTMLElement)) continue;
         if (!value) {
-          if (target instanceof HTMLElement) {
-            target.style.removeProperty(cssKey);
-          }
-          if (liveTarget instanceof HTMLElement) {
-            liveTarget.style.removeProperty(cssKey);
-          }
+          liveTarget.style.removeProperty(cssKey);
           continue;
         }
-        if (target instanceof HTMLElement) {
-          target.style.setProperty(
-            cssKey,
-            value,
-            cssKey === "font-family" ? "important" : "",
-          );
+        if (cssKey === "animation") {
+          liveTarget.style.setProperty("animation", "none");
+          // Force layout so the next assignment retriggers animation playback.
+          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+          liveTarget.offsetWidth;
         }
-        if (liveTarget instanceof HTMLElement) {
-          if (cssKey === "animation") {
-            liveTarget.style.setProperty("animation", "none");
-            // Force layout so the next assignment retriggers animation playback.
-            // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-            liveTarget.offsetWidth;
-          }
-          liveTarget.style.setProperty(
-            cssKey,
-            value,
-            cssKey === "font-family" ? "important" : "",
-          );
-        }
-      }
-      if (
-        target instanceof HTMLElement &&
-        !target.getAttribute("style")?.trim()
-      ) {
-        target.removeAttribute("style");
+        liveTarget.style.setProperty(
+          cssKey,
+          value,
+          cssKey === "font-family" ? "important" : "",
+        );
       }
       if (
         liveTarget instanceof HTMLElement &&
@@ -6687,14 +6704,6 @@ const App: React.FC = () => {
         styles: previewStylePatch,
       });
 
-      if (target instanceof HTMLElement) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath,
-        });
-      }
-
       const pathMatchesSelection =
         Array.isArray(previewSelectedPath) &&
         previewSelectedPath.length === elementPath.length &&
@@ -6703,29 +6712,43 @@ const App: React.FC = () => {
         );
       const shouldSyncSelected =
         options?.syncSelectedElement ?? pathMatchesSelection;
-      if (!shouldSyncSelected) return;
+      if (shouldSyncSelected && liveTarget instanceof HTMLElement) {
+        syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+      }
 
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              styles: {
-                ...prev.styles,
-                ...Object.fromEntries(
-                  Object.entries(styles).map(([key, rawValue]) => {
-                    if (key !== "fontFamily") return [key, rawValue];
-                    return [
-                      key,
-                      typeof rawValue === "string"
-                        ? normalizeFontFamilyCssValue(rawValue)
-                        : rawValue,
-                    ];
-                  }),
-                ),
-              },
-            }
-          : prev,
-      );
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      if (!(target instanceof HTMLElement))
+        return;
+      for (const { cssKey, value } of normalizedStyles) {
+        if (!value) {
+          target.style.removeProperty(cssKey);
+          continue;
+        }
+        target.style.setProperty(
+          cssKey,
+          value,
+          cssKey === "font-family" ? "important" : "",
+        );
+      }
+      if (!target.getAttribute("style")?.trim()) {
+        target.removeAttribute("style");
+      }
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath,
+      });
     },
     [
       getLivePreviewSelectedElement,
@@ -6734,6 +6757,7 @@ const App: React.FC = () => {
       persistPreviewHtmlContent,
       previewSelectedPath,
       selectedPreviewHtml,
+      syncPreviewSelectionSnapshotFromLiveElement,
     ],
   );
   const applyPreviewStyleUpdate = useCallback(
@@ -8416,15 +8440,13 @@ const App: React.FC = () => {
       const shouldSyncSelected =
         options?.syncSelectedElement ?? pathMatchesSelection;
       if (!shouldSyncSelected) return;
+      if (syncPreviewSelectionSnapshotFromLiveElement(elementPath)) return;
       setPreviewSelectedElement((prev) =>
         prev
           ? {
               ...prev,
               className: nextClassName,
-              styles: {
-                ...prev.styles,
-                ...styles,
-              },
+              styles: parseInlineStyleText(target?.getAttribute("style") || ""),
             }
           : prev,
       );
@@ -8436,6 +8458,7 @@ const App: React.FC = () => {
       previewSelectedElement?.id,
       previewSelectedPath,
       selectedPreviewHtml,
+      syncPreviewSelectionSnapshotFromLiveElement,
     ],
   );
   const applyPreviewDrawCreate = useCallback(

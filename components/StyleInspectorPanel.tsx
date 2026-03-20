@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ChevronDown, Plus, Search, Trash2 } from "lucide-react";
 import { VirtualElement } from "../types";
 import {
@@ -28,7 +28,7 @@ interface StyleInspectorPanelProps {
   }>;
 }
 
-type StyleRow = { key: string; value: string };
+type StyleRow = { id: string; key: string; value: string };
 type SuggestionField = { index: number; type: "key" | "value" } | null;
 type MatchedDeclaration = {
   property: string;
@@ -209,6 +209,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   onAddMatchedRuleProperty,
   matchedCssRules = [],
 }) => {
+  const styleRowIdRef = useRef(0);
+  const styleCommitTimersRef = useRef<Record<string, number>>({});
+  const stylesRef = useRef<StyleRow[]>([]);
   const [styles, setStyles] = useState<StyleRow[]>([]);
   const [newPropName, setNewPropName] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
@@ -225,17 +228,56 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [editingMatchedDeclaration, setEditingMatchedDeclaration] =
     useState<EditingMatchedDeclaration | null>(null);
 
+  const createStyleRows = (
+    nextStyles: React.CSSProperties | Record<string, unknown> | undefined,
+    previousRows: StyleRow[] = [],
+  ): StyleRow[] => {
+    const previousRowsByKey = new Map<string, StyleRow[]>();
+    previousRows.forEach((row) => {
+      const normalized = normalizeKey(row.key);
+      const bucket = previousRowsByKey.get(normalized);
+      if (bucket) {
+        bucket.push(row);
+        return;
+      }
+      previousRowsByKey.set(normalized, [row]);
+    });
+
+    return Object.entries(nextStyles || {}).map(([key, value]) => {
+      const normalized = normalizeKey(key);
+      const bucket = previousRowsByKey.get(normalized);
+      const reused = bucket?.shift();
+      return {
+        id: reused?.id || `style-row-${styleRowIdRef.current++}`,
+        key,
+        value: String(value),
+      };
+    });
+  };
+
+  useEffect(() => {
+    stylesRef.current = styles;
+  }, [styles]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(styleCommitTimersRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      styleCommitTimersRef.current = {};
+    };
+  }, []);
+
   useEffect(() => {
     if (!element) {
+      Object.values(styleCommitTimersRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      styleCommitTimersRef.current = {};
       setStyles([]);
       return;
     }
-    setStyles(
-      Object.entries(element.styles || {}).map(([key, value]) => ({
-        key,
-        value: String(value),
-      }))
-    );
+    setStyles(createStyleRows(element.styles || {}));
     setNewPropName("");
     setNewPropValue("");
     setFilteredSuggestions([]);
@@ -245,7 +287,24 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setSelectorTokenDraft("");
     setRuleDrafts({});
     setEditingMatchedDeclaration(null);
-  }, [element?.id, element?.styles]);
+  }, [element?.id]);
+
+  useEffect(() => {
+    if (!element) {
+      setStyles([]);
+      return;
+    }
+    setStyles((current) => {
+      const next = createStyleRows(element.styles || {}, current);
+      const currentSignature = current
+        .map((row) => `${normalizeKey(row.key)}:${row.value}`)
+        .join("|");
+      const nextSignature = next
+        .map((row) => `${normalizeKey(row.key)}:${row.value}`)
+        .join("|");
+      return currentSignature === nextSignature ? current : next;
+    });
+  }, [element, element?.styles]);
 
   const applySelectorTokenDraft = () => {
     if (!onUpdateIdentity) return;
@@ -355,12 +414,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
   const filteredStyles = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    if (!query) return styles;
-    return styles.filter(
-      (style) =>
-        toCssName(style.key).toLowerCase().includes(query) ||
-        style.value.toLowerCase().includes(query)
-    );
+    return styles
+      .map((style, index) => ({ style, index }))
+      .filter(
+        ({ style }) =>
+          !query ||
+          toCssName(style.key).toLowerCase().includes(query) ||
+          style.value.toLowerCase().includes(query),
+      );
   }, [filterText, styles]);
 
   const computedEntries = useMemo(() => {
@@ -424,14 +485,60 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     [filteredMatchedRules]
   );
 
+  const commitStyleRowAtIndex = (
+    index: number,
+    options?: { previousKey?: string },
+  ) => {
+    const row = stylesRef.current[index];
+    if (!row) return;
+    const pendingTimer = styleCommitTimersRef.current[row.id];
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      delete styleCommitTimersRef.current[row.id];
+    }
+
+    const nextKey = row.key.trim();
+    const previousKey = options?.previousKey?.trim() || "";
+    const shouldClearPrevious =
+      previousKey.length > 0 &&
+      normalizeKey(previousKey) !== normalizeKey(nextKey);
+
+    if (!nextKey && !shouldClearPrevious) return;
+
+    const patch: Partial<React.CSSProperties> = {};
+    if (shouldClearPrevious) {
+      patch[toReactName(previousKey)] = "";
+    }
+    if (nextKey) {
+      patch[toReactName(nextKey)] = row.value;
+    }
+    onUpdateStyle(patch);
+  };
+
+  const scheduleStyleRowCommit = (
+    index: number,
+    options?: { previousKey?: string },
+  ) => {
+    const row = stylesRef.current[index];
+    if (!row) return;
+    const pendingTimer = styleCommitTimersRef.current[row.id];
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+    }
+    styleCommitTimersRef.current[row.id] = window.setTimeout(() => {
+      commitStyleRowAtIndex(index, options);
+    }, 120);
+  };
+
   const updateStyleAtIndex = (index: number, key: string, value: string) => {
+    if (index < 0 || index >= styles.length) return;
     const nextStyles = [...styles];
-    nextStyles[index] = { key, value };
+    nextStyles[index] = { ...nextStyles[index], key, value };
     setStyles(nextStyles);
-    onUpdateStyle({ [toReactName(key)]: value });
   };
 
   const deleteStyle = (index: number) => {
+    if (index < 0 || index >= styles.length) return;
     const target = styles[index];
     setStyles((current) => current.filter((_, currentIndex) => currentIndex !== index));
     if (target?.key) {
@@ -466,6 +573,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     value: string
   ) => {
     const current = styles[index];
+    if (!current) return;
     const nextKey = field === "key" ? value : current.key;
     const nextValue = field === "value" ? value : current.value;
 
@@ -482,6 +590,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return;
     }
 
+    scheduleStyleRowCommit(index);
     showValueSuggestions(index, nextKey, value);
   };
 
@@ -513,7 +622,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     const key = newPropName.trim();
     const value = newPropValue.trim();
     onUpdateStyle({ [toReactName(key)]: value });
-    setStyles((current) => [...current, { key, value }]);
+    setStyles((current) => [
+      ...current,
+      { id: `style-row-${styleRowIdRef.current++}`, key, value },
+    ]);
     setNewPropName("");
     setNewPropValue("");
     setActiveSuggestionField(null);
@@ -645,19 +757,18 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           </div>
 
           <div className="mt-1 space-y-1">
-            {filteredStyles.map((style) => {
-              const index = styles.findIndex(
-                (candidate) =>
-                  candidate.key === style.key && candidate.value === style.value
-              );
+            {filteredStyles.map(({ style, index }) => {
               const cssKey = toCssName(style.key);
               return (
-              <div key={`${style.key}-${index}`} className="group flex items-center gap-2 pl-4 text-[12px] min-w-0">
+              <div key={style.id} className="group flex items-center gap-2 pl-4 text-[12px] min-w-0">
                   <div className="relative w-[84px] shrink-0">
                     <input
                       value={style.key}
                       onChange={(event) =>
                         handleStyleChange(index, "key", event.target.value)
+                      }
+                      onBlur={() =>
+                        commitStyleRowAtIndex(index, { previousKey: styles[index]?.key })
                       }
                       onFocus={() => showKeySuggestions(index)}
                       onClick={(event) => event.stopPropagation()}
@@ -671,6 +782,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         width="220px"
                         onSelect={(value) => {
                           updateStyleAtIndex(index, value, style.value);
+                          commitStyleRowAtIndex(index, {
+                            previousKey: styles[index]?.key,
+                          });
                           setActiveSuggestionField(null);
                         }}
                       />
@@ -705,6 +819,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       onChange={(event) =>
                         handleStyleChange(index, "value", event.target.value)
                       }
+                      onBlur={() => commitStyleRowAtIndex(index)}
                       onFocus={() =>
                         showValueSuggestions(index, style.key, style.value)
                       }
@@ -718,6 +833,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         suggestions={filteredSuggestions}
                         onSelect={(value) => {
                           updateStyleAtIndex(index, style.key, value);
+                          commitStyleRowAtIndex(index);
                           setActiveSuggestionField(null);
                         }}
                       />

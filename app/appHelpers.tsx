@@ -2221,8 +2221,34 @@ export const buildPreviewRuntimeScript = (
       return __previewMode === 'edit';
     }
 
+    function isPreviewRuntimeHelperElement(el) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.getAttribute && (
+        el.getAttribute('data-preview-hover-badge') === 'true' ||
+        el.getAttribute('data-preview-hover-outline') === 'true' ||
+        el.getAttribute('data-preview-draw-draft') === 'true' ||
+        el.getAttribute('data-nx-inline-editing') === 'true'
+      )) {
+        return true;
+      }
+      var className = typeof el.className === 'string' ? el.className : '';
+      return className.indexOf('__nx-preview-runtime-helper') >= 0;
+    }
+
+    function getPreviewPathChildren(parent) {
+      var children = parent && parent.children ? parent.children : [];
+      var filtered = [];
+      for (var i = 0; i < children.length; i++) {
+        if (!isPreviewRuntimeHelperElement(children[i])) {
+          filtered.push(children[i]);
+        }
+      }
+      return filtered;
+    }
+
     function isPreviewBaseSelectable(el) {
       if (!el) return false;
+      if (isPreviewRuntimeHelperElement(el)) return false;
       var tag = String(el.tagName || '').toLowerCase();
       return Boolean(
         tag &&
@@ -2363,7 +2389,7 @@ export const buildPreviewRuntimeScript = (
       while (cursor && cursor !== document.body) {
         var parent = cursor.parentElement;
         if (!parent) return null;
-        var children = parent.children;
+        var children = getPreviewPathChildren(parent);
         var idx = -1;
         for (var i = 0; i < children.length; i++) {
           if (children[i] === cursor) {
@@ -2384,7 +2410,7 @@ export const buildPreviewRuntimeScript = (
       for (var i = 0; i < path.length; i++) {
         var idx = Number(path[i]);
         if (!isFinite(idx) || idx < 0) return null;
-        var children = cursor.children || [];
+        var children = getPreviewPathChildren(cursor);
         cursor = children[idx];
         if (!cursor) return null;
       }
@@ -3225,8 +3251,34 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     return __previewMode === 'edit';
   }
 
+  function isPreviewRuntimeHelperElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.getAttribute && (
+      el.getAttribute('data-preview-hover-badge') === 'true' ||
+      el.getAttribute('data-preview-hover-outline') === 'true' ||
+      el.getAttribute('data-preview-draw-draft') === 'true' ||
+      el.getAttribute('data-nx-inline-editing') === 'true'
+    )) {
+      return true;
+    }
+    var className = typeof el.className === 'string' ? el.className : '';
+    return className.indexOf('__nx-preview-runtime-helper') >= 0;
+  }
+
+  function getPreviewPathChildren(parent) {
+    var children = parent && parent.children ? parent.children : [];
+    var filtered = [];
+    for (var i = 0; i < children.length; i++) {
+      if (!isPreviewRuntimeHelperElement(children[i])) {
+        filtered.push(children[i]);
+      }
+    }
+    return filtered;
+  }
+
   function isPreviewBaseSelectable(el) {
     if (!el) return false;
+    if (isPreviewRuntimeHelperElement(el)) return false;
     var tag = String(el.tagName || '').toLowerCase();
     return Boolean(
       tag &&
@@ -3398,7 +3450,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     while (cursor && cursor !== document.body) {
       var parent = cursor.parentElement;
       if (!parent) return null;
-      var children = parent.children;
+      var children = getPreviewPathChildren(parent);
       var idx = -1;
       for (var i = 0; i < children.length; i++) {
         if (children[i] === cursor) {
@@ -3419,7 +3471,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     for (var i = 0; i < path.length; i++) {
       var idx = Number(path[i]);
       if (!isFinite(idx) || idx < 0) return null;
-      var children = cursor.children || [];
+      var children = getPreviewPathChildren(cursor);
       cursor = children[idx];
       if (!cursor) return null;
     }
@@ -4644,10 +4696,24 @@ export const normalizeFontFamilyCssValue = (raw: string): string => {
 };
 
 export const readElementByPath = (root: Element, path: number[]): Element | null => {
+  const isPreviewRuntimeHelperElement = (element: Element | null): boolean => {
+    if (!element || !(element instanceof HTMLElement)) return false;
+    if (
+      element.getAttribute("data-preview-hover-badge") === "true" ||
+      element.getAttribute("data-preview-hover-outline") === "true" ||
+      element.getAttribute("data-preview-draw-draft") === "true" ||
+      element.getAttribute("data-nx-inline-editing") === "true"
+    ) {
+      return true;
+    }
+    return element.classList.contains("__nx-preview-runtime-helper");
+  };
   let cursor: Element | null = root;
   for (const step of path) {
     if (!cursor) return null;
-    const childElements: Element[] = Array.from(cursor.children);
+    const childElements: Element[] = Array.from(cursor.children).filter(
+      (child) => !isPreviewRuntimeHelperElement(child),
+    );
     cursor = childElements[step] ?? null;
   }
   return cursor;
