@@ -2755,12 +2755,10 @@ export const buildPreviewRuntimeScript = (
         return;
       }
       if (payload.type === 'PREVIEW_APPLY_STYLE') {
-      console.log("DEBUG: Iframe Received PREVIEW_APPLY_STYLE", payload);
         var target = null;
         if (payload.path && payload.path.length) {
           target = readElementByPath(payload.path);
         }
-        console.log("DEBUG: Found target element in Iframe:", target);
         if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
           target = __previewSelectedEl;
         }
@@ -3965,12 +3963,10 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       return;
     }
     if (payload.type === 'PREVIEW_APPLY_STYLE') {
-    console.log("DEBUG: Iframe Received PREVIEW_APPLY_STYLE", payload);
       var target = null;
       if (payload.path && payload.path.length) {
         target = readElementByPath(payload.path);
       }
-      console.log("DEBUG: Found target element in Iframe:", target);
       if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
         target = __previewSelectedEl;
       }

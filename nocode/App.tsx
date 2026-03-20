@@ -254,13 +254,6 @@ type PreviewMatchedCssRule = {
   declarations: PreviewMatchedCssDeclaration[];
 };
 
-type PreviewMatchedRuleMutation = {
-  selector: string;
-  source: string;
-  occurrenceIndex?: number;
-  originalProperty?: string;
-};
-
 const collectMatchedCssRulesFromElement = (
   element: Element | null,
 ): PreviewMatchedCssRule[] => {
@@ -348,225 +341,6 @@ const collectMatchedCssRulesFromElement = (
   });
 
   return results;
-};
-
-const getCssSourceBasename = (value: string) => {
-  const normalized = String(value || "")
-    .replace(/\\/g, "/")
-    .split("?")[0]
-    .split("#")[0];
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || normalized;
-};
-
-const normalizeSelectorSignature = (value: string) =>
-  String(value || "")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
-  if (sheet.href) {
-    const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
-    const parts = cleanHref.split("/");
-    return parts[parts.length - 1] || cleanHref || "stylesheet";
-  }
-  const ownerNode = sheet.ownerNode;
-  if (ownerNode instanceof Element) {
-    return (
-      ownerNode.getAttribute("data-source") ||
-      ownerNode.getAttribute("data-href") ||
-      "inline stylesheet"
-    );
-  }
-  return "inline stylesheet";
-};
-
-const cssRuleSourcesMatch = (left: string, right: string) => {
-  const normalizedLeft = normalizeProjectRelative(String(left || "")).toLowerCase();
-  const normalizedRight = normalizeProjectRelative(String(right || "")).toLowerCase();
-  if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
-    return true;
-  }
-  const baseLeft = getCssSourceBasename(left).toLowerCase();
-  const baseRight = getCssSourceBasename(right).toLowerCase();
-  return Boolean(baseLeft && baseRight && baseLeft === baseRight);
-};
-
-const applyPatchToDeclarationEntries = (
-  declarations: PreviewMatchedCssDeclaration[],
-  rule: PreviewMatchedRuleMutation,
-  styles: Partial<React.CSSProperties>,
-): PreviewMatchedCssDeclaration[] => {
-  const nextDeclarations = [...declarations];
-  const normalizedNextKeys = new Set<string>();
-  const originalCssProperty = rule.originalProperty
-    ? toCssPropertyName(rule.originalProperty)
-    : "";
-
-  Object.entries(styles).forEach(([key, rawValue]) => {
-    const cssProperty = toCssPropertyName(key);
-    const valueRaw =
-      rawValue === undefined || rawValue === null ? "" : String(rawValue);
-    const value =
-      cssProperty === "font-family"
-        ? normalizeFontFamilyCssValue(valueRaw)
-        : valueRaw;
-    normalizedNextKeys.add(cssProperty.toLowerCase());
-    const existingIndex = nextDeclarations.findIndex(
-      (entry) => entry.property.toLowerCase() === cssProperty.toLowerCase(),
-    );
-    if (!value) {
-      if (existingIndex >= 0) nextDeclarations.splice(existingIndex, 1);
-      return;
-    }
-    if (existingIndex >= 0) {
-      nextDeclarations[existingIndex] = {
-        ...nextDeclarations[existingIndex],
-        property: cssProperty,
-        value,
-      };
-      return;
-    }
-    nextDeclarations.push({
-      property: cssProperty,
-      value,
-    });
-  });
-
-  if (
-    originalCssProperty &&
-    !normalizedNextKeys.has(originalCssProperty.toLowerCase())
-  ) {
-    const originalIndex = nextDeclarations.findIndex(
-      (entry) =>
-        entry.property.toLowerCase() === originalCssProperty.toLowerCase(),
-    );
-    if (originalIndex >= 0) {
-      nextDeclarations.splice(originalIndex, 1);
-    }
-  }
-
-  return nextDeclarations;
-};
-
-const findMatchingCssBrace = (source: string, openIndex: number) => {
-  let depth = 0;
-  let inString: '"' | "'" | null = null;
-  let inComment = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-    if (inComment) {
-      if (char === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === inString) inString = null;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      inString = char;
-      continue;
-    }
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-};
-
-const findCssRuleRange = (
-  source: string,
-  selector: string,
-  occurrenceIndex = 0,
-) => {
-  const normalizedSelector = normalizeSelectorSignature(selector);
-  let currentOccurrence = 0;
-  let segmentStart = 0;
-  let inString: '"' | "'" | null = null;
-  let inComment = false;
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-    if (inComment) {
-      if (char === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === inString) inString = null;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      inString = char;
-      continue;
-    }
-    if (char === ";") {
-      segmentStart = index + 1;
-      continue;
-    }
-    if (char === "}") {
-      segmentStart = index + 1;
-      continue;
-    }
-    if (char !== "{") continue;
-
-    const rawHeader = source.slice(segmentStart, index);
-    const headerText = rawHeader.trim();
-    if (
-      headerText &&
-      !headerText.startsWith("@") &&
-      normalizeSelectorSignature(headerText) === normalizedSelector
-    ) {
-      if (currentOccurrence === occurrenceIndex) {
-        const closeIndex = findMatchingCssBrace(source, index);
-        if (closeIndex < 0) return null;
-        const leadingWhitespace = rawHeader.match(/^\s*/)?.[0] || "";
-        return {
-          start: segmentStart,
-          end: closeIndex + 1,
-          selectorText: headerText,
-          indent: leadingWhitespace,
-          body: source.slice(index + 1, closeIndex),
-        };
-      }
-      currentOccurrence += 1;
-    }
-
-    segmentStart = index + 1;
-  }
-
-  return null;
 };
 const ANNOTATION_INTENT_OPTIONS = [
   "stylingChange",
@@ -1068,16 +842,6 @@ const App: React.FC = () => {
     elementPath: number[];
     html: string;
   } | null>(null);
-  const previewStyleDraftPendingRef = useRef<{
-    filePath: string;
-    elementPath: number[];
-    styles: Partial<React.CSSProperties>;
-  } | null>(null);
-  const previewLocalCssDraftPendingRef = useRef<{
-    elementPath: number[];
-    rule: PreviewMatchedRuleMutation;
-    styles: Partial<React.CSSProperties>;
-  } | null>(null);
   const applyPreviewDropCreateRef = useRef<
     ((type: string, clientX: number, clientY: number) => Promise<void>) | null
   >(null);
@@ -1087,8 +851,6 @@ const App: React.FC = () => {
   const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(
     null,
   );
-  const previewStyleDraftTimerRef = useRef<number | null>(null);
-  const previewLocalCssDraftTimerRef = useRef<number | null>(null);
   const BASE_STAGE_PADDING = 40;
   const EXPLORER_LOCK_TTL_MS = 6000;
   const LEFT_PANEL_MIN_WIDTH = 220;
@@ -1106,6 +868,26 @@ const App: React.FC = () => {
     },
     [],
   );
+
+  const handleImmediatePreviewStyle = (
+    styles: Partial<React.CSSProperties>,
+  ) => {
+    const iframe = document.querySelector("iframe");
+
+    // Use a fallback or check if path exists
+    const elementPath = previewSelectedElement?.path;
+
+    if (iframe?.contentWindow && elementPath) {
+      iframe.contentWindow.postMessage(
+        {
+          type: "PREVIEW_APPLY_STYLE",
+          path: elementPath,
+          styles: styles,
+        },
+        "*",
+      );
+    }
+  };
 
   const getDefaultRightPanelPosition = useCallback((width: number) => {
     const viewportWidth =
@@ -1192,29 +974,6 @@ const App: React.FC = () => {
       (item) => item !== path,
     );
   }, []);
-
-  const invalidatePreviewDocsForDependency = useCallback(
-    (dependencyPath: string) => {
-      const normalizedDependency = normalizeProjectRelative(
-        dependencyPath || "",
-      ).toLowerCase();
-      if (!normalizedDependency) return;
-      Object.entries(previewDependencyIndexRef.current).forEach(
-        ([previewPath, dependencies]) => {
-          if (
-            dependencies.some(
-              (dependency) =>
-                normalizeProjectRelative(dependency || "").toLowerCase() ===
-                normalizedDependency,
-            )
-          ) {
-            invalidatePreviewDocCache(previewPath);
-          }
-        },
-      );
-    },
-    [invalidatePreviewDocCache],
-  );
 
   const cachePreviewDoc = useCallback((path: string, doc: string) => {
     if (!path) return;
@@ -1826,12 +1585,6 @@ const App: React.FC = () => {
     () => () => {
       if (autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
-      }
-      if (previewStyleDraftTimerRef.current !== null) {
-        window.clearTimeout(previewStyleDraftTimerRef.current);
-      }
-      if (previewLocalCssDraftTimerRef.current !== null) {
-        window.clearTimeout(previewLocalCssDraftTimerRef.current);
       }
       if (previewConsoleFlushTimerRef.current !== null) {
         window.clearTimeout(previewConsoleFlushTimerRef.current);
@@ -7024,80 +6777,6 @@ const App: React.FC = () => {
       syncPreviewSelectionSnapshotFromLiveElement,
     ],
   );
-  const queuePreviewStyleUpdate = useCallback(
-    (styles: Partial<React.CSSProperties>) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const targetPath = [...previewSelectedPath];
-      const currentPending = previewStyleDraftPendingRef.current;
-      const samePendingTarget =
-        currentPending &&
-        currentPending.filePath === selectedPreviewHtml &&
-        currentPending.elementPath.length === targetPath.length &&
-        currentPending.elementPath.every(
-          (segment, index) => segment === targetPath[index],
-        );
-
-      if (
-        currentPending &&
-        !samePendingTarget &&
-        currentPending.elementPath.length > 0
-      ) {
-        void applyPreviewStyleUpdateAtPath(
-          currentPending.elementPath,
-          currentPending.styles,
-          { syncSelectedElement: false },
-        );
-      }
-
-      previewStyleDraftPendingRef.current = {
-        filePath: selectedPreviewHtml,
-        elementPath: targetPath,
-        styles: {
-          ...(samePendingTarget ? currentPending?.styles || {} : {}),
-          ...styles,
-        },
-      };
-
-      if (!dirtyFilesRef.current.includes(selectedPreviewHtml)) {
-        dirtyFilesRef.current = [...dirtyFilesRef.current, selectedPreviewHtml];
-        setDirtyFiles((prev) =>
-          prev.includes(selectedPreviewHtml)
-            ? prev
-            : [...prev, selectedPreviewHtml],
-        );
-      }
-      markPreviewPathDirty(selectedPreviewHtml, targetPath);
-
-      if (previewStyleDraftTimerRef.current !== null) {
-        window.clearTimeout(previewStyleDraftTimerRef.current);
-      }
-      previewStyleDraftTimerRef.current = window.setTimeout(() => {
-        previewStyleDraftTimerRef.current = null;
-        const pending = previewStyleDraftPendingRef.current;
-        previewStyleDraftPendingRef.current = null;
-        if (!pending || pending.elementPath.length === 0) return;
-        void applyPreviewStyleUpdateAtPath(
-          pending.elementPath,
-          pending.styles,
-          { syncSelectedElement: true },
-        );
-      }, 120);
-    },
-    [
-      applyPreviewStyleUpdateAtPath,
-      markPreviewPathDirty,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
   const applyPreviewStyleUpdate = useCallback(
     async (styles: Partial<React.CSSProperties>) => {
       if (
@@ -9560,525 +9239,11 @@ const App: React.FC = () => {
     },
     [applyPreviewDropCreate, selectedPreviewHtml],
   );
-  const handleImmediatePreviewStyle = useCallback(
-    (styles: Partial<React.CSSProperties>) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveTarget = frameDocument?.body
-        ? readElementByPath(frameDocument.body, previewSelectedPath)
-        : null;
-      const previewStylePatch: Record<string, string> = {};
-
-      Object.entries(styles).forEach(([key, rawValue]) => {
-        const cssKey = toCssPropertyName(key);
-        const valueRaw =
-          rawValue === undefined || rawValue === null ? "" : String(rawValue);
-        const value =
-          cssKey === "font-family"
-            ? normalizeFontFamilyCssValue(valueRaw)
-            : valueRaw;
-
-        previewStylePatch[key] = value;
-        if (!(liveTarget instanceof HTMLElement)) return;
-        if (!value) {
-          liveTarget.style.removeProperty(cssKey);
-          return;
-        }
-        liveTarget.style.setProperty(
-          cssKey,
-          value,
-          cssKey === "font-family" ? "important" : "",
-        );
-      });
-
-      if (
-        liveTarget instanceof HTMLElement &&
-        !liveTarget.getAttribute("style")?.trim()
-      ) {
-        liveTarget.removeAttribute("style");
-      }
-
-      postPreviewPatchToFrame({
-        type: "PREVIEW_APPLY_STYLE",
-        path: previewSelectedPath,
-        styles: previewStylePatch,
-      });
-      syncPreviewSelectionSnapshotFromLiveElement(previewSelectedPath);
-    },
-    [
-      postPreviewPatchToFrame,
-      previewSelectedPath,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const resolvePreviewMatchedRuleSourcePath = useCallback((source: string) => {
-    if (selectedPreviewHtml) {
-      const selectedHtmlSource =
-        typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-          ? (filesRef.current[selectedPreviewHtml]?.content as string)
-          : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
-            ? textFileCacheRef.current[selectedPreviewHtml]
-            : "";
-      if (selectedHtmlSource) {
-        try {
-          const parsed = new DOMParser().parseFromString(
-            selectedHtmlSource,
-            "text/html",
-          );
-          const linkedCssCandidates = Array.from(
-            parsed.querySelectorAll<HTMLLinkElement>(
-              'link[rel="stylesheet"][href]',
-            ),
-          )
-            .map((node) =>
-              resolveProjectRelativePath(
-                selectedPreviewHtml,
-                node.getAttribute("href") || "",
-              ),
-            )
-            .filter((candidate): candidate is string => Boolean(candidate))
-            .filter((candidate) => filesRef.current[candidate]?.type === "css")
-            .filter((candidate) => cssRuleSourcesMatch(candidate, source));
-          if (linkedCssCandidates.length === 1) {
-            return linkedCssCandidates[0];
-          }
-        } catch {
-          // Ignore malformed HTML and continue to broader lookup.
-        }
-      }
-    }
-
-    const normalizedSource = normalizeProjectRelative(String(source || ""));
-    const exactMatch =
-      findFilePathCaseInsensitive(filesRef.current, normalizedSource) ||
-      (filesRef.current[normalizedSource]?.type === "css"
-        ? normalizedSource
-        : null);
-    if (exactMatch && filesRef.current[exactMatch]?.type === "css") {
-      return exactMatch;
-    }
-
-    const normalizedSuffix = normalizedSource.toLowerCase();
-    const basename = getCssSourceBasename(source).toLowerCase();
-    const candidates = Object.keys(filesRef.current).filter((path) => {
-      if (filesRef.current[path]?.type !== "css") return false;
-      const normalizedPath = normalizeProjectRelative(path).toLowerCase();
-      if (normalizedSuffix && normalizedPath.endsWith(normalizedSuffix)) {
-        return true;
-      }
-      return getCssSourceBasename(path).toLowerCase() === basename;
-    });
-
-    return candidates.length === 1 ? candidates[0] : null;
-  }, [selectedPreviewHtml]);
-  const applyPreviewMatchedRuleToLiveStylesheet = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-      elementPath?: number[],
-    ) => {
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      if (!frameDocument) return false;
-
-      let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
-      const originalCssProperty = rule.originalProperty
-        ? toCssPropertyName(rule.originalProperty)
-        : "";
-      const nextCssKeys = new Set(
-        Object.keys(styles).map((key) =>
-          toCssPropertyName(key).toLowerCase(),
-        ),
-      );
-
-      const applyToRule = (styleRule: CSSStyleRule) => {
-        if (
-          originalCssProperty &&
-          !nextCssKeys.has(originalCssProperty.toLowerCase())
-        ) {
-          styleRule.style.removeProperty(originalCssProperty);
-        }
-        Object.entries(styles).forEach(([key, rawValue]) => {
-          const cssKey = toCssPropertyName(key);
-          const valueRaw =
-            rawValue === undefined || rawValue === null ? "" : String(rawValue);
-          const value =
-            cssKey === "font-family"
-              ? normalizeFontFamilyCssValue(valueRaw)
-              : valueRaw;
-          if (!value) {
-            styleRule.style.removeProperty(cssKey);
-            return;
-          }
-          const priority = styleRule.style.getPropertyPriority(cssKey);
-          styleRule.style.setProperty(cssKey, value, priority || "");
-        });
-      };
-
-      const visitRules = (rules: CSSRuleList | undefined): boolean => {
-        if (!rules) return false;
-        for (const cssRule of Array.from(rules)) {
-          if (cssRule instanceof CSSStyleRule) {
-            if (String(cssRule.selectorText || "").trim() !== rule.selector) {
-              continue;
-            }
-            if (remainingOccurrence > 0) {
-              remainingOccurrence -= 1;
-              continue;
-            }
-            applyToRule(cssRule);
-            return true;
-          }
-          if (
-            cssRule instanceof CSSMediaRule ||
-            cssRule instanceof CSSSupportsRule ||
-            cssRule instanceof CSSLayerBlockRule
-          ) {
-            if (visitRules(cssRule.cssRules)) return true;
-          }
-        }
-        return false;
-      };
-
-      for (const sheet of Array.from(frameDocument.styleSheets)) {
-        try {
-          if (
-            !cssRuleSourcesMatch(
-              getStyleSheetSourceLabel(sheet as CSSStyleSheet),
-              rule.source,
-            )
-          ) {
-            continue;
-          }
-          if (visitRules((sheet as CSSStyleSheet).cssRules)) {
-            if (elementPath && elementPath.length > 0) {
-              syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-            }
-            return true;
-          }
-        } catch {
-          // Ignore inaccessible stylesheets.
-        }
-      }
-
-      return false;
-    },
-    [syncPreviewSelectionSnapshotFromLiveElement],
-  );
-  const persistPreviewMatchedRuleToSourceFile = useCallback(
-    async (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      const sourcePath = resolvePreviewMatchedRuleSourcePath(rule.source);
-      if (!sourcePath) return false;
-
-      const loadedSource = await loadFileContent(sourcePath, {
-        persistToState: false,
-      });
-      const sourceText =
-        typeof loadedSource === "string"
-          ? loadedSource
-          : typeof filesRef.current[sourcePath]?.content === "string"
-            ? (filesRef.current[sourcePath]?.content as string)
-            : "";
-      if (!sourceText) return false;
-
-      const ruleRange = findCssRuleRange(
-        sourceText,
-        rule.selector,
-        Math.max(0, rule.occurrenceIndex || 0),
-      );
-      if (!ruleRange) return false;
-
-      const declarationHost = document.createElement("div");
-      declarationHost.style.cssText = ruleRange.body;
-      const existingDeclarations: PreviewMatchedCssDeclaration[] = [];
-      Array.from(declarationHost.style).forEach((property) => {
-        const value = declarationHost.style.getPropertyValue(property);
-        if (!property || !value) return;
-        existingDeclarations.push({
-          property,
-          value,
-          important:
-            declarationHost.style.getPropertyPriority(property) === "important",
-        });
-      });
-
-      const nextDeclarations = applyPatchToDeclarationEntries(
-        existingDeclarations,
-        rule,
-        styles,
-      );
-      const nextRuleBlock =
-        nextDeclarations.length > 0
-          ? `${ruleRange.indent}${ruleRange.selectorText} {\n${nextDeclarations
-              .map(
-                (entry) =>
-                  `${ruleRange.indent}  ${entry.property}: ${entry.value}${entry.important ? " !important" : ""};`,
-              )
-              .join("\n")}\n${ruleRange.indent}}`
-          : `${ruleRange.indent}${ruleRange.selectorText} {\n${ruleRange.indent}}`;
-      const nextSourceText =
-        sourceText.slice(0, ruleRange.start) +
-        nextRuleBlock +
-        sourceText.slice(ruleRange.end);
-
-      textFileCacheRef.current[sourcePath] = nextSourceText;
-      const existingFile = filesRef.current[sourcePath];
-      const nextFile: ProjectFile = existingFile
-        ? {
-            ...existingFile,
-            content: nextSourceText,
-            type: "css",
-          }
-        : {
-            path: sourcePath,
-            name: getCssSourceBasename(sourcePath) || "styles.css",
-            type: "css",
-            content: nextSourceText,
-          };
-      filesRef.current = {
-        ...filesRef.current,
-        [sourcePath]: nextFile,
-      };
-      setFiles((prev) => ({
-        ...prev,
-        [sourcePath]: nextFile,
-      }));
-      pendingPreviewWritesRef.current[sourcePath] = nextSourceText;
-      if (!dirtyFilesRef.current.includes(sourcePath)) {
-        dirtyFilesRef.current = [...dirtyFilesRef.current, sourcePath];
-      }
-      setDirtyFiles((prev) =>
-        prev.includes(sourcePath) ? prev : [...prev, sourcePath],
-      );
-      invalidatePreviewDocsForDependency(sourcePath);
-      schedulePreviewAutoSave();
-      return true;
-    },
-    [
-      invalidatePreviewDocsForDependency,
-      loadFileContent,
-      resolvePreviewMatchedRuleSourcePath,
-      schedulePreviewAutoSave,
-    ],
-  );
-  const removePreviewLocalStyleClassesAtPath = useCallback(
-    async (elementPath: number[]) => {
-      if (
-        !selectedPreviewHtml ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return false;
-      }
-
-      const loadedHtml = await loadFileContent(selectedPreviewHtml, {
-        persistToState: false,
-      });
-      const sourceHtml =
-        typeof loadedHtml === "string" && loadedHtml.length > 0
-          ? loadedHtml
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
-              ? textFileCacheRef.current[selectedPreviewHtml]
-              : "";
-      if (!sourceHtml) return false;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
-      const liveTarget = getLivePreviewSelectedElement(elementPath);
-      const classSource =
-        (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
-        (liveTarget instanceof HTMLElement
-          ? liveTarget.getAttribute("class")
-          : "") ||
-        "";
-      const removableTokens = String(classSource)
-        .split(/\s+/)
-        .map((token) => token.trim())
-        .filter((token) => token.startsWith("nx-local-style-"));
-      if (removableTokens.length === 0) return false;
-
-      const pruneTokens = (value: string | null) => {
-        const nextTokens = String(value || "")
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(
-            (token) => token && !token.startsWith("nx-local-style-"),
-          );
-        return nextTokens.join(" ");
-      };
-
-      if (target instanceof HTMLElement) {
-        const nextClassName = pruneTokens(target.getAttribute("class"));
-        if (nextClassName) {
-          target.setAttribute("class", nextClassName);
-        } else {
-          target.removeAttribute("class");
-        }
-      }
-
-      if (liveTarget instanceof HTMLElement) {
-        const nextClassName = pruneTokens(liveTarget.getAttribute("class"));
-        if (nextClassName) {
-          liveTarget.setAttribute("class", nextClassName);
-        } else {
-          liveTarget.removeAttribute("class");
-        }
-        const liveHead =
-          liveTarget.ownerDocument.head ||
-          liveTarget.ownerDocument.documentElement;
-        removableTokens.forEach((token) => {
-          liveHead
-            ?.querySelector(`style[data-nx-local-style="${token}"]`)
-            ?.remove();
-        });
-      }
-
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath,
-      });
-      syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-      return true;
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      selectedPreviewHtml,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const queuePreviewLocalCssPatch = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const nextPath = [...previewSelectedPath];
-      const appliedLiveRule = applyPreviewMatchedRuleToLiveStylesheet(
-        rule,
-        styles,
-        nextPath,
-      );
-      if (!appliedLiveRule) {
-        handleImmediatePreviewStyle(styles);
-      }
-      const currentPending = previewLocalCssDraftPendingRef.current;
-      const sameTarget =
-        currentPending &&
-        currentPending.rule.selector === rule.selector &&
-        currentPending.rule.source === rule.source &&
-        (currentPending.rule.occurrenceIndex || 0) ===
-          (rule.occurrenceIndex || 0) &&
-        currentPending.elementPath.length === nextPath.length &&
-        currentPending.elementPath.every(
-          (segment, index) => segment === nextPath[index],
-        );
-
-      if (
-        currentPending &&
-        !sameTarget &&
-        currentPending.elementPath.length > 0
-      ) {
-        void (async () => {
-          const persisted = await persistPreviewMatchedRuleToSourceFile(
-            currentPending.rule,
-            currentPending.styles,
-          );
-          if (persisted) {
-            await removePreviewLocalStyleClassesAtPath(
-              currentPending.elementPath,
-            );
-            return;
-          }
-          await applyPreviewLocalCssPatchAtPath(
-            currentPending.elementPath,
-            currentPending.styles,
-            {
-              syncSelectedElement: false,
-            },
-          );
-        })();
-      }
-
-      previewLocalCssDraftPendingRef.current = {
-        elementPath: nextPath,
-        rule,
-        styles: {
-          ...(sameTarget ? currentPending?.styles || {} : {}),
-          ...styles,
-        },
-      };
-
-      if (previewLocalCssDraftTimerRef.current !== null) {
-        window.clearTimeout(previewLocalCssDraftTimerRef.current);
-      }
-      previewLocalCssDraftTimerRef.current = window.setTimeout(() => {
-        previewLocalCssDraftTimerRef.current = null;
-        const pending = previewLocalCssDraftPendingRef.current;
-        previewLocalCssDraftPendingRef.current = null;
-        if (!pending || pending.elementPath.length === 0) return;
-        void (async () => {
-          const persisted = await persistPreviewMatchedRuleToSourceFile(
-            pending.rule,
-            pending.styles,
-          );
-          if (persisted) {
-            await removePreviewLocalStyleClassesAtPath(pending.elementPath);
-            syncPreviewSelectionSnapshotFromLiveElement(pending.elementPath);
-            return;
-          }
-          await applyPreviewLocalCssPatchAtPath(
-            pending.elementPath,
-            pending.styles,
-            {
-              syncSelectedElement: true,
-            },
-          );
-        })();
-      }, 120);
-    },
-    [
-      applyPreviewLocalCssPatchAtPath,
-      applyPreviewMatchedRuleToLiveStylesheet,
-      handleImmediatePreviewStyle,
-      persistPreviewMatchedRuleToSourceFile,
-      previewSelectedPath,
-      removePreviewLocalStyleClassesAtPath,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
   const handlePreviewStyleUpdateStable = useCallback(
     (styles: Partial<React.CSSProperties>) => {
-      queuePreviewStyleUpdate(styles);
+      void applyPreviewStyleUpdate(styles);
     },
-    [queuePreviewStyleUpdate],
+    [applyPreviewStyleUpdate],
   );
   const handlePreviewContentUpdateStable = useCallback(
     (data: {
@@ -10502,27 +9667,18 @@ const App: React.FC = () => {
       }
 
       if (payload.type === "PREVIEW_SELECT") {
-        console.log("DEBUG: Iframe reported selection:", payload);
-
-        // 1. Correctly sanitize and validate the path from the iframe
         const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath || nextPath.length === 0) {
-          console.warn("DEBUG: Selection ignored - invalid or empty path");
-          return;
-        }
+        if (!nextPath || nextPath.length === 0) return;
 
-        // 2. Prepare data parsing
         const tag = (payload.tag || "div").toLowerCase();
         const id = payload.id ? String(payload.id) : `preview-${Date.now()}`;
         const inlineStyles = parseInlineStyleText(
           typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
         );
-
         const payloadComputedStyles =
           payload.computedStyles && typeof payload.computedStyles === "object"
             ? (payload.computedStyles as React.CSSProperties)
             : null;
-
         const payloadMatchedCssRules = Array.isArray(payload.matchedCssRules)
           ? (payload.matchedCssRules
               .map((rule) => {
@@ -10562,6 +9718,8 @@ const App: React.FC = () => {
             ? payloadMatchedCssRules
             : collectMatchedCssRulesFromElement(liveElement);
 
+        // Prefer the text sent directly from the iframe at click time (el.textContent)
+        // since it's the most reliable source. Fall back to DOM extraction if needed.
         const payloadText =
           typeof payload.text === "string" ? payload.text.trim() : "";
         const payloadHtml =
@@ -10569,7 +9727,6 @@ const App: React.FC = () => {
         const liveText = liveElement ? extractTextWithBreaks(liveElement) : "";
         const liveHtml =
           liveElement instanceof HTMLElement ? liveElement.innerHTML || "" : "";
-
         const payloadAttributes =
           payload.attributes && typeof payload.attributes === "object"
             ? (Object.fromEntries(
@@ -10581,10 +9738,13 @@ const App: React.FC = () => {
         const liveAttributes =
           extractCustomAttributesFromElement(liveElement) || {};
 
+        // Third-layer fallback: parse the saved source HTML from filesRef and read
+        // the text directly at the element path. This handles cases where the live
+        // DOM was reloaded/refreshed and payload.text is empty (e.g. immediately
+        // after a tool switch with no prior click).
         let savedHtmlText = "";
         let savedHtmlMarkup = "";
         let savedHtmlAttributes: Record<string, string> = {};
-
         if (
           ((!payloadText && !liveText) || (!payloadHtml && !liveHtml)) &&
           selectedPreviewHtml &&
@@ -10610,8 +9770,8 @@ const App: React.FC = () => {
                   extractCustomAttributesFromElement(savedEl) || {};
               }
             }
-          } catch (err) {
-            console.error("DEBUG: Failed to parse saved HTML", err);
+          } catch {
+            // Ignore parse errors.
           }
         }
 
@@ -10628,14 +9788,13 @@ const App: React.FC = () => {
             ? payload.href.trim()
             : "";
         const liveSrc =
-          liveElement instanceof HTMLElement
+          liveElement && liveElement instanceof HTMLElement
             ? liveElement.getAttribute("src") || ""
             : "";
         const liveHref =
-          liveElement instanceof HTMLElement
+          liveElement && liveElement instanceof HTMLElement
             ? liveElement.getAttribute("href") || ""
             : "";
-
         const resolvedSrc = payloadSrc || liveSrc || undefined;
         const resolvedHref = payloadHref || liveHref || undefined;
         const mergedAttributes = {
@@ -10647,7 +9806,6 @@ const App: React.FC = () => {
           Object.keys(mergedAttributes).length > 0
             ? mergedAttributes
             : undefined;
-
         const inlineAnimation =
           typeof inlineStyles.animation === "string"
             ? inlineStyles.animation.trim()
@@ -10663,39 +9821,29 @@ const App: React.FC = () => {
             ? computedAnimationCandidate
             : "");
 
-        // 3. Construct the VirtualElement with the PATH included
         const nextElement: VirtualElement = {
           id,
-          type: tag as any,
+          type: tag,
           name: tag.toUpperCase(),
           content: editableText,
-          html: editableHtml,
-          src: resolvedSrc,
-          href: resolvedHref,
+          ...(editableHtml ? { html: editableHtml } : {}),
+          ...(resolvedSrc ? { src: resolvedSrc } : {}),
+          ...(resolvedHref ? { href: resolvedHref } : {}),
           className:
             typeof payload.className === "string" &&
             payload.className.length > 0
               ? payload.className
               : undefined,
-          attributes: resolvedAttributes,
+          ...(resolvedAttributes ? { attributes: resolvedAttributes } : {}),
           styles: inlineStyles,
-          animation: resolvedAnimation || undefined,
+          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
           children: [],
-          path: nextPath, // <--- CRITICAL: This allows handleImmediatePreviewStyle to work
         };
 
-        console.log(
-          "DEBUG: Setting active inspector element with path:",
-          nextPath,
-        );
-
-        // 4. Update all relevant states
         setPreviewSelectedPath(nextPath);
         setPreviewSelectedElement(nextElement);
         setPreviewSelectedComputedStyles(computedStyles);
         setPreviewSelectedMatchedCssRules(matchedCssRules);
-
-        // These ensure the right panel actually opens and focuses the element
         setSelectedId(null);
         setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
@@ -11420,13 +10568,15 @@ const App: React.FC = () => {
   );
   const handlePreviewMatchedRulePropertyAdd = useCallback(
     (
-      rule: PreviewMatchedRuleMutation,
+      _rule: { selector: string; source: string },
       styles: Partial<React.CSSProperties>,
     ) => {
       if (!previewSelectedPath || !Array.isArray(previewSelectedPath)) return;
-      queuePreviewLocalCssPatch(rule, styles);
+      void applyPreviewLocalCssPatchAtPath(previewSelectedPath, styles, {
+        syncSelectedElement: true,
+      });
     },
-    [previewSelectedPath, queuePreviewLocalCssPatch],
+    [applyPreviewLocalCssPatchAtPath, previewSelectedPath],
   );
   const showDeviceFrameToolbar = true;
 
@@ -13783,7 +12933,11 @@ const App: React.FC = () => {
                   >
                     <StyleInspectorPanel
                       element={inspectorElement}
-                      onImmediateChange={handleImmediatePreviewStyle} // <--- ADD THIS
+                      onImmediateChange={
+                        interactionMode === "preview"
+                          ? handleImmediatePreviewStyle
+                          : undefined
+                      }
                       onUpdateStyle={
                         interactionMode === "preview" && previewSelectedElement
                           ? handlePreviewStyleUpdateStable
@@ -14239,7 +13393,6 @@ const App: React.FC = () => {
                     {interactionMode === "inspect" && selectedId ? (
                       <StyleInspectorPanel
                         element={inspectorElement}
-                        onImmediateChange={handleImmediatePreviewStyle}
                         onUpdateStyle={handleUpdateStyle}
                         onUpdateIdentity={handleUpdateIdentity}
                         onReplaceAsset={undefined}

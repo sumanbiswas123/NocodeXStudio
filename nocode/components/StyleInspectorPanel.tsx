@@ -10,17 +10,13 @@ import {
 interface StyleInspectorPanelProps {
   element: VirtualElement | null;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
+  onImmediateStyleChange?: (styles: Partial<React.CSSProperties>) => void;
   onImmediateChange?: (styles: Partial<React.CSSProperties>) => void;
   onUpdateIdentity?: (identity: { id: string; className: string }) => void;
   onReplaceAsset?: () => void;
   computedStyles?: React.CSSProperties | null;
   onAddMatchedRuleProperty?: (
-    rule: {
-      selector: string;
-      source: string;
-      occurrenceIndex?: number;
-      originalProperty?: string;
-    },
+    rule: { selector: string; source: string },
     styles: Partial<React.CSSProperties>,
   ) => void;
   matchedCssRules?: Array<{
@@ -44,16 +40,8 @@ type MatchedDeclaration = {
 type MatchedRule = NonNullable<
   StyleInspectorPanelProps["matchedCssRules"]
 >[number];
-type AnnotatedMatchedRule = MatchedRule & {
-  occurrenceIndex: number;
-};
 type EditingMatchedDeclaration = {
   ruleKey: string;
-  originalProperty: string;
-  property: string;
-  value: string;
-};
-type MatchedDeclarationDraft = {
   originalProperty: string;
   property: string;
   value: string;
@@ -66,16 +54,6 @@ const toReactName = (key: string) =>
   key.trim().replace(/-([a-z])/g, (_, char: string) => char.toUpperCase());
 
 const normalizeKey = (key: string) => toCssName(toReactName(key)).toLowerCase();
-
-const buildMatchedRuleInstanceKey = (
-  rule: { selector: string; source: string; occurrenceIndex: number },
-) => `${rule.source}::${rule.selector}::${rule.occurrenceIndex}`;
-
-const buildMatchedDeclarationDraftKey = (
-  rule: { selector: string; source: string; occurrenceIndex: number },
-  originalProperty: string,
-) =>
-  `${buildMatchedRuleInstanceKey(rule)}::${normalizeKey(originalProperty)}`;
 
 const extractUrlFromBackground = (raw?: string) => {
   if (!raw || typeof raw !== "string") return "";
@@ -253,9 +231,6 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [ruleDrafts, setRuleDrafts] = useState<
     Record<string, { key: string; value: string }>
   >({});
-  const [matchedDeclarationDrafts, setMatchedDeclarationDrafts] = useState<
-    Record<string, MatchedDeclarationDraft>
-  >({});
   const [editingMatchedDeclaration, setEditingMatchedDeclaration] =
     useState<EditingMatchedDeclaration | null>(null);
 
@@ -312,7 +287,6 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setShowSelectorTokenInput(false);
     setSelectorTokenDraft("");
     setRuleDrafts({});
-    setMatchedDeclarationDrafts({});
     setEditingMatchedDeclaration(null);
   }, [element?.id]);
 
@@ -410,11 +384,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     }));
   };
 
-  const addRuleProperty = (
-    rule: AnnotatedMatchedRule,
-    ruleKey: string,
-    occurrenceIndex: number,
-  ) => {
+  const addRuleProperty = (rule: MatchedRule, ruleKey: string) => {
     const draft = ruleDrafts[ruleKey];
     if (
       !draft?.key?.trim() ||
@@ -424,11 +394,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return;
     }
     onAddMatchedRuleProperty(
-      {
-        selector: rule.selector,
-        source: rule.source,
-        occurrenceIndex,
-      },
+      { selector: rule.selector, source: rule.source },
       { [toReactName(draft.key.trim())]: draft.value.trim() },
     );
     setRuleDrafts((current) => ({
@@ -438,11 +404,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setActiveSuggestionField(null);
   };
 
-  const commitMatchedDeclarationEdit = (
-    rule: AnnotatedMatchedRule,
-    ruleKey: string,
-    occurrenceIndex: number,
-  ) => {
+  const commitMatchedDeclarationEdit = (rule: MatchedRule, ruleKey: string) => {
     if (
       !editingMatchedDeclaration ||
       editingMatchedDeclaration.ruleKey !== ruleKey
@@ -454,26 +416,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       !editingMatchedDeclaration.value.trim() ||
       !onAddMatchedRuleProperty
     ) {
-      const clearedDraftKey = buildMatchedDeclarationDraftKey(
-        rule,
-        editingMatchedDeclaration.originalProperty,
-      );
-      setMatchedDeclarationDrafts((current) => {
-        if (!current[clearedDraftKey]) return current;
-        const next = { ...current };
-        delete next[clearedDraftKey];
-        return next;
-      });
       setEditingMatchedDeclaration(null);
       return;
     }
     onAddMatchedRuleProperty(
-      {
-        selector: rule.selector,
-        source: rule.source,
-        occurrenceIndex,
-        originalProperty: editingMatchedDeclaration.originalProperty,
-      },
+      { selector: rule.selector, source: rule.source },
       {
         [toReactName(editingMatchedDeclaration.property.trim())]:
           editingMatchedDeclaration.value.trim(),
@@ -481,45 +428,6 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
     setEditingMatchedDeclaration(null);
     setActiveSuggestionField(null);
-  };
-
-  const pushMatchedDeclarationDraft = (
-    rule: AnnotatedMatchedRule,
-    occurrenceIndex: number,
-    draft: { property: string; value: string } | null,
-  ) => {
-    if (!draft || !onAddMatchedRuleProperty) return;
-    const property = draft.property.trim();
-    const value = draft.value.trim();
-    if (!property || !value) return;
-    const originalProperty =
-      editingMatchedDeclaration?.originalProperty || property;
-    const draftRule = {
-      selector: rule.selector,
-      source: rule.source,
-      occurrenceIndex,
-    };
-    const draftKey = buildMatchedDeclarationDraftKey(
-      draftRule,
-      originalProperty,
-    );
-    setMatchedDeclarationDrafts((current) => ({
-      ...current,
-      [draftKey]: {
-        originalProperty,
-        property,
-        value,
-      },
-    }));
-    onAddMatchedRuleProperty(
-      {
-        selector: rule.selector,
-        source: rule.source,
-        occurrenceIndex,
-        originalProperty,
-      },
-      { [toReactName(property)]: value },
-    );
   };
 
   const selectorLabel = useMemo(() => buildSelectorLabel(element), [element]);
@@ -579,92 +487,25 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       .slice(0, 40);
   }, [computedStyles, styles]);
 
-  const annotatedMatchedRules = useMemo(() => {
-    const occurrenceCounter = new Map<string, number>();
-    return matchedCssRules.map((rule) => {
-      const counterKey = `${rule.source}::${rule.selector}`;
-      const occurrenceIndex = occurrenceCounter.get(counterKey) || 0;
-      occurrenceCounter.set(counterKey, occurrenceIndex + 1);
-      return {
-        ...rule,
-        occurrenceIndex,
-      };
-    });
-  }, [matchedCssRules]);
-
-  useEffect(() => {
-    setMatchedDeclarationDrafts((current) => {
-      const nextEntries = Object.entries(current).filter(([draftKey, draft]) => {
-        const ruleKeyEnd = draftKey.lastIndexOf("::");
-        if (ruleKeyEnd < 0) return false;
-        const ruleKey = draftKey.slice(0, ruleKeyEnd);
-        const matchingRule = annotatedMatchedRules.find(
-          (rule) => buildMatchedRuleInstanceKey(rule) === ruleKey,
-        );
-        if (!matchingRule) return true;
-        return !matchingRule.declarations.some(
-          (declaration) =>
-            normalizeKey(declaration.property) ===
-              normalizeKey(draft.property) && declaration.value === draft.value,
-        );
-      });
-      if (nextEntries.length === Object.keys(current).length) return current;
-      return Object.fromEntries(nextEntries);
-    });
-  }, [annotatedMatchedRules]);
-
   const filteredMatchedRules = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return annotatedMatchedRules
+    return matchedCssRules
       .map((rule) => ({
         ...rule,
-        declarations: (() => {
-          const nextDeclarations = rule.declarations.map((declaration) => {
-            const draftKey = buildMatchedDeclarationDraftKey(
-              rule,
-              declaration.property,
-            );
-            const draft = matchedDeclarationDrafts[draftKey];
-            if (!draft) return declaration;
-            return {
-              ...declaration,
-              property: draft.property,
-              value: draft.value,
-            };
-          });
-          Object.entries(matchedDeclarationDrafts).forEach(
-            ([draftKey, draft]) => {
-              const ruleKeyEnd = draftKey.lastIndexOf("::");
-              if (ruleKeyEnd < 0) return;
-              const draftRuleKey = draftKey.slice(0, ruleKeyEnd);
-              if (draftRuleKey !== buildMatchedRuleInstanceKey(rule)) return;
-            const alreadyExists = nextDeclarations.some(
-              (declaration) =>
-                normalizeKey(declaration.property) ===
-                normalizeKey(draft.property),
-            );
-            if (!alreadyExists) {
-              nextDeclarations.push({
-                property: draft.property,
-                value: draft.value,
-              });
-            }
-            },
-          );
-          const filteredDeclarations = query
-            ? nextDeclarations.filter(
+        declarations: simplifyDeclarations(
+          query
+            ? rule.declarations.filter(
                 (declaration) =>
                   rule.selector.toLowerCase().includes(query) ||
                   rule.source.toLowerCase().includes(query) ||
                   declaration.property.toLowerCase().includes(query) ||
                   declaration.value.toLowerCase().includes(query),
               )
-            : nextDeclarations;
-          return simplifyDeclarations(filteredDeclarations);
-        })(),
+            : rule.declarations,
+        ),
       }))
       .filter((rule) => rule.declarations.length > 0);
-  }, [annotatedMatchedRules, filterText, matchedDeclarationDrafts]);
+  }, [filterText, matchedCssRules]);
 
   const orderedMatchedRules = useMemo(
     () =>
@@ -693,17 +534,20 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
     const patch: Partial<React.CSSProperties> = {};
     if (previousKey && normalizeKey(previousKey) !== normalizeKey(nextKey)) {
-      patch[toReactName(previousKey)] = ""; 
+      patch[toReactName(previousKey)] = ""; // Clear old property
     }
     if (nextKey) {
       patch[toReactName(nextKey)] = nextValue;
     }
 
     if (Object.keys(patch).length > 0) {
+      // 1. Existing save logic
+      onUpdateStyle(patch);
+
+      // 2. ADD THIS: Instant bridge logic
       if (onImmediateChange) {
         onImmediateChange(patch);
       }
-      onUpdateStyle(patch);
     }
   };
 
@@ -770,34 +614,30 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const handleStyleChange = (
     index: number,
     field: "key" | "value",
-    value: string
+    value: string,
   ) => {
     const current = styles[index];
     if (!current) return;
-    
     const nextKey = field === "key" ? value : current.key;
     const nextValue = field === "value" ? value : current.value;
     const previousKey = current.key;
 
-    // Update internal UI state
     updateStyleAtIndex(index, nextKey, nextValue);
     updateStyleDraftAtIndex(index, nextKey, nextValue, previousKey);
-    
-    // THIS IS THE TRIGGER
     pushStylePatchForRow(current, nextKey, nextValue, previousKey);
 
-    // Suggestions logic...
     if (field === "key") {
       const matches = value.trim()
         ? CSS_PROPERTY_NAMES.filter((name) =>
-            name.toLowerCase().includes(value.toLowerCase())
+            name.toLowerCase().includes(value.toLowerCase()),
           ).slice(0, 15)
         : CSS_PROPERTY_NAMES.slice(0, 20);
       setFilteredSuggestions(matches);
       setActiveSuggestionField(matches.length ? { index, type: "key" } : null);
-    } else {
-      showValueSuggestions(index, nextKey, value);
+      return;
     }
+
+    showValueSuggestions(index, nextKey, value);
   };
 
   const handleNewPropertyChange = (field: "key" | "value", value: string) => {
@@ -1189,9 +1029,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
         {orderedMatchedRules.map((rule, ruleIndex) =>
           (() => {
-            const ruleKey = buildMatchedRuleInstanceKey(rule);
+            const ruleKey = `${rule.source}::${rule.selector}::${ruleIndex}`;
             const draft = ruleDrafts[ruleKey] || { key: "", value: "" };
-            const occurrenceIndex = rule.occurrenceIndex;
             return (
               <div
                 key={`${rule.selector}-${rule.source}-${ruleIndex}`}
@@ -1259,19 +1098,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           <input
                             value={editingMatchedDeclaration.value}
                             onChange={(event) =>
-                              setEditingMatchedDeclaration((current) => {
-                                if (!current) return current;
-                                const next = {
-                                  ...current,
-                                  value: event.target.value,
-                                };
-                                pushMatchedDeclarationDraft(
-                                  rule,
-                                  occurrenceIndex,
-                                  next,
-                                );
-                                return next;
-                              })
+                              setEditingMatchedDeclaration((current) =>
+                                current
+                                  ? { ...current, value: event.target.value }
+                                  : current,
+                              )
                             }
                             onFocus={() => {
                               const options =
@@ -1291,19 +1122,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               );
                             }}
                             onBlur={() =>
-                              commitMatchedDeclarationEdit(
-                                rule,
-                                ruleKey,
-                                occurrenceIndex,
-                              )
+                              commitMatchedDeclarationEdit(rule, ruleKey)
                             }
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
-                                commitMatchedDeclarationEdit(
-                                  rule,
-                                  ruleKey,
-                                  occurrenceIndex,
-                                );
+                                commitMatchedDeclarationEdit(rule, ruleKey);
                               }
                               if (event.key === "Escape") {
                                 setEditingMatchedDeclaration(null);
@@ -1320,16 +1143,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             <SuggestionList
                               suggestions={filteredSuggestions}
                               onSelect={(value) => {
-                                setEditingMatchedDeclaration((current) => {
-                                  if (!current) return current;
-                                  const next = { ...current, value };
-                                  pushMatchedDeclarationDraft(
-                                    rule,
-                                    occurrenceIndex,
-                                    next,
-                                  );
-                                  return next;
-                                });
+                                setEditingMatchedDeclaration((current) =>
+                                  current ? { ...current, value } : current,
+                                );
                                 setActiveSuggestionField(null);
                               }}
                             />
@@ -1426,7 +1242,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => {
                           if (event.key === "Enter")
-                            addRuleProperty(rule, ruleKey, occurrenceIndex);
+                            addRuleProperty(rule, ruleKey);
                         }}
                         placeholder="value"
                         className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
@@ -1446,9 +1262,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     <span style={{ color: "var(--text-muted)" }}>;</span>
                     <button
                       type="button"
-                      onClick={() =>
-                        addRuleProperty(rule, ruleKey, occurrenceIndex)
-                      }
+                      onClick={() => addRuleProperty(rule, ruleKey)}
                       title={`Add property using ${rule.source}`}
                     >
                       <Plus size={12} style={{ color: "var(--text-muted)" }} />
