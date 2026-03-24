@@ -246,6 +246,7 @@ type PreviewMatchedCssDeclaration = {
   property: string;
   value: string;
   important?: boolean;
+  active?: boolean;
 };
 
 type PreviewMatchedCssRule = {
@@ -259,6 +260,230 @@ type PreviewMatchedRuleMutation = {
   source: string;
   occurrenceIndex?: number;
   originalProperty?: string;
+  isActive?: boolean;
+};
+
+type CssSpecificity = [number, number, number];
+
+const normalizeMatchedCssProperty = (property: string) =>
+  String(property || "").trim().toLowerCase();
+
+const splitSelectorList = (selectorText: string): string[] => {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < selectorText.length; index += 1) {
+    const char = selectorText[index];
+    if (quote) {
+      current += char;
+      if (char === quote && selectorText[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if ((char === ")" || char === "]") && depth > 0) {
+      depth -= 1;
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+};
+
+const compareSpecificity = (
+  left: CssSpecificity,
+  right: CssSpecificity,
+): number => {
+  if (left[0] !== right[0]) return left[0] - right[0];
+  if (left[1] !== right[1]) return left[1] - right[1];
+  return left[2] - right[2];
+};
+
+const maxSpecificity = (
+  left: CssSpecificity,
+  right: CssSpecificity,
+): CssSpecificity => (compareSpecificity(left, right) >= 0 ? left : right);
+
+const addSpecificity = (
+  base: CssSpecificity,
+  extra: CssSpecificity,
+): CssSpecificity => [base[0] + extra[0], base[1] + extra[1], base[2] + extra[2]];
+
+const calculateSelectorSpecificity = (selectorText: string): CssSpecificity => {
+  let working = String(selectorText || "");
+  let specificity: CssSpecificity = [0, 0, 0];
+
+  const functionalPseudoPattern =
+    /:(is|not|has|where)\(([^()]*|\((?:[^()]*|\([^()]*\))*\))*\)/gi;
+  working = working.replace(functionalPseudoPattern, (match, fnName, args) => {
+    if (String(fnName).toLowerCase() === "where") return " ";
+    const best = splitSelectorList(String(args || "")).reduce<CssSpecificity>(
+      (current, part) =>
+        maxSpecificity(current, calculateSelectorSpecificity(part)),
+      [0, 0, 0],
+    );
+    specificity = addSpecificity(specificity, best);
+    return " ";
+  });
+
+  const idMatches = working.match(/#[\w-]+/g) || [];
+  specificity[0] += idMatches.length;
+  working = working.replace(/#[\w-]+/g, " ");
+
+  const classMatches = working.match(/\.[\w-]+/g) || [];
+  specificity[1] += classMatches.length;
+  working = working.replace(/\.[\w-]+/g, " ");
+
+  const attributeMatches = working.match(/\[[^\]]+\]/g) || [];
+  specificity[1] += attributeMatches.length;
+  working = working.replace(/\[[^\]]+\]/g, " ");
+
+  const pseudoElementMatches = working.match(/::[\w-]+/g) || [];
+  specificity[2] += pseudoElementMatches.length;
+  working = working.replace(/::[\w-]+/g, " ");
+
+  const pseudoClassMatches =
+    working.match(/:(?!:)[\w-]+(?:\([^)]*\))?/g) || [];
+  specificity[1] += pseudoClassMatches.length;
+  working = working.replace(/:(?!:)[\w-]+(?:\([^)]*\))?/g, " ");
+
+  const elementMatches = working.match(
+    /(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g,
+  ) || [];
+  elementMatches.forEach((match) => {
+    const token = match.trim();
+    if (token && token !== "*") {
+      specificity[2] += 1;
+    }
+  });
+
+  return specificity;
+};
+
+const getMatchedSelectorSpecificity = (
+  element: Element,
+  selectorText: string,
+): CssSpecificity =>
+  splitSelectorList(selectorText).reduce<CssSpecificity>((best, selector) => {
+    if (!selector) return best;
+    try {
+      if (!element.matches(selector)) return best;
+      return maxSpecificity(best, calculateSelectorSpecificity(selector));
+    } catch {
+      return best;
+    }
+  }, [0, 0, 0]);
+
+const annotateMatchedCssRuleActivity = (
+  element: Element,
+  rules: PreviewMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  type Winner = {
+    important: boolean;
+    specificity: CssSpecificity;
+    ruleIndex: number;
+    declarationIndex: number;
+    inline: boolean;
+  };
+
+  const winnerByProperty = new Map<string, Winner>();
+
+  rules.forEach((rule, ruleIndex) => {
+    const specificity = getMatchedSelectorSpecificity(element, rule.selector);
+    rule.declarations.forEach((declaration, declarationIndex) => {
+      const property = normalizeMatchedCssProperty(declaration.property);
+      if (!property) return;
+      const candidate: Winner = {
+        important: Boolean(declaration.important),
+        specificity,
+        ruleIndex,
+        declarationIndex,
+        inline: false,
+      };
+      const current = winnerByProperty.get(property);
+      if (!current) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (current.important !== candidate.important) {
+        if (candidate.important) {
+          winnerByProperty.set(property, candidate);
+        }
+        return;
+      }
+      const specificityDiff = compareSpecificity(
+        candidate.specificity,
+        current.specificity,
+      );
+      if (specificityDiff > 0) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (specificityDiff < 0) return;
+      if (candidate.ruleIndex > current.ruleIndex) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (
+        candidate.ruleIndex === current.ruleIndex &&
+        candidate.declarationIndex > current.declarationIndex
+      ) {
+        winnerByProperty.set(property, candidate);
+      }
+    });
+  });
+
+  if (element instanceof HTMLElement) {
+    const inlineStyle = element.style;
+    Array.from(inlineStyle).forEach((property) => {
+      const normalized = normalizeMatchedCssProperty(property);
+      if (!normalized) return;
+      winnerByProperty.set(normalized, {
+        important: inlineStyle.getPropertyPriority(property) === "important",
+        specificity: [Infinity, Infinity, Infinity],
+        ruleIndex: Number.MAX_SAFE_INTEGER,
+        declarationIndex: Number.MAX_SAFE_INTEGER,
+        inline: true,
+      });
+    });
+  }
+
+  return rules.map((rule, ruleIndex) => ({
+    ...rule,
+    declarations: rule.declarations.map((declaration, declarationIndex) => {
+      const winner = winnerByProperty.get(
+        normalizeMatchedCssProperty(declaration.property),
+      );
+      return {
+        ...declaration,
+        active:
+          Boolean(winner) &&
+          !winner?.inline &&
+          winner.ruleIndex === ruleIndex &&
+          winner.declarationIndex === declarationIndex,
+      };
+    }),
+  }));
 };
 
 const collectMatchedCssRulesFromElement = (
@@ -295,8 +520,13 @@ const collectMatchedCssRulesFromElement = (
     if (!rules) return;
     Array.from(rules).forEach((rule) => {
       try {
-        if (rule instanceof CSSStyleRule) {
-          const selector = String(rule.selectorText || "").trim();
+        const candidateRule = rule as CSSRule & {
+          selectorText?: string;
+          style?: CSSStyleDeclaration;
+          cssRules?: CSSRuleList;
+        };
+        if (rule.type === 1 && candidateRule.selectorText) {
+          const selector = String(candidateRule.selectorText || "").trim();
           if (!selector) return;
           try {
             if (!element.matches(selector)) return;
@@ -304,14 +534,15 @@ const collectMatchedCssRulesFromElement = (
             return;
           }
           const declarations: PreviewMatchedCssDeclaration[] = [];
-          Array.from(rule.style).forEach((property) => {
-            const value = rule.style.getPropertyValue(property);
+          Array.from(candidateRule.style || []).forEach((property) => {
+            const value = candidateRule.style?.getPropertyValue(property);
             if (!property || !value) return;
             declarations.push({
               property,
               value,
               important:
-                rule.style.getPropertyPriority(property) === "important",
+                candidateRule.style?.getPropertyPriority(property) ===
+                "important",
             });
           });
           if (declarations.length) {
@@ -320,12 +551,8 @@ const collectMatchedCssRulesFromElement = (
           return;
         }
 
-        if (
-          rule instanceof CSSMediaRule ||
-          rule instanceof CSSSupportsRule ||
-          rule instanceof CSSLayerBlockRule
-        ) {
-          visitRules(rule.cssRules, source);
+        if (candidateRule.cssRules) {
+          visitRules(candidateRule.cssRules, source);
         }
       } catch {
         // Ignore inaccessible or unsupported rules.
@@ -347,7 +574,7 @@ const collectMatchedCssRulesFromElement = (
     }
   });
 
-  return results;
+  return annotateMatchedCssRuleActivity(element, results);
 };
 
 const getCssSourceBasename = (value: string) => {
@@ -6912,6 +7139,39 @@ const App: React.FC = () => {
     },
     [getLivePreviewSelectedElement],
   );
+  useEffect(() => {
+    if (interactionMode !== "preview") return;
+    if (
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return;
+    }
+    const needsActivityResolution =
+      previewSelectedMatchedCssRules.length === 0 ||
+      previewSelectedMatchedCssRules.some((rule) =>
+        rule.declarations.some((declaration) => declaration.active === undefined),
+      );
+    if (!needsActivityResolution) return;
+
+    const liveElement = getLivePreviewSelectedElement(previewSelectedPath);
+    if (!(liveElement instanceof HTMLElement)) return;
+
+    const computedStyles =
+      extractComputedStylesFromElement(liveElement) || null;
+    const matchedCssRules = collectMatchedCssRulesFromElement(liveElement);
+    if (matchedCssRules.length === 0 && computedStyles == null) return;
+
+    setPreviewSelectedComputedStyles((current) => current ?? computedStyles);
+    if (matchedCssRules.length > 0) {
+      setPreviewSelectedMatchedCssRules(matchedCssRules);
+    }
+  }, [
+    getLivePreviewSelectedElement,
+    interactionMode,
+    previewSelectedMatchedCssRules,
+    previewSelectedPath,
+  ]);
   const applyPreviewStyleUpdateAtPath = useCallback(
     async (
       elementPath: number[],
@@ -9981,12 +10241,11 @@ const App: React.FC = () => {
       }
 
       const nextPath = [...previewSelectedPath];
-      const appliedLiveRule = applyPreviewMatchedRuleToLiveStylesheet(
-        rule,
-        styles,
-        nextPath,
-      );
-      if (!appliedLiveRule) {
+      const shouldLivePreview = rule.isActive !== false;
+      const appliedLiveRule = shouldLivePreview
+        ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
+        : false;
+      if (shouldLivePreview && !appliedLiveRule) {
         handleImmediatePreviewStyle(styles);
       }
       const currentPending = previewLocalCssDraftPendingRef.current;
@@ -10542,6 +10801,10 @@ const App: React.FC = () => {
                               property: declaration.property,
                               value: declaration.value,
                               important: Boolean(declaration.important),
+                              active:
+                                declaration.active === undefined
+                                  ? undefined
+                                  : Boolean(declaration.active),
                             }
                           : null;
                       })
@@ -10552,15 +10815,17 @@ const App: React.FC = () => {
               })
               .filter(Boolean) as PreviewMatchedCssRule[])
           : [];
-
         const liveElement = getLivePreviewSelectedElement(nextPath);
         const computedStyles =
           payloadComputedStyles ||
           extractComputedStylesFromElement(liveElement);
+        const liveMatchedCssRules = liveElement
+          ? collectMatchedCssRulesFromElement(liveElement)
+          : [];
         const matchedCssRules =
-          payloadMatchedCssRules.length > 0
-            ? payloadMatchedCssRules
-            : collectMatchedCssRulesFromElement(liveElement);
+          liveMatchedCssRules.length > 0
+            ? liveMatchedCssRules
+            : payloadMatchedCssRules;
 
         const payloadText =
           typeof payload.text === "string" ? payload.text.trim() : "";

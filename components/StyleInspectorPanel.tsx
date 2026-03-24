@@ -20,6 +20,7 @@ interface StyleInspectorPanelProps {
       source: string;
       occurrenceIndex?: number;
       originalProperty?: string;
+      isActive?: boolean;
     },
     styles: Partial<React.CSSProperties>,
   ) => void;
@@ -30,6 +31,7 @@ interface StyleInspectorPanelProps {
       property: string;
       value: string;
       important?: boolean;
+      active?: boolean;
     }>;
   }>;
 }
@@ -40,6 +42,7 @@ type MatchedDeclaration = {
   property: string;
   value: string;
   important?: boolean;
+  active?: boolean;
 };
 type MatchedRule = NonNullable<
   StyleInspectorPanelProps["matchedCssRules"]
@@ -52,6 +55,7 @@ type EditingMatchedDeclaration = {
   originalProperty: string;
   property: string;
   value: string;
+  isActive?: boolean;
 };
 type MatchedDeclarationDraft = {
   originalProperty: string;
@@ -181,86 +185,6 @@ const isColorProperty = (key: string) =>
   /(color|fill|stroke)$/i.test(key) ||
   /background/i.test(key) ||
   /border-color/i.test(key);
-
-const getRuleSourcePriority = (source: string) => {
-  const lower = source.toLowerCase();
-  if (lower.includes("local.css")) return 0;
-  if (lower.includes("custom-flow.css")) return 2;
-  if (lower.includes("presentation.css")) return 3;
-  if (lower.includes("core.css")) return 4;
-  return 1;
-};
-
-const buildFontShorthandDeclaration = (
-  declarations: MatchedDeclaration[],
-): MatchedDeclaration | null => {
-  const byProp = new Map(
-    declarations.map((declaration) => [declaration.property, declaration]),
-  );
-  if (byProp.has("font")) return null;
-
-  const size = byProp.get("font-size")?.value?.trim();
-  const family = byProp.get("font-family")?.value?.trim();
-  if (!size || !family) return null;
-
-  const style = byProp.get("font-style")?.value?.trim() || "normal";
-  const variant = byProp.get("font-variant")?.value?.trim() || "normal";
-  const weight = byProp.get("font-weight")?.value?.trim() || "normal";
-  const stretch = byProp.get("font-stretch")?.value?.trim() || "normal";
-  const lineHeight = byProp.get("line-height")?.value?.trim() || "normal";
-
-  const prefixParts = [style, variant, weight, stretch].filter(
-    (part) => part && part !== "normal",
-  );
-  const sizePart =
-    lineHeight && lineHeight !== "normal" ? `${size}/${lineHeight}` : size;
-  const value = [...prefixParts, sizePart, family].join(" ").trim();
-  if (!value) return null;
-
-  return {
-    property: "font",
-    value,
-    important: declarations.some(
-      (declaration) =>
-        declaration.important &&
-        (declaration.property.startsWith("font-") ||
-          declaration.property === "line-height"),
-    ),
-  };
-};
-
-const simplifyDeclarations = (declarations: MatchedDeclaration[]) => {
-  const fontShorthand = buildFontShorthandDeclaration(declarations);
-  const hiddenFontProps = new Set([
-    "font-style",
-    "font-variant",
-    "font-weight",
-    "font-stretch",
-    "font-size",
-    "line-height",
-    "font-family",
-    "font-variant-caps",
-    "font-variant-ligatures",
-    "font-variant-numeric",
-    "font-variant-east-asian",
-    "font-variant-alternates",
-    "font-size-adjust",
-    "font-language-override",
-    "font-kerning",
-    "font-optical-sizing",
-    "font-feature-settings",
-    "font-variation-settings",
-    "font-variant-position",
-    "font-variant-emoji",
-  ]);
-
-  const simplified = declarations.filter(
-    (declaration) =>
-      !(fontShorthand && hiddenFontProps.has(declaration.property)),
-  );
-
-  return fontShorthand ? [...simplified, fontShorthand] : simplified;
-};
 
 const SuggestionList: React.FC<{
   suggestions: string[];
@@ -498,6 +422,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         selector: rule.selector,
         source: rule.source,
         occurrenceIndex,
+        isActive: rule.declarations.some((declaration) => declaration.active),
       },
       { [toReactName(draft.key.trim())]: draft.value.trim() },
     );
@@ -543,6 +468,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         source: rule.source,
         occurrenceIndex,
         originalProperty: editingMatchedDeclaration.originalProperty,
+        isActive: editingMatchedDeclaration.isActive,
       },
       {
         [toReactName(editingMatchedDeclaration.property.trim())]:
@@ -564,6 +490,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     if (!property || !value) return;
     const originalProperty =
       editingMatchedDeclaration?.originalProperty || property;
+    const isActive = editingMatchedDeclaration?.isActive;
     const draftRule = {
       selector: rule.selector,
       source: rule.source,
@@ -587,6 +514,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         source: rule.source,
         occurrenceIndex,
         originalProperty,
+        isActive,
       },
       { [toReactName(property)]: value },
     );
@@ -695,11 +623,18 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               declaration.property,
             );
             const draft = matchedDeclarationDrafts[draftKey];
-            if (!draft) return declaration;
+            const active = declaration.active ?? true;
+            if (!draft) {
+              return {
+                ...declaration,
+                active,
+              };
+            }
             return {
               ...declaration,
               property: draft.property,
               value: draft.value,
+              active,
             };
           });
           Object.entries(matchedDeclarationDrafts).forEach(
@@ -717,6 +652,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               nextDeclarations.push({
                 property: draft.property,
                 value: draft.value,
+                active: false,
               });
             }
             },
@@ -730,20 +666,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   declaration.value.toLowerCase().includes(query),
               )
             : nextDeclarations;
-          return simplifyDeclarations(filteredDeclarations);
+          return filteredDeclarations;
         })(),
       }))
       .filter((rule) => rule.declarations.length > 0);
   }, [annotatedMatchedRules, filterText, matchedDeclarationDrafts]);
 
   const orderedMatchedRules = useMemo(
-    () =>
-      [...filteredMatchedRules].sort((a, b) => {
-        const priorityDiff =
-          getRuleSourcePriority(a.source) - getRuleSourcePriority(b.source);
-        if (priorityDiff !== 0) return priorityDiff;
-        return a.source.localeCompare(b.source);
-      }),
+    () => [...filteredMatchedRules].reverse(),
     [filteredMatchedRules],
   );
 
@@ -1359,17 +1289,57 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             const ruleKey = buildMatchedRuleInstanceKey(rule);
             const draft = ruleDrafts[ruleKey] || { key: "", value: "" };
             const occurrenceIndex = rule.occurrenceIndex;
+            const hasResolvedActivity = rule.declarations.some(
+              (declaration) => declaration.active !== undefined,
+            );
+            const activeDeclarationCount = rule.declarations.filter(
+              (declaration) => declaration.active,
+            ).length;
+            const isRuleInactive =
+              hasResolvedActivity && activeDeclarationCount === 0;
+            const ruleStatusLabel = hasResolvedActivity
+              ? isRuleInactive
+                ? "overridden"
+                : "used"
+              : "matched";
             return (
               <div
                 key={`${rule.selector}-${rule.source}-${ruleIndex}`}
                 className="border-b px-3 py-2"
-                style={{ borderColor: "var(--border-color)" }}
+                style={{
+                  borderColor: "var(--border-color)",
+                  opacity: isRuleInactive ? 0.52 : 1,
+                }}
               >
                 <div className="flex items-center justify-between gap-3 text-[12px]">
-                  <span style={{ color: "var(--text-main)" }}>
-                    {rule.selector} {"{"}
-                  </span>
-                  <span style={{ color: "var(--text-muted)" }}>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span style={{ color: "var(--text-main)" }}>
+                      {rule.selector} {"{"}
+                    </span>
+                    <span
+                      className="shrink-0 rounded-full px-2 py-[1px] text-[10px] uppercase tracking-[0.12em]"
+                      style={{
+                        color:
+                          ruleStatusLabel === "used"
+                            ? "#0f766e"
+                            : ruleStatusLabel === "overridden"
+                              ? "#7c2d12"
+                              : "var(--text-muted)",
+                        background:
+                          ruleStatusLabel === "used"
+                            ? "rgba(20, 184, 166, 0.16)"
+                            : ruleStatusLabel === "overridden"
+                              ? "rgba(249, 115, 22, 0.14)"
+                              : "rgba(148, 163, 184, 0.12)",
+                      }}
+                    >
+                      {ruleStatusLabel}
+                    </span>
+                  </div>
+                  <span
+                    className="shrink-0"
+                    style={{ color: "var(--text-muted)" }}
+                  >
                     {rule.source}
                   </span>
                 </div>
@@ -1381,7 +1351,18 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       <div
                         key={`${rule.selector}-${declaration.property}`}
                         className="flex items-center gap-2 pl-4 text-[12px] min-w-0"
+                        style={{
+                          opacity: declaration.active ? 1 : 0.48,
+                        }}
                       >
+                        <span
+                          className="mt-[1px] h-2 w-2 shrink-0 rounded-full"
+                          style={{
+                            background: declaration.active
+                              ? "#14b8a6"
+                              : "rgba(148, 163, 184, 0.55)",
+                          }}
+                        />
                         <div className="relative w-[84px] shrink-0">
                           <input
                             value={editingMatchedDeclaration.property}
@@ -1517,30 +1498,67 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       <div
                         key={`${rule.selector}-${declaration.property}`}
                         className="flex items-start gap-2 pl-4 text-[12px] min-w-0"
+                        style={{
+                          opacity: declaration.active ? 1 : 0.48,
+                        }}
                         onDoubleClick={() =>
                           setEditingMatchedDeclaration({
                             ruleKey,
                             originalProperty: declaration.property,
                             property: declaration.property,
                             value: declaration.value,
+                            isActive: declaration.active,
                           })
                         }
                         title="Double click to edit"
                       >
                         <span
+                          className="mt-[4px] h-2 w-2 shrink-0 rounded-full"
+                          style={{
+                            background: declaration.active
+                              ? "#14b8a6"
+                              : "rgba(148, 163, 184, 0.55)",
+                          }}
+                        />
+                        <span
                           className="w-[84px] shrink-0 truncate"
-                          style={{ color: "#0ea5e9" }}
+                          style={{
+                            color: "#0ea5e9",
+                            textDecoration: declaration.active
+                              ? "none"
+                              : "line-through",
+                          }}
                         >
                           {declaration.property}
                         </span>
                         <span style={{ color: "var(--text-muted)" }}>:</span>
-                        <span
-                          className="min-w-0 flex-1 truncate"
-                          style={{ color: "var(--text-main)" }}
-                        >
-                          {declaration.value}
-                          {declaration.important ? " !important" : ""};
-                        </span>
+                        <div className="min-w-0 flex flex-1 items-start gap-2">
+                          <span
+                            className="min-w-0 flex-1 truncate"
+                            style={{
+                              color: "var(--text-main)",
+                              textDecoration: declaration.active
+                                ? "none"
+                                : "line-through",
+                            }}
+                          >
+                            {declaration.value}
+                            {declaration.important ? " !important" : ""};
+                          </span>
+                          <span
+                            className="shrink-0 rounded-full px-2 py-[1px] text-[10px] uppercase tracking-[0.12em]"
+                            style={{
+                              color: declaration.active
+                                ? "#0f766e"
+                                : "#7c2d12",
+                              background: declaration.active
+                                ? "rgba(20, 184, 166, 0.16)"
+                                : "rgba(249, 115, 22, 0.14)",
+                            }}
+                          >
+                            {declaration.active ? "used" : "overridden"}
+                          </span>
+                        </div>
                       </div>
                     ),
                   )}
