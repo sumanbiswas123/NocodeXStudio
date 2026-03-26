@@ -1843,6 +1843,28 @@ export const buildPreviewRuntimeScript = (
 
   return `
   (function () {
+    var __NX_THEME_KEY = ${JSON.stringify(THEME_STORAGE_KEY)};
+    try {
+      var __storageProto = window.Storage && window.Storage.prototype;
+      if (__storageProto) {
+        var __origGetItem = __storageProto.getItem;
+        var __origSetItem = __storageProto.setItem;
+        var __origRemoveItem = __storageProto.removeItem;
+        __storageProto.getItem = function(key) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return 'light';
+          return __origGetItem.call(this, key);
+        };
+        __storageProto.setItem = function(key, value) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return;
+          return __origSetItem.call(this, key, value);
+        };
+        __storageProto.removeItem = function(key) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return;
+          return __origRemoveItem.call(this, key);
+        };
+      }
+    } catch (e) {}
+
     var __FILES = ${payload};
     var __FILE_KEYS = Object.keys(__FILES);
     var __LOWER_KEY_MAP = {};

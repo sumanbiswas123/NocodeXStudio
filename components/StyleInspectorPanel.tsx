@@ -10,6 +10,7 @@ import {
 interface StyleInspectorPanelProps {
   element: VirtualElement | null;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
+  availableFonts?: string[];
   onUpdateContent?: (data: { content?: string; html?: string }) => void;
   onImmediateChange?: (styles: Partial<React.CSSProperties>) => void;
   onUpdateIdentity?: (identity: { id: string; className: string }) => void;
@@ -339,6 +340,9 @@ const isColorProperty = (key: string) =>
   /background/i.test(key) ||
   /border-color/i.test(key);
 
+const isFontFamilyProperty = (key: string) =>
+  normalizeKey(key) === "font-family";
+
 const extractAssetUrl = (value: string) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -380,9 +384,9 @@ const SuggestionList: React.FC<{
       className="absolute top-full left-0 z-50 mt-1 max-h-44 overflow-y-auto no-scrollbar border"
       style={{
         width,
-        background: "#242822",
-        borderColor: "#4d5447",
-        boxShadow: "0 10px 24px rgba(0,0,0,0.35)",
+        background: "var(--bg-glass-strong)",
+        borderColor: "var(--border-color)",
+        boxShadow: "var(--glass-shadow)",
       }}
     >
       {suggestions.map((suggestion) => (
@@ -390,7 +394,7 @@ const SuggestionList: React.FC<{
           key={suggestion}
           type="button"
           className="block w-full border-b px-2 py-1.5 text-left text-[12px] hover:bg-white/5"
-          style={{ borderColor: "rgba(255,255,255,0.06)", color: "#d7dad4" }}
+          style={{ borderColor: "var(--border-color)", color: "var(--text-main)" }}
           onMouseDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -406,6 +410,7 @@ const SuggestionList: React.FC<{
 const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   element,
   onUpdateStyle,
+  availableFonts = [],
   onUpdateContent,
   onUpdateIdentity,
   onReplaceAsset,
@@ -443,6 +448,27 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   >({});
   const [editingMatchedDeclaration, setEditingMatchedDeclaration] =
     useState<EditingMatchedDeclaration | null>(null);
+  const fontFamilyOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          availableFonts
+            .map((font) => String(font || "").trim())
+            .filter(Boolean),
+        ),
+      ),
+    [availableFonts],
+  );
+
+  const getValueOptions = (key: string, currentValue = "") => {
+    if (isFontFamilyProperty(key)) {
+      const current = String(currentValue || "").trim();
+      return current && !fontFamilyOptions.includes(current)
+        ? [current, ...fontFamilyOptions]
+        : fontFamilyOptions;
+    }
+    return CSS_PROPERTY_VALUES[toReactName(key)] || [];
+  };
   const [hoveredAssetPreview, setHoveredAssetPreview] =
     useState<HoveredAssetPreview | null>(null);
 
@@ -1150,19 +1176,25 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   };
 
   const showValueSuggestions = (index: number, key: string, value: string) => {
-    const options = CSS_PROPERTY_VALUES[toReactName(key)] || [];
+    const options = getValueOptions(key, value);
     if (!options.length) {
       setActiveSuggestionField(null);
       return;
     }
     setFilteredSuggestions(
-      filterRemSuggestions(
-        value.trim()
-        ? options.filter((option) =>
-            option.toLowerCase().startsWith(value.toLowerCase()),
-          )
-        : options,
-      ),
+      isFontFamilyProperty(key)
+        ? (value.trim()
+            ? options.filter((option) =>
+                option.toLowerCase().startsWith(value.toLowerCase()),
+              )
+            : options)
+        : filterRemSuggestions(
+            value.trim()
+              ? options.filter((option) =>
+                  option.toLowerCase().startsWith(value.toLowerCase()),
+                )
+              : options,
+          ),
     );
     setActiveSuggestionField({ index, type: "value" });
   };
@@ -1214,14 +1246,20 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     }
 
     setNewPropValue(normalizeCssValueInput(value));
-    const options = CSS_PROPERTY_VALUES[toReactName(newPropName)] || [];
-    const matches = filterRemSuggestions(
-      value.trim()
-      ? options.filter((option) =>
-          option.toLowerCase().startsWith(value.toLowerCase()),
-        )
-      : options,
-    );
+    const options = getValueOptions(newPropName, value);
+    const matches = isFontFamilyProperty(newPropName)
+      ? (value.trim()
+          ? options.filter((option) =>
+              option.toLowerCase().startsWith(value.toLowerCase()),
+            )
+          : options)
+      : filterRemSuggestions(
+          value.trim()
+            ? options.filter((option) =>
+                option.toLowerCase().startsWith(value.toLowerCase()),
+              )
+            : options,
+        );
     setFilteredSuggestions(matches);
     setActiveSuggestionField(
       matches.length ? { index: -1, type: "value" } : null,
@@ -1350,7 +1388,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           className="flex h-full flex-col items-center justify-center border px-6 text-center"
           style={{
             borderColor: "var(--border-color)",
-            background: "rgba(255,255,255,0.72)",
+            background: "var(--bg-glass-strong)",
           }}
         >
           <AlertCircle className="mb-3 opacity-60" size={22} />
@@ -1367,7 +1405,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       <div
         className="flex h-full flex-col overflow-hidden"
       style={{
-        background: "rgba(255,255,255,0.82)",
+        background: "var(--bg-glass)",
         color: "var(--text-main)",
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
@@ -1378,7 +1416,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         className="shrink-0 border-b px-3 py-2"
         style={{
           borderColor: "var(--border-color)",
-          background: "rgba(255,255,255,0.78)",
+          background: "var(--bg-glass-strong)",
         }}
       >
         <div
@@ -1391,7 +1429,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           <Search
             size={12}
             className="absolute left-2 top-1/2 -translate-y-1/2"
-            style={{ color: "#8b9285" }}
+            style={{ color: "var(--text-muted)" }}
           />
           <input
             value={filterText}
@@ -1400,7 +1438,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             className="w-full border py-1 pl-7 pr-2 text-[12px] outline-none"
             style={{
               borderColor: "var(--border-color)",
-              background: "rgba(255,255,255,0.9)",
+              background: "var(--input-bg)",
               color: "var(--text-main)",
             }}
           />
@@ -1430,7 +1468,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   }}
                   placeholder=".new-class or #new-id"
                   className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
-                  style={{ color: "#0ea5e9" }}
+                  style={{ color: "var(--accent-primary)" }}
                   autoFocus
                 />
               ) : (
@@ -1460,9 +1498,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 onClick={() => setShowHtmlEditor((current) => !current)}
                 className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
                 style={{
-                  borderColor: "rgba(14,165,233,0.24)",
-                  color: "#0e7490",
-                  background: "rgba(14,165,233,0.06)",
+                  borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
+                  color: "var(--accent-primary)",
+                  background: "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
                 }}
               >
                 Edit HTML
@@ -1479,13 +1517,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   style={{
                     borderColor:
                       element?.type === "sup"
-                        ? "rgba(14,165,233,0.24)"
+                        ? "color-mix(in srgb, var(--accent-primary) 24%, transparent)"
                         : "var(--border-color)",
                     color:
-                      element?.type === "sup" ? "#0e7490" : "var(--text-main)",
+                      element?.type === "sup"
+                        ? "var(--accent-primary)"
+                        : "var(--text-main)",
                     background:
                       element?.type === "sup"
-                        ? "rgba(14,165,233,0.06)"
+                        ? "color-mix(in srgb, var(--accent-primary) 10%, transparent)"
                         : "transparent",
                   }}
                   title="Wrap selected text in <sup>"
@@ -1505,13 +1545,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   style={{
                     borderColor:
                       element?.type === "sub"
-                        ? "rgba(14,165,233,0.24)"
+                        ? "color-mix(in srgb, var(--accent-primary) 24%, transparent)"
                         : "var(--border-color)",
                     color:
-                      element?.type === "sub" ? "#0e7490" : "var(--text-main)",
+                      element?.type === "sub"
+                        ? "var(--accent-primary)"
+                        : "var(--text-main)",
                     background:
                       element?.type === "sub"
-                        ? "rgba(14,165,233,0.06)"
+                        ? "color-mix(in srgb, var(--accent-primary) 10%, transparent)"
                         : "transparent",
                   }}
                   title="Wrap selected text in <sub>"
@@ -1529,7 +1571,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   style={{
                     borderColor: "var(--border-color)",
                     color: "var(--text-main)",
-                    background: "rgba(255,255,255,0.75)",
+                    background: "var(--input-bg)",
                   }}
                 />
                 <div className="mt-2 flex justify-end">
@@ -1541,9 +1583,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     }}
                     className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
                     style={{
-                      borderColor: "rgba(14,165,233,0.24)",
-                      color: "#0e7490",
-                      background: "rgba(14,165,233,0.06)",
+                      borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
+                      color: "var(--accent-primary)",
+                      background: "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
                     }}
                   >
                     Apply HTML
@@ -1560,8 +1602,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             <div
               className="mb-2 overflow-hidden rounded-md border"
               style={{
-                borderColor: "rgba(14,165,233,0.18)",
-                background: "rgba(14,165,233,0.04)",
+                borderColor: "color-mix(in srgb, var(--accent-primary) 20%, transparent)",
+                background: "color-mix(in srgb, var(--accent-primary) 8%, transparent)",
               }}
             >
               <div
@@ -1578,7 +1620,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               <div
                 className="border-t px-2 py-1 text-[11px] truncate"
                 style={{
-                  borderColor: "rgba(14,165,233,0.14)",
+                  borderColor: "color-mix(in srgb, var(--accent-primary) 16%, transparent)",
                   color: "var(--text-muted)",
                 }}
                 title={assetSource}
@@ -1591,9 +1633,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               onClick={onReplaceAsset}
               className="w-full rounded-md border px-2.5 py-2 text-left text-[12px] font-semibold transition-colors hover:bg-black/5"
               style={{
-                borderColor: "rgba(14,165,233,0.24)",
-                color: "#0e7490",
-                background: "rgba(14,165,233,0.06)",
+                borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
+                color: "var(--accent-primary)",
+                background: "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
               }}
               title={assetSource}
             >
@@ -1634,7 +1676,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       onClick={(event) => event.stopPropagation()}
                       className="w-full border-0 bg-transparent p-0 outline-none"
                       style={{
-                        color: "#0ea5e9",
+                        color: "var(--accent-primary)",
                         textDecoration: isSuperseded ? "line-through" : "none",
                       }}
                     />
@@ -1767,7 +1809,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   onClick={(event) => event.stopPropagation()}
                   placeholder="property"
                   className="w-full border-0 bg-transparent p-0 outline-none"
-                  style={{ color: "#0ea5e9" }}
+                  style={{ color: "var(--accent-primary)" }}
                 />
                 {activeSuggestionField?.index === -1 &&
                 activeSuggestionField.type === "key" ? (
@@ -1791,8 +1833,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     handleNewPropertyChange("value", event.target.value)
                   }
                   onFocus={() => {
-                    const options =
-                      CSS_PROPERTY_VALUES[toReactName(newPropName)] || [];
+                    const options = getValueOptions(newPropName, newPropValue);
                     setFilteredSuggestions(options);
                     setActiveSuggestionField(
                       options.length ? { index: -1, type: "value" } : null,
@@ -1922,7 +1963,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               });
                             }}
                             className="w-full border-0 bg-transparent p-0 outline-none"
-                            style={{ color: "#0ea5e9" }}
+                            style={{ color: "var(--accent-primary)" }}
                             autoFocus={
                               editingMatchedDeclaration.focusField === "key"
                             }
@@ -1964,12 +2005,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               })
                             }
                             onFocus={() => {
-                              const options =
-                                CSS_PROPERTY_VALUES[
-                                  toReactName(
-                                    editingMatchedDeclaration.property,
-                                  )
-                                ] || [];
+                              const options = getValueOptions(
+                                editingMatchedDeclaration.property,
+                                editingMatchedDeclaration.value,
+                              );
                               setFilteredSuggestions(options);
                               setActiveSuggestionField(
                                 options.length
@@ -2075,7 +2114,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         <span
                           className="w-[84px] shrink-0 truncate"
                           style={{
-                            color: "#0ea5e9",
+                            color: "var(--accent-primary)",
                             textDecoration:
                               declarationActive === false
                                 ? "line-through"
@@ -2142,9 +2181,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 className="pointer-events-none absolute left-0 top-full z-20 mt-1 overflow-hidden rounded-md border p-2"
                                 style={{
                                   width: 132,
-                                  background: "rgba(255,255,255,0.97)",
+                                  background: "var(--bg-glass-strong)",
                                   borderColor: "var(--border-color)",
-                                  boxShadow: "0 10px 24px rgba(15,23,42,0.16)",
+                                  boxShadow: "var(--glass-shadow)",
                                 }}
                               >
                                 <img
@@ -2181,7 +2220,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         onClick={(event) => event.stopPropagation()}
                         placeholder="property"
                         className="w-full border-0 bg-transparent p-0 outline-none"
-                        style={{ color: "#0ea5e9" }}
+                        style={{ color: "var(--accent-primary)" }}
                       />
                       {activeSuggestionField?.index === -(ruleIndex + 2) &&
                       activeSuggestionField.type === "key" ? (
@@ -2207,8 +2246,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           )
                         }
                         onFocus={() => {
-                          const options =
-                            CSS_PROPERTY_VALUES[toReactName(draft.key)] || [];
+                          const options = getValueOptions(draft.key, draft.value);
                           setFilteredSuggestions(options);
                           setActiveSuggestionField(
                             options.length
@@ -2286,11 +2324,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   <div
                     key={entry.key}
                     className="flex items-start gap-2 border-t py-1 pl-4 min-w-0"
-                    style={{ borderColor: "rgba(15,23,42,0.08)" }}
+                    style={{ borderColor: "var(--border-color)" }}
                   >
                     <span
                       className="w-[84px] shrink-0 break-words"
-                      style={{ color: "#0ea5e9" }}
+                      style={{ color: "var(--accent-primary)" }}
                     >
                       {entry.key}
                     </span>

@@ -10615,6 +10615,56 @@ const App: React.FC = () => {
       syncPreviewSelectionSnapshotFromLiveElement,
     ],
   );
+  const applyPreviewMatchedRuleOptimisticState = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+      elementPath?: number[],
+    ) => {
+      const targetPath =
+        Array.isArray(elementPath) && elementPath.length > 0
+          ? elementPath
+          : previewSelectedPath;
+      const liveElement =
+        Array.isArray(targetPath) && targetPath.length > 0
+          ? getLivePreviewSelectedElement(targetPath)
+          : null;
+
+      setPreviewSelectedMatchedCssRules((current) => {
+        let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+        let didPatchRule = false;
+        const nextRules = current.map((currentRule) => {
+          if (
+            !cssRuleSourcesMatch(currentRule.source, rule.source) ||
+            normalizeSelectorSignature(currentRule.selector) !==
+              normalizeSelectorSignature(rule.selector)
+          ) {
+            return currentRule;
+          }
+          if (remainingOccurrence > 0) {
+            remainingOccurrence -= 1;
+            return currentRule;
+          }
+          didPatchRule = true;
+          return {
+            ...currentRule,
+            declarations: applyPatchToDeclarationEntries(
+              currentRule.declarations,
+              rule,
+              styles,
+            ),
+          };
+        });
+
+        if (!didPatchRule) return current;
+        if (!(liveElement instanceof Element)) {
+          return nextRules;
+        }
+        return annotateMatchedCssRuleActivity(liveElement, nextRules);
+      });
+    },
+    [getLivePreviewSelectedElement, previewSelectedPath],
+  );
   const updatePreviewLiveStylesheetContent = useCallback(
     (
       sourcePath: string,
@@ -10866,6 +10916,7 @@ const App: React.FC = () => {
       }
 
       const nextPath = [...previewSelectedPath];
+      applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
       const shouldLivePreview = rule.isActive !== false;
       const appliedLiveRule = shouldLivePreview
         ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
@@ -10962,6 +11013,7 @@ const App: React.FC = () => {
     },
     [
       applyPreviewLocalCssPatchAtPath,
+      applyPreviewMatchedRuleOptimisticState,
       buildPreviewMatchedRulePatchedSource,
       applyPreviewMatchedRuleToLiveStylesheet,
       handleImmediatePreviewStyle,
@@ -14016,26 +14068,21 @@ const App: React.FC = () => {
                               className="w-full max-w-6xl rounded-[42px] border px-24 py-24 text-center shadow-[0_42px_140px_rgba(15,23,42,0.16)]"
                               style={{
                                 background:
-                                  theme === "dark"
-                                    ? "linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.9) 100%)"
-                                    : "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
-                                borderColor:
-                                  theme === "dark"
-                                    ? "rgba(148,163,184,0.3)"
-                                    : "rgba(15,23,42,0.12)",
-                                color: "var(--text-main)",
+                                  "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
+                                borderColor: "rgba(15,23,42,0.12)",
+                                color: "#0f172a",
                                 backdropFilter: "blur(16px)",
                               }}
                             >
                               <div
                                 className="text-[44px] font-semibold uppercase tracking-[0.34em]"
-                                style={{ color: "var(--text-muted)" }}
+                                style={{ color: "#64748b" }}
                               >
                                 Welcome To NoCode X
                               </div>
                               <p
                                 className="mt-8 text-[30px] leading-[1.45] max-w-4xl mx-auto"
-                                style={{ color: "var(--text-muted)" }}
+                                style={{ color: "#64748b" }}
                               >
                                 Open a previous presentation or choose a new
                                 project folder directly from the frame.
@@ -14047,7 +14094,7 @@ const App: React.FC = () => {
                                   style={{
                                     background: "rgba(14,165,233,0.14)",
                                     border: "1px solid rgba(14,165,233,0.25)",
-                                    color: "var(--text-main)",
+                                    color: "#0f172a",
                                   }}
                                   onClick={() => {
                                     void handleOpenFolder();
@@ -14060,7 +14107,7 @@ const App: React.FC = () => {
                                 <div className="mt-12 text-left">
                                   <div
                                     className="text-[18px] font-semibold uppercase tracking-[0.24em] text-center"
-                                    style={{ color: "var(--text-muted)" }}
+                                    style={{ color: "#64748b" }}
                                   >
                                     Recent Presentations
                                   </div>
@@ -14077,15 +14124,9 @@ const App: React.FC = () => {
                                           type="button"
                                           className="w-full rounded-[22px] border px-6 py-5 text-left transition-colors"
                                           style={{
-                                            borderColor:
-                                              theme === "dark"
-                                                ? "rgba(148,163,184,0.24)"
-                                                : "rgba(15,23,42,0.12)",
-                                            background:
-                                              theme === "dark"
-                                                ? "rgba(15,23,42,0.48)"
-                                                : "rgba(255,255,255,0.68)",
-                                            color: "var(--text-main)",
+                                            borderColor: "rgba(15,23,42,0.12)",
+                                            background: "rgba(255,255,255,0.68)",
+                                            color: "#0f172a",
                                           }}
                                           onClick={() => {
                                             void handleOpenFolder(recentPath);
@@ -14098,7 +14139,7 @@ const App: React.FC = () => {
                                           <div
                                             className="mt-2 truncate text-[15px]"
                                             style={{
-                                              color: "var(--text-muted)",
+                                              color: "#64748b",
                                             }}
                                           >
                                             {recentPath}
@@ -14112,7 +14153,7 @@ const App: React.FC = () => {
                               {projectPath ? (
                                 <div
                                   className="mt-8 text-[18px]"
-                                  style={{ color: "var(--text-muted)" }}
+                                  style={{ color: "#64748b" }}
                                 >
                                   Current project:{" "}
                                   {
@@ -14687,6 +14728,7 @@ const App: React.FC = () => {
                   >
                     <StyleInspectorPanel
                       element={inspectorElement}
+                      availableFonts={availableFonts}
                       onImmediateChange={handleImmediatePreviewStyle} // <--- ADD THIS
                       onUpdateContent={
                         previewSelectedElement
@@ -15166,6 +15208,7 @@ const App: React.FC = () => {
                     {interactionMode === "inspect" && selectedId ? (
                       <StyleInspectorPanel
                         element={inspectorElement}
+                        availableFonts={availableFonts}
                         onImmediateChange={handleImmediatePreviewStyle}
                         onUpdateContent={
                           previewSelectedElement
