@@ -966,6 +966,32 @@ const extractAssetUrlFromCssValue = (raw: string) => {
   return match[2].trim();
 };
 
+const normalizePresentationCssValue = (
+  cssProperty: string,
+  rawValue: unknown,
+) => {
+  const valueRaw =
+    rawValue === undefined || rawValue === null ? "" : String(rawValue);
+  const normalizedFontValue =
+    cssProperty === "font-family"
+      ? normalizeFontFamilyCssValue(valueRaw)
+      : valueRaw;
+  return normalizedFontValue.replace(
+    /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
+    (_match, amount) => `${amount}rem`,
+  );
+};
+
+const normalizePresentationStylePatch = (
+  styles: Record<string, unknown>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(styles).map(([key, value]) => {
+      const cssProperty = toCssPropertyName(key);
+      return [key, normalizePresentationCssValue(cssProperty, value)];
+    }),
+  );
+
 const applyPatchToDeclarationEntries = (
   declarations: PreviewMatchedCssDeclaration[],
   rule: PreviewMatchedRuleMutation,
@@ -979,12 +1005,7 @@ const applyPatchToDeclarationEntries = (
 
   Object.entries(styles).forEach(([key, rawValue]) => {
     const cssProperty = toCssPropertyName(key);
-    const valueRaw =
-      rawValue === undefined || rawValue === null ? "" : String(rawValue);
-    const value =
-      cssProperty === "font-family"
-        ? normalizeFontFamilyCssValue(valueRaw)
-        : valueRaw;
+    const value = normalizePresentationCssValue(cssProperty, rawValue);
     normalizedNextKeys.add(cssProperty.toLowerCase());
     const existingIndex = nextDeclarations.findIndex(
       (entry) => entry.property.toLowerCase() === cssProperty.toLowerCase(),
@@ -8849,13 +8870,23 @@ const App: React.FC = () => {
         const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
         const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
         const nextTop = Math.round(drag.startTop + consumedTopDelta);
-        drag.target.style.setProperty("width", `${width}px`);
-        drag.target.style.setProperty("height", `${height}px`);
+        const widthValue = normalizePresentationCssValue("width", `${width}px`);
+        const heightValue = normalizePresentationCssValue(
+          "height",
+          `${height}px`,
+        );
+        const nextLeftValue = normalizePresentationCssValue(
+          "left",
+          `${nextLeft}px`,
+        );
+        const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
+        drag.target.style.setProperty("width", widthValue);
+        drag.target.style.setProperty("height", heightValue);
         if (affectsWest && drag.canMoveLeft) {
-          drag.target.style.setProperty("left", `${nextLeft}px`);
+          drag.target.style.setProperty("left", nextLeftValue);
         }
         if (affectsNorth && drag.canMoveTop) {
-          drag.target.style.setProperty("top", `${nextTop}px`);
+          drag.target.style.setProperty("top", nextTopValue);
         }
         setPreviewSelectedElement((prev) =>
           prev
@@ -8863,13 +8894,13 @@ const App: React.FC = () => {
                 ...prev,
                 styles: {
                   ...prev.styles,
-                  width: `${width}px`,
-                  height: `${height}px`,
+                  width: widthValue,
+                  height: heightValue,
                   ...(affectsWest && drag.canMoveLeft
-                    ? { left: `${nextLeft}px` }
+                    ? { left: nextLeftValue }
                     : {}),
                   ...(affectsNorth && drag.canMoveTop
-                    ? { top: `${nextTop}px` }
+                    ? { top: nextTopValue }
                     : {}),
                 },
               }
@@ -9363,12 +9394,7 @@ const App: React.FC = () => {
       const mergedRules = parseRuleBlock(existingBlock);
       for (const [key, rawValue] of Object.entries(styles)) {
         const cssKey = toCssPropertyName(key);
-        const valueRaw =
-          rawValue === undefined || rawValue === null ? "" : String(rawValue);
-        const value =
-          cssKey === "font-family"
-            ? normalizeFontFamilyCssValue(valueRaw)
-            : valueRaw;
+        const value = normalizePresentationCssValue(cssKey, rawValue);
         if (value) {
           mergedRules[cssKey] = value;
         } else {
@@ -9549,8 +9575,10 @@ const App: React.FC = () => {
 
       const drawTag = normalizePreviewDrawTag(tag);
       const normalizedStyles = {
-        ...Object.fromEntries(
-          Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+        ...normalizePresentationStylePatch(
+          Object.fromEntries(
+            Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+          ),
         ),
         // Ensure drawn elements appear on top of existing content
         zIndex:
@@ -10098,10 +10126,12 @@ const App: React.FC = () => {
       )
         .toLowerCase()
         .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const nextLeftValue = normalizePresentationCssValue("left", `${nextLeft}px`);
+      const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
       const styleRules: string[] = [
         "position: absolute",
-        `left: ${nextLeft}px`,
-        `top: ${nextTop}px`,
+        `left: ${nextLeftValue}`,
+        `top: ${nextTopValue}`,
       ];
       for (const [key, value] of Object.entries(nextElement.styles || {})) {
         if (value === undefined || value === null || value === "") continue;
@@ -10172,8 +10202,8 @@ const App: React.FC = () => {
           ensurePositionableHost(liveDropHost);
           liveNode.classList.add(instanceClassName);
           liveNode.style.setProperty("position", "absolute");
-          liveNode.style.setProperty("left", `${nextLeft}px`);
-          liveNode.style.setProperty("top", `${nextTop}px`);
+          liveNode.style.setProperty("left", nextLeftValue);
+          liveNode.style.setProperty("top", nextTopValue);
           if (requiresAddToolAssets) {
             liveNode.style.setProperty("max-width", "100%");
             liveNode.style.setProperty("box-sizing", "border-box");
@@ -10264,12 +10294,7 @@ const App: React.FC = () => {
 
       Object.entries(styles).forEach(([key, rawValue]) => {
         const cssKey = toCssPropertyName(key);
-        const valueRaw =
-          rawValue === undefined || rawValue === null ? "" : String(rawValue);
-        const value =
-          cssKey === "font-family"
-            ? normalizeFontFamilyCssValue(valueRaw)
-            : valueRaw;
+        const value = normalizePresentationCssValue(cssKey, rawValue);
 
         previewStylePatch[key] = value;
         if (!(liveTarget instanceof HTMLElement)) return;
@@ -10443,12 +10468,7 @@ const App: React.FC = () => {
         }
         Object.entries(styles).forEach(([key, rawValue]) => {
           const cssKey = toCssPropertyName(key);
-          const valueRaw =
-            rawValue === undefined || rawValue === null ? "" : String(rawValue);
-          const value =
-            cssKey === "font-family"
-              ? normalizeFontFamilyCssValue(valueRaw)
-              : valueRaw;
+          const value = normalizePresentationCssValue(cssKey, rawValue);
           if (!value) {
             styleRule.style.removeProperty(cssKey);
             return;
@@ -11538,11 +11558,14 @@ const App: React.FC = () => {
         const nextPath = normalizePreviewPath(payload.path);
         if (!nextPath) return;
         if (!payload.styles || typeof payload.styles !== "object") return;
-        const stylePatch = Object.fromEntries(
+        const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles).map(([key, value]) => [
             key,
             value == null ? "" : String(value),
-          ]),
+          ]).reduce<Record<string, string>>((acc, [key, value]) => {
+            acc[key] = value;
+            return acc;
+          }, {}),
         ) as Partial<React.CSSProperties>;
         void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
@@ -11554,11 +11577,14 @@ const App: React.FC = () => {
         const nextParentPath = normalizePreviewPath(payload.parentPath || []);
         if (!nextParentPath) return;
         if (typeof payload.tag !== "string" || !payload.tag.trim()) return;
-        const stylePatch = Object.fromEntries(
+        const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles || {}).map(([key, value]) => [
             key,
             value == null ? "" : String(value),
-          ]),
+          ]).reduce<Record<string, string>>((acc, [key, value]) => {
+            acc[key] = value;
+            return acc;
+          }, {}),
         ) as Record<string, string>;
         void applyPreviewDrawCreate(nextParentPath, payload.tag, stylePatch);
         return;
