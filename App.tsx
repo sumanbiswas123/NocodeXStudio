@@ -10366,7 +10366,8 @@ const App: React.FC = () => {
   }, [selectedPreviewHtml]);
   const resolveInspectorAssetPreviewUrl = useCallback(
     (raw: string, source?: string) => {
-      const cleaned = extractAssetUrlFromCssValue(raw);
+      const cleaned =
+        extractAssetUrlFromCssValue(raw) || String(raw || "").trim();
       if (!cleaned) return "";
       if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
 
