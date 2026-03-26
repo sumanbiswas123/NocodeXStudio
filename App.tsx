@@ -8965,6 +8965,11 @@ const App: React.FC = () => {
       if (!selectedPreviewHtml || !Array.isArray(previewSelectedPath)) return;
       const nextAnimation =
         typeof animation === "string" ? animation.trim() : "";
+      await applyPreviewStyleUpdateAtPath(
+        previewSelectedPath,
+        { animation: nextAnimation },
+        { syncSelectedElement: true },
+      );
       const loaded = await loadFileContent(selectedPreviewHtml);
       const sourceHtml =
         typeof loaded === "string" && loaded.length > 0
@@ -9153,7 +9158,6 @@ const App: React.FC = () => {
       if (!target.getAttribute("style")?.trim()) {
         target.removeAttribute("style");
       }
-
       const cssMarkerStart = `/* nocodex-local-animation:${animationClassName}:start */`;
       const cssMarkerEnd = `/* nocodex-local-animation:${animationClassName}:end */`;
       const cssRule = nextAnimation
@@ -9180,7 +9184,6 @@ const App: React.FC = () => {
           nextCss,
         );
       }
-
       setFiles((prev) => ({
         ...prev,
         ...upsertedAssets,
@@ -9188,7 +9191,7 @@ const App: React.FC = () => {
 
       const serialized = parsed.documentElement.outerHTML;
       await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: true,
+        refreshPreviewDoc: false,
       });
       setPreviewSelectedElement((prev) =>
         prev
@@ -9221,6 +9224,7 @@ const App: React.FC = () => {
       );
     },
     [
+      applyPreviewStyleUpdateAtPath,
       ensureDirectoryTree,
       loadFileContent,
       persistPreviewHtmlContent,
@@ -13487,6 +13491,25 @@ const App: React.FC = () => {
                 onTogglePanelOpen={setIsLeftPanelOpen}
                 showMasterTools={SHOW_MASTER_TOOLS}
                 showCollapseControl
+                animationElement={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? previewSelectedElement
+                    : selectedElement
+                }
+                isEditModeActive={
+                  interactionMode === "edit" ||
+                  (interactionMode === "preview" && previewMode === "edit")
+                }
+                onUpdateAnimation={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? handlePreviewAnimationUpdateStable
+                    : handleUpdateAnimation
+                }
+                onUpdateAnimationStyle={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? handlePreviewStyleUpdateStable
+                    : handleUpdateStyle
+                }
               />
             </div>
             <div

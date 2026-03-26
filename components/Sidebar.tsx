@@ -3,8 +3,9 @@ import FileExplorer from './FileExplorer';
 import Toolbox from './Toolbox';
 import ImagesPanel from './ImagesPanel';
 import MasterFeaturePanel from './MasterFeaturePanel';
+import AnimationControls from './AnimationControls';
 import { FileMap, VirtualElement } from '../types';
-import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2, PanelLeftClose } from 'lucide-react';
+import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2, PanelLeftClose, Zap } from 'lucide-react';
 
 interface SidebarProps {
   files: FileMap;
@@ -38,6 +39,10 @@ interface SidebarProps {
   onTogglePanelOpen: (next: boolean) => void;
   showMasterTools?: boolean;
   showCollapseControl?: boolean;
+  animationElement?: VirtualElement | null;
+  isEditModeActive?: boolean;
+  onUpdateAnimation: (animation: string) => void;
+  onUpdateAnimationStyle: (styles: Partial<React.CSSProperties>) => void;
 }
 
 const TAB_ITEMS = [
@@ -45,6 +50,7 @@ const TAB_ITEMS = [
   { key: 'images', icon: ImageIcon, label: 'Images' },
   { key: 'toolbox', icon: Box, label: 'Add' },
   { key: 'master', icon: Wand2, label: 'Master', beta: true },
+  { key: 'animation', icon: Zap, label: 'Animation' },
 ] as const;
 
 type TabKey = typeof TAB_ITEMS[number]['key'];
@@ -81,13 +87,27 @@ const SidebarBase: React.FC<SidebarProps> = ({
   onTogglePanelOpen,
   showMasterTools = true,
   showCollapseControl = false,
+  animationElement = null,
+  isEditModeActive = false,
+  onUpdateAnimation,
+  onUpdateAnimationStyle,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('files');
-  const visibleTabs = showMasterTools
-    ? TAB_ITEMS
-    : TAB_ITEMS.filter((tab) => tab.key !== 'master');
   const selectedAccent = theme === 'dark' ? '#67e8f9' : '#0891b2';
   const selectedGlow = theme === 'dark' ? 'rgba(103, 232, 249, 0.4)' : 'rgba(8, 145, 178, 0.22)';
+  const showAnimationTab =
+    isEditModeActive &&
+    Boolean(animationElement);
+  const visibleTabs = (showMasterTools
+    ? TAB_ITEMS
+    : TAB_ITEMS.filter((tab) => tab.key !== 'master')
+  ).filter((tab) => tab.key !== 'animation' || showAnimationTab);
+
+  useEffect(() => {
+    if (activeTab === 'animation' && !showAnimationTab) {
+      setActiveTab(showMasterTools ? 'master' : 'toolbox');
+    }
+  }, [activeTab, showAnimationTab, showMasterTools]);
 
 
   const handleTabClick = (key: TabKey) => {
@@ -277,6 +297,22 @@ const SidebarBase: React.FC<SidebarProps> = ({
             <ImagesPanel files={files} activeFile={activeFile} onLoadImage={onLoadImage} theme={theme} />
           ) : showMasterTools && activeTab === 'master' ? (
             <MasterFeaturePanel files={files} onAddElement={onAddElement} isVisible={isPanelOpen && activeTab === 'master'} theme={theme} />
+          ) : activeTab === 'animation' && animationElement ? (
+            <div className="h-full min-h-0 overflow-y-auto p-3 custom-scrollbar">
+              <div
+                className="rounded-xl border p-3"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-glass)',
+                }}
+              >
+                <AnimationControls
+                  element={animationElement}
+                  onUpdateAnimation={onUpdateAnimation}
+                  onUpdateStyle={onUpdateAnimationStyle}
+                />
+              </div>
+            </div>
           ) : (
             <Toolbox onAddElement={onAddElement} />
           )}
@@ -332,7 +368,11 @@ const areSidebarPropsEqual = (
     prev.onLoadImage === next.onLoadImage &&
     prev.isPanelOpen === next.isPanelOpen &&
     prev.onTogglePanelOpen === next.onTogglePanelOpen &&
-    prev.showMasterTools === next.showMasterTools
+    prev.showMasterTools === next.showMasterTools &&
+    prev.animationElement === next.animationElement &&
+    prev.isEditModeActive === next.isEditModeActive &&
+    prev.onUpdateAnimation === next.onUpdateAnimation &&
+    prev.onUpdateAnimationStyle === next.onUpdateAnimationStyle
   );
 };
 
