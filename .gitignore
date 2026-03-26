@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Neutralino / local runtime temp
+.tmp/
+neutralinojs.log
+
+# Build outputs and local artifacts
+build_output.txt
+*.zip
+
+# Rust (cdp bridge) build output
+native/**/target/
+native/**/*.pdb

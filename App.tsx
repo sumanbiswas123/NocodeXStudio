@@ -265,6 +265,65 @@ type PreviewMatchedRuleMutation = {
 
 type CssSpecificity = [number, number, number];
 
+type CdpComputedStyleEntry = {
+  name?: string;
+  value?: string;
+};
+
+type CdpComputedStyleForNodeResult = {
+  computedStyle?: CdpComputedStyleEntry[];
+};
+
+type CdpSpecificity = {
+  a?: number;
+  b?: number;
+  c?: number;
+};
+
+type CdpSelector = {
+  text?: string;
+  specificity?: CdpSpecificity;
+};
+
+type CdpSelectorList = {
+  text?: string;
+  selectors?: CdpSelector[];
+};
+
+type CdpCssProperty = {
+  name?: string;
+  value?: string;
+  important?: boolean;
+  disabled?: boolean;
+};
+
+type CdpRuleStyle = {
+  styleSheetId?: string;
+  cssProperties?: CdpCssProperty[];
+};
+
+type CdpRule = {
+  origin?: string;
+  styleSheetId?: string;
+  selectorList?: CdpSelectorList;
+  style?: CdpRuleStyle;
+};
+
+type CdpRuleMatch = {
+  rule?: CdpRule;
+  matchingSelectors?: number[];
+};
+
+type CdpMatchedStylesForNodeResult = {
+  matchedCSSRules?: CdpRuleMatch[];
+};
+
+type CdpInspectSelectedResponse = {
+  ok?: boolean;
+  matchedStyles?: CdpMatchedStylesForNodeResult;
+  computedStyles?: CdpComputedStyleForNodeResult;
+};
+
 const normalizeMatchedCssProperty = (property: string) =>
   String(property || "").trim().toLowerCase();
 
@@ -592,6 +651,210 @@ const normalizeSelectorSignature = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const normalizeCdpSpecificity = (
+  specificity: CdpSpecificity | undefined,
+): CssSpecificity => [
+  Number(specificity?.a || 0),
+  Number(specificity?.b || 0),
+  Number(specificity?.c || 0),
+];
+
+const toReactComputedStylesFromCdp = (
+  payload: CdpComputedStyleForNodeResult | undefined,
+): React.CSSProperties | null => {
+  const entries = Array.isArray(payload?.computedStyle)
+    ? payload.computedStyle
+    : [];
+  if (entries.length === 0) return null;
+  const out: Record<string, string> = {};
+  entries.forEach((entry) => {
+    if (!entry?.name || typeof entry.value !== "string") return;
+    out[toReactName(entry.name)] = entry.value;
+  });
+  return out as React.CSSProperties;
+};
+
+const derivePreviewMatchedCssRulesFromCdp = (
+  payload: CdpMatchedStylesForNodeResult | undefined,
+  fallbackRules: PreviewMatchedCssRule[],
+  inlineStyles?: React.CSSProperties | null,
+): PreviewMatchedCssRule[] => {
+  const matches = Array.isArray(payload?.matchedCSSRules)
+    ? payload.matchedCSSRules
+    : [];
+  if (matches.length === 0) return [];
+
+  const unusedFallbackIndexes = new Set(
+    fallbackRules.map((_rule, index) => index),
+  );
+
+  type DerivedRule = PreviewMatchedCssRule & {
+    derivedSpecificity: CssSpecificity;
+    sourceOrder: number;
+  };
+
+  const derivedRules: DerivedRule[] = matches
+    .map((match, matchIndex) => {
+      const rule = match?.rule;
+      const selectorText = String(rule?.selectorList?.text || "").trim();
+      if (!selectorText) return null;
+
+      const declarations = Array.isArray(rule?.style?.cssProperties)
+        ? rule.style.cssProperties
+            .filter(
+              (property) =>
+                property &&
+                !property.disabled &&
+                typeof property.name === "string" &&
+                property.name.trim().length > 0 &&
+                typeof property.value === "string" &&
+                property.value.trim().length > 0,
+            )
+            .map((property) => ({
+              property: String(property.name || "").trim(),
+              value: String(property.value || "").trim(),
+              important: Boolean(property.important),
+            }))
+        : [];
+      if (declarations.length === 0) return null;
+
+      const selectors = Array.isArray(rule?.selectorList?.selectors)
+        ? rule.selectorList.selectors
+        : [];
+      const matchingSelectors =
+        Array.isArray(match?.matchingSelectors) && match.matchingSelectors.length > 0
+          ? match.matchingSelectors
+          : selectors.map((_selector, index) => index);
+
+      const derivedSpecificity = matchingSelectors.reduce<CssSpecificity>(
+        (best, selectorIndex) => {
+          const selector = selectors[selectorIndex];
+          const selectorTextPart = String(selector?.text || "").trim();
+          const nextSpecificity =
+            selector?.specificity &&
+            (selector.specificity.a !== undefined ||
+              selector.specificity.b !== undefined ||
+              selector.specificity.c !== undefined)
+              ? normalizeCdpSpecificity(selector.specificity)
+              : selectorTextPart
+                ? calculateSelectorSpecificity(selectorTextPart)
+                : best;
+          return maxSpecificity(best, nextSpecificity);
+        },
+        [0, 0, 0],
+      );
+
+      let source = rule?.styleSheetId || rule?.origin || "stylesheet";
+      const matchingFallbackIndex = fallbackRules.findIndex(
+        (fallbackRule, fallbackIndex) =>
+          unusedFallbackIndexes.has(fallbackIndex) &&
+          normalizeSelectorSignature(fallbackRule.selector) ===
+            normalizeSelectorSignature(selectorText),
+      );
+      if (matchingFallbackIndex >= 0) {
+        source = fallbackRules[matchingFallbackIndex].source;
+        unusedFallbackIndexes.delete(matchingFallbackIndex);
+      } else {
+        source = getCssSourceBasename(source) || source;
+      }
+
+      return {
+        selector: selectorText,
+        source,
+        declarations,
+        derivedSpecificity,
+        sourceOrder: matchIndex,
+      };
+    })
+    .filter(Boolean) as DerivedRule[];
+
+  type Winner = {
+    important: boolean;
+    specificity: CssSpecificity;
+    sourceOrder: number;
+    declarationIndex: number;
+    inline: boolean;
+  };
+
+  const winnerByProperty = new Map<string, Winner>();
+  const applyWinnerCandidate = (property: string, candidate: Winner) => {
+    const current = winnerByProperty.get(property);
+    if (!current) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (current.important !== candidate.important) {
+      if (candidate.important) {
+        winnerByProperty.set(property, candidate);
+      }
+      return;
+    }
+    const specificityDiff = compareSpecificity(
+      candidate.specificity,
+      current.specificity,
+    );
+    if (specificityDiff > 0) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (specificityDiff < 0) return;
+    if (candidate.sourceOrder > current.sourceOrder) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (
+      candidate.sourceOrder === current.sourceOrder &&
+      candidate.declarationIndex > current.declarationIndex
+    ) {
+      winnerByProperty.set(property, candidate);
+    }
+  };
+
+  derivedRules.forEach((rule) => {
+    rule.declarations.forEach((declaration, declarationIndex) => {
+      const property = normalizeMatchedCssProperty(declaration.property);
+      if (!property) return;
+      applyWinnerCandidate(property, {
+        important: Boolean(declaration.important),
+        specificity: rule.derivedSpecificity,
+        sourceOrder: rule.sourceOrder,
+        declarationIndex,
+        inline: false,
+      });
+    });
+  });
+
+  Object.keys(inlineStyles || {}).forEach((property) => {
+    const cssProperty = normalizeMatchedCssProperty(toCssPropertyName(property));
+    if (!cssProperty) return;
+    applyWinnerCandidate(cssProperty, {
+      important: false,
+      specificity: [Infinity, Infinity, Infinity],
+      sourceOrder: Number.MAX_SAFE_INTEGER,
+      declarationIndex: Number.MAX_SAFE_INTEGER,
+      inline: true,
+    });
+  });
+
+  return derivedRules.map((rule) => ({
+    selector: rule.selector,
+    source: rule.source,
+    declarations: rule.declarations.map((declaration, declarationIndex) => {
+      const winner = winnerByProperty.get(
+        normalizeMatchedCssProperty(declaration.property),
+      );
+      return {
+        ...declaration,
+        active:
+          Boolean(winner) &&
+          !winner?.inline &&
+          winner.sourceOrder === rule.sourceOrder &&
+          winner.declarationIndex === declarationIndex,
+      };
+    }),
+  }));
+};
+
 const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
   if (sheet.href) {
     const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
@@ -618,6 +881,14 @@ const cssRuleSourcesMatch = (left: string, right: string) => {
   const baseLeft = getCssSourceBasename(left).toLowerCase();
   const baseRight = getCssSourceBasename(right).toLowerCase();
   return Boolean(baseLeft && baseRight && baseLeft === baseRight);
+};
+
+const extractAssetUrlFromCssValue = (raw: string) => {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const match = text.match(/url\((['"]?)(.*?)\1\)/i);
+  if (!match?.[2]) return "";
+  return match[2].trim();
 };
 
 const applyPatchToDeclarationEntries = (
@@ -7140,35 +7411,107 @@ const App: React.FC = () => {
     [getLivePreviewSelectedElement],
   );
   useEffect(() => {
-    if (interactionMode !== "preview") return;
+    const ensureCdpBridge = async () => {
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      if (!nlPort) return;
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 600);
+        try {
+          const response = await fetch("http://127.0.0.1:38991/health", {
+            signal: controller.signal,
+          });
+          if (response.ok) return;
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      } catch {
+        // Bridge is not running yet.
+      }
+
+      const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+      if (!appRoot) return;
+
+      const candidatePaths = [
+        `${appRoot}/native/cdp_bridge.exe`,
+        `${appRoot}/native/cdp_bridge/target/release/cdp_bridge.exe`,
+        `${appRoot}/native/cdp_bridge/target/debug/cdp_bridge.exe`,
+      ];
+
+      for (const candidatePath of candidatePaths) {
+        try {
+          await (Neutralino as any).filesystem.getStats(candidatePath);
+          await (Neutralino as any).os.spawnProcess(
+            `"${candidatePath}" --cdp-port 9222 --listen-port 38991`,
+            appRoot,
+          );
+          return;
+        } catch {
+          // Try the next candidate path.
+        }
+      }
+    };
+
+    void ensureCdpBridge();
+  }, []);
+  useEffect(() => {
     if (
       !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
+      previewSelectedPath.length === 0 ||
+      !previewSelectedElement
     ) {
       return;
     }
-    const needsActivityResolution =
-      previewSelectedMatchedCssRules.length === 0 ||
-      previewSelectedMatchedCssRules.some((rule) =>
-        rule.declarations.some((declaration) => declaration.active === undefined),
-      );
-    if (!needsActivityResolution) return;
 
-    const liveElement = getLivePreviewSelectedElement(previewSelectedPath);
-    if (!(liveElement instanceof HTMLElement)) return;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:38991/inspect-selected", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            cdp_port: 9222,
+            iframe_title: "project-preview",
+            selected_selector: ".__nx-preview-selected",
+            target_url_contains: window.location.origin,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const payload =
+          (await response.json()) as CdpInspectSelectedResponse | null;
+        if (!payload?.ok) return;
 
-    const computedStyles =
-      extractComputedStylesFromElement(liveElement) || null;
-    const matchedCssRules = collectMatchedCssRulesFromElement(liveElement);
-    if (matchedCssRules.length === 0 && computedStyles == null) return;
+        const cdpComputedStyles = toReactComputedStylesFromCdp(
+          payload.computedStyles,
+        );
+        const cdpMatchedCssRules = derivePreviewMatchedCssRulesFromCdp(
+          payload.matchedStyles,
+          previewSelectedMatchedCssRules,
+          previewSelectedElement.styles,
+        );
 
-    setPreviewSelectedComputedStyles((current) => current ?? computedStyles);
-    if (matchedCssRules.length > 0) {
-      setPreviewSelectedMatchedCssRules(matchedCssRules);
-    }
+        if (cdpComputedStyles) {
+          setPreviewSelectedComputedStyles(cdpComputedStyles);
+        }
+        if (cdpMatchedCssRules.length > 0) {
+          setPreviewSelectedMatchedCssRules(cdpMatchedCssRules);
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+    }, 120);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
   }, [
-    getLivePreviewSelectedElement,
-    interactionMode,
+    previewRefreshNonce,
+    previewSelectedElement,
     previewSelectedMatchedCssRules,
     previewSelectedPath,
   ]);
@@ -9941,6 +10284,47 @@ const App: React.FC = () => {
 
     return candidates.length === 1 ? candidates[0] : null;
   }, [selectedPreviewHtml]);
+  const resolveInspectorAssetPreviewUrl = useCallback(
+    (raw: string, source?: string) => {
+      const cleaned = extractAssetUrlFromCssValue(raw);
+      if (!cleaned) return "";
+      if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
+
+      const basePath =
+        source && source.length > 0
+          ? resolvePreviewMatchedRuleSourcePath(source) || selectedPreviewHtml
+          : selectedPreviewHtml;
+      const resolvedVirtual = basePath
+        ? resolveProjectRelativePath(basePath, cleaned) || cleaned
+        : cleaned;
+      const normalizedResolved = normalizeProjectRelative(resolvedVirtual);
+      const absolutePath =
+        filePathIndexRef.current[resolvedVirtual] ||
+        filePathIndexRef.current[normalizedResolved] ||
+        (projectPath
+          ? normalizePath(joinPath(projectPath, normalizedResolved))
+          : null);
+      if (!absolutePath) return cleaned;
+
+      const relativePath = previewMountBasePath
+        ? toMountRelativePath(previewMountBasePath, absolutePath)
+        : null;
+      if (!relativePath) return toFileUrl(absolutePath);
+
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
+      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
+      return previewServerOrigin
+        ? `${previewServerOrigin}${mountPath}`
+        : mountPath;
+    },
+    [
+      previewMountBasePath,
+      projectPath,
+      resolvePreviewMatchedRuleSourcePath,
+      selectedPreviewHtml,
+    ],
+  );
   const applyPreviewMatchedRuleToLiveStylesheet = useCallback(
     (
       rule: PreviewMatchedRuleMutation,
@@ -14049,37 +14433,60 @@ const App: React.FC = () => {
                     <StyleInspectorPanel
                       element={inspectorElement}
                       onImmediateChange={handleImmediatePreviewStyle} // <--- ADD THIS
+                      onUpdateContent={
+                        previewSelectedElement
+                          ? handlePreviewContentUpdateStable
+                          : handleUpdateContent
+                      }
+                      onToggleTextTag={
+                        previewSelectedElement
+                          ? (tag) => {
+                              void applyPreviewTagUpdate(
+                                previewSelectedElement.type === tag
+                                  ? "span"
+                                  : tag,
+                              );
+                            }
+                          : undefined
+                      }
+                      onWrapTextTag={
+                        previewSelectedElement
+                          ? (tag) => {
+                              void applyQuickTextWrapTag(tag);
+                            }
+                          : undefined
+                      }
+                      selectionMode={
+                        previewSelectedElement ? previewSelectionMode : "default"
+                      }
+                      resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
                       onUpdateStyle={
-                        interactionMode === "preview" && previewSelectedElement
+                        previewSelectedElement
                           ? handlePreviewStyleUpdateStable
                           : handleUpdateStyle
                       }
                       onUpdateIdentity={
-                        interactionMode === "preview" && previewSelectedElement
+                        previewSelectedElement
                           ? handlePreviewIdentityUpdateStable
                           : handleUpdateIdentity
                       }
                       onReplaceAsset={
-                        interactionMode === "preview" && previewSelectedElement
+                        previewSelectedElement
                           ? () => {
                               void handleReplacePreviewAsset();
                             }
                           : undefined
                       }
                       onAddMatchedRuleProperty={
-                        interactionMode === "preview" && previewSelectedElement
+                        previewSelectedElement
                           ? handlePreviewMatchedRulePropertyAdd
                           : undefined
                       }
                       matchedCssRules={
-                        interactionMode === "preview"
-                          ? previewSelectedMatchedCssRules
-                          : []
+                        previewSelectedElement ? previewSelectedMatchedCssRules : []
                       }
                       computedStyles={
-                        interactionMode === "preview"
-                          ? previewSelectedComputedStyles
-                          : null
+                        previewSelectedElement ? previewSelectedComputedStyles : null
                       }
                     />
                   </div>
@@ -14505,12 +14912,61 @@ const App: React.FC = () => {
                       <StyleInspectorPanel
                         element={inspectorElement}
                         onImmediateChange={handleImmediatePreviewStyle}
-                        onUpdateStyle={handleUpdateStyle}
-                        onUpdateIdentity={handleUpdateIdentity}
+                        onUpdateContent={
+                          previewSelectedElement
+                            ? handlePreviewContentUpdateStable
+                            : handleUpdateContent
+                        }
+                        onToggleTextTag={
+                          previewSelectedElement
+                            ? (tag) => {
+                                void applyPreviewTagUpdate(
+                                  previewSelectedElement.type === tag
+                                    ? "span"
+                                    : tag,
+                                );
+                              }
+                            : undefined
+                        }
+                        onWrapTextTag={
+                          previewSelectedElement
+                            ? (tag) => {
+                                void applyQuickTextWrapTag(tag);
+                              }
+                            : undefined
+                        }
+                        selectionMode={
+                          previewSelectedElement
+                            ? previewSelectionMode
+                            : "default"
+                        }
+                        resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
+                        onUpdateStyle={
+                          previewSelectedElement
+                            ? handlePreviewStyleUpdateStable
+                            : handleUpdateStyle
+                        }
+                        onUpdateIdentity={
+                          previewSelectedElement
+                            ? handlePreviewIdentityUpdateStable
+                            : handleUpdateIdentity
+                        }
                         onReplaceAsset={undefined}
-                        onAddMatchedRuleProperty={undefined}
-                        matchedCssRules={[]}
-                        computedStyles={null}
+                        onAddMatchedRuleProperty={
+                          previewSelectedElement
+                            ? handlePreviewMatchedRulePropertyAdd
+                            : undefined
+                        }
+                        matchedCssRules={
+                          previewSelectedElement
+                            ? previewSelectedMatchedCssRules
+                            : []
+                        }
+                        computedStyles={
+                          previewSelectedElement
+                            ? previewSelectedComputedStyles
+                            : null
+                        }
                       />
                     ) : (
                       <PropertiesPanel

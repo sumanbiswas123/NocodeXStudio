@@ -10,9 +10,14 @@ import {
 interface StyleInspectorPanelProps {
   element: VirtualElement | null;
   onUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
+  onUpdateContent?: (data: { content?: string; html?: string }) => void;
   onImmediateChange?: (styles: Partial<React.CSSProperties>) => void;
   onUpdateIdentity?: (identity: { id: string; className: string }) => void;
   onReplaceAsset?: () => void;
+  onWrapTextTag?: (tag: "sup" | "sub") => void;
+  onToggleTextTag?: (tag: "sup" | "sub") => void;
+  selectionMode?: "default" | "text" | "image" | "css";
+  resolveAssetPreviewUrl?: (raw: string, source?: string) => string;
   computedStyles?: React.CSSProperties | null;
   onAddMatchedRuleProperty?: (
     rule: {
@@ -56,11 +61,16 @@ type EditingMatchedDeclaration = {
   property: string;
   value: string;
   isActive?: boolean;
+  focusField?: "key" | "value";
 };
 type MatchedDeclarationDraft = {
   originalProperty: string;
   property: string;
   value: string;
+};
+type HoveredAssetPreview = {
+  src: string;
+  key?: string;
 };
 
 const toCssName = (key: string) =>
@@ -70,6 +80,13 @@ const toReactName = (key: string) =>
   key.trim().replace(/-([a-z])/g, (_, char: string) => char.toUpperCase());
 
 const normalizeKey = (key: string) => toCssName(toReactName(key)).toLowerCase();
+
+const isInternalPreviewHelperRule = (rule: {
+  selector: string;
+  source: string;
+}) =>
+  /__nx-preview-(selected|editing|dirty)/i.test(rule.selector) ||
+  /__nx-preview-(selected|editing|dirty)/i.test(rule.source);
 
 const buildMatchedRuleInstanceKey = (
   rule: { selector: string; source: string; occurrenceIndex: number },
@@ -157,6 +174,38 @@ const extractUrlFromBackground = (raw?: string) => {
   return match?.[2] ? match[2] : "";
 };
 
+const normalizeCssValueInput = (value: string) =>
+  String(value || "").replace(
+    /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
+    (_match, amount) => `${amount}rem`,
+  );
+
+const toColorInputValue = (value: string) => {
+  if (typeof document === "undefined") return null;
+  const probe = document.createElement("span");
+  probe.style.color = "";
+  probe.style.color = String(value || "");
+  if (!probe.style.color) return null;
+  document.body.appendChild(probe);
+  const resolved = window.getComputedStyle(probe).color;
+  probe.remove();
+  const match = resolved.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+  if (!match) return null;
+  const [r, g, b] = match.slice(1, 4).map((channel) =>
+    Number(channel).toString(16).padStart(2, "0"),
+  );
+  return `#${r}${g}${b}`;
+};
+
+const filterRemSuggestions = (suggestions: string[]) =>
+  Array.from(
+    new Set(
+      suggestions
+        .map((value) => normalizeCssValueInput(value))
+        .filter((value) => !/\b-?(?:\d+\.?\d*|\.\d+)px\b/i.test(value)),
+    ),
+  );
+
 const buildSelectorLabel = (element: VirtualElement | null) => {
   if (!element) return "";
   const tag = String(element.type || element.name || "div").toLowerCase();
@@ -181,10 +230,145 @@ const buildSelectorLabel = (element: VirtualElement | null) => {
   return [`<${tag}>`, primaryLabel, secondaryLabel].filter(Boolean).join(" ");
 };
 
+const splitSelectorGroup = (selectorText: string) => {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < selectorText.length; index += 1) {
+    const char = selectorText[index];
+    if (quote) {
+      current += char;
+      if (char === quote && selectorText[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if ((char === ")" || char === "]") && depth > 0) {
+      depth -= 1;
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+};
+
+const selectorPartMatchesElement = (
+  selectorPart: string,
+  element: VirtualElement | null,
+) => {
+  if (!element) return false;
+
+  const tag = String(element.type || element.name || "div").toLowerCase();
+  const id = String(element.id || "").trim();
+  const classes = new Set(
+    String(element.className || "")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
+
+  const normalized = selectorPart.trim();
+  if (!normalized) return false;
+
+  const idMatches: string[] = normalized.match(/#([\w-]+)/g) || [];
+  if (idMatches.length > 0) {
+    return idMatches.some((token) => token.slice(1) === id);
+  }
+
+  const classMatches: string[] = normalized.match(/\.([\w-]+)/g) || [];
+  if (classMatches.length > 0) {
+    return classMatches.every((token) => classes.has(token.slice(1)));
+  }
+
+  const tagMatch = normalized.match(/^[a-zA-Z][\w-]*/);
+  if (tagMatch) {
+    return tagMatch[0].toLowerCase() === tag;
+  }
+
+  return false;
+};
+
+const SelectorText: React.FC<{
+  selector: string;
+  element: VirtualElement | null;
+}> = ({ selector, element }) => {
+  const parts = splitSelectorGroup(selector);
+  const hasMatch = parts.some((part) => selectorPartMatchesElement(part, element));
+
+  return (
+    <span style={{ color: "var(--text-main)" }}>
+      {parts.map((part, index) => {
+        const isMatch =
+          !hasMatch || selectorPartMatchesElement(part, element);
+        return (
+          <React.Fragment key={`${part}-${index}`}>
+            <span style={{ opacity: isMatch ? 1 : 0.4 }}>{part}</span>
+            {index < parts.length - 1 ? (
+              <span style={{ opacity: 0.45 }}>, </span>
+            ) : null}
+          </React.Fragment>
+        );
+      })}{" "}
+      {"{"}
+    </span>
+  );
+};
+
 const isColorProperty = (key: string) =>
   /(color|fill|stroke)$/i.test(key) ||
   /background/i.test(key) ||
   /border-color/i.test(key);
+
+const extractAssetUrl = (value: string) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const urlMatch = raw.match(/url\((['"]?)(.*?)\1\)/i);
+  if (urlMatch?.[2]) return urlMatch[2].trim();
+  if (/^(https?:|data:|blob:|\/)/i.test(raw)) return raw;
+  return "";
+};
+
+const getAssetLabel = (src: string) => {
+  const cleaned = String(src || "").trim();
+  if (!cleaned) return "";
+  const withoutQuery = cleaned.split("?")[0].split("#")[0];
+  const parts = withoutQuery.split("/");
+  return parts[parts.length - 1] || cleaned;
+};
+
+const shouldPreviewDeclarationAsset = (
+  property: string,
+  value: string,
+) => {
+  const normalizedProperty = normalizeKey(property);
+  if (
+    normalizedProperty !== "background-image" &&
+    normalizedProperty !== "background"
+  ) {
+    return false;
+  }
+  return Boolean(extractAssetUrl(value));
+};
 
 const SuggestionList: React.FC<{
   suggestions: string[];
@@ -222,8 +406,13 @@ const SuggestionList: React.FC<{
 const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   element,
   onUpdateStyle,
+  onUpdateContent,
   onUpdateIdentity,
   onReplaceAsset,
+  onWrapTextTag,
+  onToggleTextTag,
+  selectionMode = "default",
+  resolveAssetPreviewUrl,
   computedStyles,
   onAddMatchedRuleProperty,
   matchedCssRules = [],
@@ -242,6 +431,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
   const [filterText, setFilterText] = useState("");
   const [showComputed, setShowComputed] = useState(false);
+  const [showHtmlEditor, setShowHtmlEditor] = useState(false);
+  const [htmlDraft, setHtmlDraft] = useState("");
   const [showSelectorTokenInput, setShowSelectorTokenInput] = useState(false);
   const [selectorTokenDraft, setSelectorTokenDraft] = useState("");
   const [ruleDrafts, setRuleDrafts] = useState<
@@ -252,6 +443,25 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   >({});
   const [editingMatchedDeclaration, setEditingMatchedDeclaration] =
     useState<EditingMatchedDeclaration | null>(null);
+  const [hoveredAssetPreview, setHoveredAssetPreview] =
+    useState<HoveredAssetPreview | null>(null);
+
+  const showAssetPreview = (
+    source: string,
+    ruleSource?: string,
+    key?: string,
+  ) => {
+    const rawSrc = extractAssetUrl(source);
+    if (!rawSrc) return;
+    const src = resolveAssetPreviewUrl
+      ? resolveAssetPreviewUrl(rawSrc, ruleSource)
+      : rawSrc;
+    if (!src) return;
+    setHoveredAssetPreview({
+      src,
+      key,
+    });
+  };
 
   const createStyleRows = (
     nextStyles: React.CSSProperties | Record<string, unknown> | undefined,
@@ -305,6 +515,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setFilterText("");
     setShowSelectorTokenInput(false);
     setSelectorTokenDraft("");
+    setShowHtmlEditor(false);
+    setHtmlDraft(
+      typeof element?.html === "string"
+        ? element.html
+        : typeof element?.content === "string"
+          ? element.content
+          : "",
+    );
     setRuleDrafts({});
     setMatchedDeclarationDrafts({});
     setEditingMatchedDeclaration(null);
@@ -352,6 +570,16 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return currentSignature === nextSignature ? current : merged;
     });
   }, [element, element?.styles]);
+
+  useEffect(() => {
+    setHtmlDraft(
+      typeof element?.html === "string"
+        ? element.html
+        : typeof element?.content === "string"
+          ? element.content
+          : "",
+    );
+  }, [element?.content, element?.html, element?.id]);
 
   const applySelectorTokenDraft = () => {
     if (!onUpdateIdentity) return;
@@ -444,10 +672,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     ) {
       return;
     }
+    if (!onAddMatchedRuleProperty) {
+      setEditingMatchedDeclaration(null);
+      return;
+    }
     if (
       !editingMatchedDeclaration.property.trim() ||
-      !editingMatchedDeclaration.value.trim() ||
-      !onAddMatchedRuleProperty
+      !editingMatchedDeclaration.value.trim()
     ) {
       const clearedDraftKey = buildMatchedDeclarationDraftKey(
         rule,
@@ -459,7 +690,20 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         delete next[clearedDraftKey];
         return next;
       });
+      onAddMatchedRuleProperty(
+        {
+          selector: rule.selector,
+          source: rule.source,
+          occurrenceIndex,
+          originalProperty: editingMatchedDeclaration.originalProperty,
+          isActive: editingMatchedDeclaration.isActive,
+        },
+        {
+          [toReactName(editingMatchedDeclaration.originalProperty)]: "",
+        },
+      );
       setEditingMatchedDeclaration(null);
+      setActiveSuggestionField(null);
       return;
     }
     onAddMatchedRuleProperty(
@@ -520,18 +764,64 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
   };
 
+  type AssetInfo = {
+    source: string;
+    ruleSource?: string;
+  };
+
   const selectorLabel = useMemo(() => buildSelectorLabel(element), [element]);
-  const assetSource = useMemo(() => {
-    if (!element) return "";
+  const assetInfo = useMemo<AssetInfo>(() => {
+    if (!element) return { source: "" };
     if (typeof element.src === "string" && element.src.trim()) {
-      return element.src.trim();
+      return {
+        source: element.src.trim(),
+        ruleSource: undefined,
+      };
     }
     const backgroundImage =
       typeof element.styles?.backgroundImage === "string"
         ? String(element.styles.backgroundImage)
         : "";
-    return extractUrlFromBackground(backgroundImage);
-  }, [element]);
+    const inlineSource = extractUrlFromBackground(backgroundImage);
+    if (inlineSource) {
+      return {
+        source: inlineSource,
+        ruleSource: "element.style",
+      };
+    }
+    const computedSource = extractUrlFromBackground(
+      typeof computedStyles?.backgroundImage === "string"
+        ? String(computedStyles.backgroundImage)
+        : "",
+    );
+    if (computedSource) {
+      const matchedRule = matchedCssRules.find((rule) =>
+        rule.declarations.some(
+          (declaration) =>
+            declaration.active !== false &&
+            normalizeKey(declaration.property) === "background-image" &&
+            extractAssetUrl(declaration.value),
+        ),
+      );
+      return {
+        source: computedSource,
+        ruleSource: matchedRule?.source,
+      };
+    }
+    return {
+      source: "",
+      ruleSource: undefined,
+    };
+  }, [computedStyles, element, matchedCssRules]);
+  const assetSource = assetInfo.source;
+  const assetPreviewSource = useMemo(
+    () =>
+      assetSource
+        ? resolveAssetPreviewUrl?.(assetSource, assetInfo.ruleSource) ||
+          extractAssetUrl(assetSource)
+        : "",
+    [assetInfo.ruleSource, assetSource, resolveAssetPreviewUrl],
+  );
 
   const filteredStyles = useMemo(() => {
     const query = filterText.trim().toLowerCase();
@@ -544,6 +834,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           style.value.toLowerCase().includes(query),
       );
   }, [filterText, styles]);
+
+  const inlineStyleLastIndexByKey = useMemo(() => {
+    const lastIndex = new Map<string, number>();
+    styles.forEach((style, index) => {
+      lastIndex.set(normalizeKey(style.key), index);
+    });
+    return lastIndex;
+  }, [styles]);
 
   const computedEntries = useMemo(() => {
     if (!computedStyles) return [];
@@ -623,7 +921,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               declaration.property,
             );
             const draft = matchedDeclarationDrafts[draftKey];
-            const active = declaration.active ?? true;
+            const active = declaration.active;
             if (!draft) {
               return {
                 ...declaration,
@@ -673,11 +971,111 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }, [annotatedMatchedRules, filterText, matchedDeclarationDrafts]);
 
   const orderedMatchedRules = useMemo(
-    () => [...filteredMatchedRules].reverse(),
+    () =>
+      [...filteredMatchedRules]
+        .reverse()
+        .sort((left, right) => {
+          const leftInternal = isInternalPreviewHelperRule(left);
+          const rightInternal = isInternalPreviewHelperRule(right);
+          if (leftInternal === rightInternal) return 0;
+          return leftInternal ? 1 : -1;
+        }),
     [filteredMatchedRules],
   );
 
-  // StyleInspectorPanel.tsx
+  const matchedDeclarationActivity = useMemo(() => {
+    type Winner = {
+      important: boolean;
+      ruleIndex: number;
+      declarationIndex: number;
+      inline: boolean;
+    };
+
+    const resolved = new Map<string, boolean | undefined>();
+    const winnerByProperty = new Map<string, Winner>();
+    const toDeclarationKey = (
+      rule: { selector: string; source: string; occurrenceIndex: number },
+      declarationIndex: number,
+    ) => `${buildMatchedRuleInstanceKey(rule)}::${declarationIndex}`;
+
+    const applyWinner = (property: string, candidate: Winner) => {
+      const current = winnerByProperty.get(property);
+      if (!current) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (current.important !== candidate.important) {
+        if (candidate.important) {
+          winnerByProperty.set(property, candidate);
+        }
+        return;
+      }
+      if (candidate.ruleIndex > current.ruleIndex) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (
+        candidate.ruleIndex === current.ruleIndex &&
+        candidate.declarationIndex > current.declarationIndex
+      ) {
+        winnerByProperty.set(property, candidate);
+      }
+    };
+
+    filteredMatchedRules.forEach((rule, ruleIndex) => {
+      rule.declarations.forEach((declaration, declarationIndex) => {
+        const declarationKey = toDeclarationKey(rule, declarationIndex);
+        if (declaration.active !== undefined) {
+          resolved.set(declarationKey, declaration.active);
+        }
+        const property = normalizeKey(declaration.property);
+        if (!property) return;
+        applyWinner(property, {
+          important: Boolean(declaration.important),
+          ruleIndex,
+          declarationIndex,
+          inline: false,
+        });
+      });
+    });
+
+    styles.forEach((style, index) => {
+      const property = normalizeKey(style.key);
+      if (!property || !String(style.value || "").trim()) return;
+      applyWinner(property, {
+        important: /\s!important\s*$/i.test(String(style.value)),
+        ruleIndex: Number.MAX_SAFE_INTEGER,
+        declarationIndex: index,
+        inline: true,
+      });
+    });
+
+    filteredMatchedRules.forEach((rule, ruleIndex) => {
+      rule.declarations.forEach((declaration, declarationIndex) => {
+        const declarationKey = toDeclarationKey(rule, declarationIndex);
+        if (resolved.has(declarationKey)) return;
+        const property = normalizeKey(declaration.property);
+        const winner = property ? winnerByProperty.get(property) : undefined;
+        resolved.set(
+          declarationKey,
+          Boolean(winner) &&
+            !winner?.inline &&
+            winner.ruleIndex === ruleIndex &&
+            winner.declarationIndex === declarationIndex,
+        );
+      });
+    });
+
+    return resolved;
+  }, [filteredMatchedRules, styles]);
+
+  const getDeclarationActiveState = (
+    rule: { selector: string; source: string; occurrenceIndex: number },
+    declarationIndex: number,
+  ) =>
+    matchedDeclarationActivity.get(
+      `${buildMatchedRuleInstanceKey(rule)}::${declarationIndex}`,
+    );
 
   const pushStylePatchForRow = (
     row: StyleRow,
@@ -758,11 +1156,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return;
     }
     setFilteredSuggestions(
-      value.trim()
+      filterRemSuggestions(
+        value.trim()
         ? options.filter((option) =>
             option.toLowerCase().startsWith(value.toLowerCase()),
           )
         : options,
+      ),
     );
     setActiveSuggestionField({ index, type: "value" });
   };
@@ -776,7 +1176,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     if (!current) return;
     
     const nextKey = field === "key" ? value : current.key;
-    const nextValue = field === "value" ? value : current.value;
+    const nextValue = normalizeCssValueInput(
+      field === "value" ? value : current.value,
+    );
     const previousKey = current.key;
 
     // Update internal UI state
@@ -811,13 +1213,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return;
     }
 
-    setNewPropValue(value);
+    setNewPropValue(normalizeCssValueInput(value));
     const options = CSS_PROPERTY_VALUES[toReactName(newPropName)] || [];
-    const matches = value.trim()
+    const matches = filterRemSuggestions(
+      value.trim()
       ? options.filter((option) =>
           option.toLowerCase().startsWith(value.toLowerCase()),
         )
-      : options;
+      : options,
+    );
     setFilteredSuggestions(matches);
     setActiveSuggestionField(
       matches.length ? { index: -1, type: "value" } : null,
@@ -842,12 +1246,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
     if (!next) return;
     event.preventDefault();
+    const input = event.currentTarget;
     handleStyleChange(index, "value", next.value);
     window.requestAnimationFrame(() => {
-      event.currentTarget.setSelectionRange(
-        next.selectionStart,
-        next.selectionEnd,
-      );
+      if (!input || !input.isConnected) return;
+      try {
+        input.setSelectionRange(next.selectionStart, next.selectionEnd);
+      } catch {
+        // Ignore selection restore failures on recycled inputs.
+      }
     });
   };
 
@@ -874,6 +1281,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
     if (!next) return false;
     event.preventDefault();
+    const input = event.currentTarget;
     const nextDraft = {
       ...editingMatchedDeclaration,
       value: next.value,
@@ -881,10 +1289,12 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setEditingMatchedDeclaration(nextDraft);
     pushMatchedDeclarationDraft(rule, occurrenceIndex, nextDraft);
     window.requestAnimationFrame(() => {
-      event.currentTarget.setSelectionRange(
-        next.selectionStart,
-        next.selectionEnd,
-      );
+      if (!input || !input.isConnected) return;
+      try {
+        input.setSelectionRange(next.selectionStart, next.selectionEnd);
+      } catch {
+        // Ignore selection restore failures on recycled inputs.
+      }
     });
     return true;
   };
@@ -905,19 +1315,22 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
     if (!next) return;
     event.preventDefault();
+    const input = event.currentTarget;
     handleNewPropertyChange("value", next.value);
     window.requestAnimationFrame(() => {
-      event.currentTarget.setSelectionRange(
-        next.selectionStart,
-        next.selectionEnd,
-      );
+      if (!input || !input.isConnected) return;
+      try {
+        input.setSelectionRange(next.selectionStart, next.selectionEnd);
+      } catch {
+        // Ignore selection restore failures on recycled inputs.
+      }
     });
   };
 
   const addProperty = () => {
     if (!newPropName.trim() || !newPropValue.trim()) return;
     const key = newPropName.trim();
-    const value = newPropValue.trim();
+    const value = normalizeCssValueInput(newPropValue.trim());
     onUpdateStyle({ [toReactName(key)]: value });
     const nextRow = { id: `style-row-${styleRowIdRef.current++}`, key, value };
     styleDraftsRef.current[nextRow.id] = { key, value, previousKey: key };
@@ -951,8 +1364,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }
 
   return (
-    <div
-      className="flex h-full flex-col overflow-hidden"
+      <div
+        className="flex h-full flex-col overflow-hidden"
       style={{
         background: "rgba(255,255,255,0.82)",
         color: "var(--text-main)",
@@ -1036,11 +1449,143 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           </div>
         ) : null}
 
-        {assetSource && onReplaceAsset ? (
+        {selectionMode === "text" && onUpdateContent ? (
           <div
             className="border-b px-3 py-2"
             style={{ borderColor: "var(--border-color)" }}
           >
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowHtmlEditor((current) => !current)}
+                className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
+                style={{
+                  borderColor: "rgba(14,165,233,0.24)",
+                  color: "#0e7490",
+                  background: "rgba(14,165,233,0.06)",
+                }}
+              >
+                Edit HTML
+              </button>
+              {onWrapTextTag ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onToggleTextTag
+                      ? onToggleTextTag("sup")
+                      : onWrapTextTag("sup")
+                  }
+                  className="rounded-md border px-2 py-1.5 text-[12px] transition-colors hover:bg-black/5"
+                  style={{
+                    borderColor:
+                      element?.type === "sup"
+                        ? "rgba(14,165,233,0.24)"
+                        : "var(--border-color)",
+                    color:
+                      element?.type === "sup" ? "#0e7490" : "var(--text-main)",
+                    background:
+                      element?.type === "sup"
+                        ? "rgba(14,165,233,0.06)"
+                        : "transparent",
+                  }}
+                  title="Wrap selected text in <sup>"
+                >
+                  Sup
+                </button>
+              ) : null}
+              {onWrapTextTag ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onToggleTextTag
+                      ? onToggleTextTag("sub")
+                      : onWrapTextTag("sub")
+                  }
+                  className="rounded-md border px-2 py-1.5 text-[12px] transition-colors hover:bg-black/5"
+                  style={{
+                    borderColor:
+                      element?.type === "sub"
+                        ? "rgba(14,165,233,0.24)"
+                        : "var(--border-color)",
+                    color:
+                      element?.type === "sub" ? "#0e7490" : "var(--text-main)",
+                    background:
+                      element?.type === "sub"
+                        ? "rgba(14,165,233,0.06)"
+                        : "transparent",
+                  }}
+                  title="Wrap selected text in <sub>"
+                >
+                  Sub
+                </button>
+              ) : null}
+            </div>
+            {showHtmlEditor ? (
+              <div className="mt-2">
+                <textarea
+                  value={htmlDraft}
+                  onChange={(event) => setHtmlDraft(event.target.value)}
+                  className="min-h-[88px] w-full resize-y rounded-md border p-2 text-[12px] outline-none"
+                  style={{
+                    borderColor: "var(--border-color)",
+                    color: "var(--text-main)",
+                    background: "rgba(255,255,255,0.75)",
+                  }}
+                />
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateContent({ html: htmlDraft });
+                      setShowHtmlEditor(false);
+                    }}
+                    className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
+                    style={{
+                      borderColor: "rgba(14,165,233,0.24)",
+                      color: "#0e7490",
+                      background: "rgba(14,165,233,0.06)",
+                    }}
+                  >
+                    Apply HTML
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : assetSource && onReplaceAsset ? (
+          <div
+            className="border-b px-3 py-2"
+            style={{ borderColor: "var(--border-color)" }}
+          >
+            <div
+              className="mb-2 overflow-hidden rounded-md border"
+              style={{
+                borderColor: "rgba(14,165,233,0.18)",
+                background: "rgba(14,165,233,0.04)",
+              }}
+            >
+              <div
+                className="flex items-center justify-center px-2 py-2"
+                onMouseEnter={() => showAssetPreview(assetSource)}
+                onMouseLeave={() => setHoveredAssetPreview(null)}
+              >
+                <img
+                  src={assetPreviewSource || assetSource}
+                  alt={getAssetLabel(assetSource) || "Selected asset"}
+                  className="block max-h-[72px] w-auto max-w-full object-contain"
+                />
+              </div>
+              <div
+                className="border-t px-2 py-1 text-[11px] truncate"
+                style={{
+                  borderColor: "rgba(14,165,233,0.14)",
+                  color: "var(--text-muted)",
+                }}
+                title={assetSource}
+              >
+                {getAssetLabel(assetSource) || assetSource}
+              </div>
+            </div>
             <button
               type="button"
               onClick={onReplaceAsset}
@@ -1068,10 +1613,16 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           <div className="mt-1 space-y-1">
             {filteredStyles.map(({ style, index }) => {
               const cssKey = toCssName(style.key);
+              const isSuperseded =
+                inlineStyleLastIndexByKey.get(normalizeKey(style.key)) !== index;
+              const colorInputValue = isColorProperty(cssKey)
+                ? toColorInputValue(style.value)
+                : null;
               return (
                 <div
                   key={style.id}
                   className="group flex items-center gap-2 pl-4 text-[12px] min-w-0"
+                  style={{ opacity: isSuperseded ? 0.45 : 1 }}
                 >
                   <div className="relative w-[84px] shrink-0">
                     <input
@@ -1082,7 +1633,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       onFocus={() => showKeySuggestions(index)}
                       onClick={(event) => event.stopPropagation()}
                       className="w-full border-0 bg-transparent p-0 outline-none"
-                      style={{ color: "#0ea5e9" }}
+                      style={{
+                        color: "#0ea5e9",
+                        textDecoration: isSuperseded ? "line-through" : "none",
+                      }}
                     />
                     {activeSuggestionField?.index === index &&
                     activeSuggestionField.type === "key" ? (
@@ -1112,7 +1666,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   <span style={{ color: "var(--text-muted)" }}>:</span>
 
                   <div className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-                    {isColorProperty(cssKey) ? (
+                    {isColorProperty(cssKey) && colorInputValue ? (
                       <div
                         className="relative h-3 w-3 border"
                         style={{
@@ -1122,11 +1676,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       >
                         <input
                           type="color"
-                          value={
-                            /^#[0-9a-f]{6}$/i.test(style.value)
-                              ? style.value
-                              : "#000000"
-                          }
+                          value={colorInputValue}
                           onChange={(event) =>
                             handleStyleChange(
                               index,
@@ -1152,7 +1702,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       }
                       onClick={(event) => event.stopPropagation()}
                       className="w-full min-w-0 truncate border-0 bg-transparent p-0 outline-none"
-                      style={{ color: "var(--text-main)" }}
+                      style={{
+                        color: "var(--text-main)",
+                        textDecoration: isSuperseded ? "line-through" : "none",
+                      }}
                     />
                     {activeSuggestionField?.index === index &&
                     activeSuggestionField.type === "value" ? (
@@ -1290,18 +1843,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             const draft = ruleDrafts[ruleKey] || { key: "", value: "" };
             const occurrenceIndex = rule.occurrenceIndex;
             const hasResolvedActivity = rule.declarations.some(
-              (declaration) => declaration.active !== undefined,
+              (_declaration, declarationIndex) =>
+                getDeclarationActiveState(rule, declarationIndex) !== undefined,
             );
             const activeDeclarationCount = rule.declarations.filter(
-              (declaration) => declaration.active,
+              (_declaration, declarationIndex) =>
+                getDeclarationActiveState(rule, declarationIndex),
             ).length;
             const isRuleInactive =
               hasResolvedActivity && activeDeclarationCount === 0;
-            const ruleStatusLabel = hasResolvedActivity
-              ? isRuleInactive
-                ? "overridden"
-                : "used"
-              : "matched";
             return (
               <div
                 key={`${rule.selector}-${rule.source}-${ruleIndex}`}
@@ -1313,28 +1863,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               >
                 <div className="flex items-center justify-between gap-3 text-[12px]">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span style={{ color: "var(--text-main)" }}>
-                      {rule.selector} {"{"}
-                    </span>
-                    <span
-                      className="shrink-0 rounded-full px-2 py-[1px] text-[10px] uppercase tracking-[0.12em]"
-                      style={{
-                        color:
-                          ruleStatusLabel === "used"
-                            ? "#0f766e"
-                            : ruleStatusLabel === "overridden"
-                              ? "#7c2d12"
-                              : "var(--text-muted)",
-                        background:
-                          ruleStatusLabel === "used"
-                            ? "rgba(20, 184, 166, 0.16)"
-                            : ruleStatusLabel === "overridden"
-                              ? "rgba(249, 115, 22, 0.14)"
-                              : "rgba(148, 163, 184, 0.12)",
-                      }}
-                    >
-                      {ruleStatusLabel}
-                    </span>
+                    <SelectorText selector={rule.selector} element={element} />
                   </div>
                   <span
                     className="shrink-0"
@@ -1344,23 +1873,33 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   </span>
                 </div>
                 <div className="mt-1 space-y-1">
-                  {rule.declarations.map((declaration) =>
+                  {rule.declarations.map((declaration, declarationIndex) =>
                     editingMatchedDeclaration?.ruleKey === ruleKey &&
                     editingMatchedDeclaration.originalProperty ===
                       declaration.property ? (
+                      (() => {
+                        const declarationActive = getDeclarationActiveState(
+                          rule,
+                          declarationIndex,
+                        );
+                        return (
                       <div
-                        key={`${rule.selector}-${declaration.property}`}
+                        key={`${ruleKey}-${declaration.property}-${declarationIndex}`}
                         className="flex items-center gap-2 pl-4 text-[12px] min-w-0"
                         style={{
-                          opacity: declaration.active ? 1 : 0.48,
+                          opacity:
+                            declarationActive === false ? 0.48 : 1,
                         }}
                       >
                         <span
                           className="mt-[1px] h-2 w-2 shrink-0 rounded-full"
                           style={{
-                            background: declaration.active
-                              ? "#14b8a6"
-                              : "rgba(148, 163, 184, 0.55)",
+                            background:
+                              declarationActive === true
+                                ? "#14b8a6"
+                                : declarationActive === false
+                                  ? "rgba(148, 163, 184, 0.55)"
+                                  : "rgba(14, 165, 233, 0.55)",
                           }}
                         />
                         <div className="relative w-[84px] shrink-0">
@@ -1384,6 +1923,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             }}
                             className="w-full border-0 bg-transparent p-0 outline-none"
                             style={{ color: "#0ea5e9" }}
+                            autoFocus={
+                              editingMatchedDeclaration.focusField === "key"
+                            }
                           />
                           {activeSuggestionField?.index ===
                             -(ruleIndex + 2000) &&
@@ -1469,7 +2011,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             }}
                             className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
                             style={{ color: "var(--text-main)" }}
-                            autoFocus
+                            autoFocus={
+                              editingMatchedDeclaration.focusField !== "key"
+                            }
                           />
                           {activeSuggestionField?.index ===
                             -(ruleIndex + 2000) &&
@@ -1494,72 +2038,127 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         </div>
                         <span style={{ color: "var(--text-muted)" }}>;</span>
                       </div>
+                        );
+                      })()
                     ) : (
+                      (() => {
+                        const declarationActive = getDeclarationActiveState(
+                          rule,
+                          declarationIndex,
+                        );
+                        const declarationKey = `${ruleKey}::${declaration.property}`;
+                        const declarationPreview =
+                          hoveredAssetPreview?.key === declarationKey
+                            ? hoveredAssetPreview.src
+                            : "";
+                        return (
                       <div
-                        key={`${rule.selector}-${declaration.property}`}
+                        key={`${ruleKey}-${declaration.property}-${declarationIndex}`}
                         className="flex items-start gap-2 pl-4 text-[12px] min-w-0"
                         style={{
-                          opacity: declaration.active ? 1 : 0.48,
+                          opacity:
+                            declarationActive === false ? 0.48 : 1,
                         }}
-                        onDoubleClick={() =>
-                          setEditingMatchedDeclaration({
-                            ruleKey,
-                            originalProperty: declaration.property,
-                            property: declaration.property,
-                            value: declaration.value,
-                            isActive: declaration.active,
-                          })
-                        }
-                        title="Double click to edit"
+                        title={`${declaration.property}: ${declaration.value}${declaration.important ? " !important" : ""}`}
                       >
                         <span
                           className="mt-[4px] h-2 w-2 shrink-0 rounded-full"
                           style={{
-                            background: declaration.active
-                              ? "#14b8a6"
-                              : "rgba(148, 163, 184, 0.55)",
+                            background:
+                              declarationActive === true
+                                ? "#14b8a6"
+                                : declarationActive === false
+                                  ? "rgba(148, 163, 184, 0.55)"
+                                  : "rgba(14, 165, 233, 0.55)",
                           }}
                         />
                         <span
                           className="w-[84px] shrink-0 truncate"
                           style={{
                             color: "#0ea5e9",
-                            textDecoration: declaration.active
-                              ? "none"
-                              : "line-through",
+                            textDecoration:
+                              declarationActive === false
+                                ? "line-through"
+                                : "none",
+                          }}
+                          title={declaration.property}
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            setEditingMatchedDeclaration({
+                              ruleKey,
+                              originalProperty: declaration.property,
+                              property: declaration.property,
+                              value: declaration.value,
+                              isActive: declarationActive,
+                              focusField: "key",
+                            });
                           }}
                         >
                           {declaration.property}
                         </span>
                         <span style={{ color: "var(--text-muted)" }}>:</span>
                         <div className="min-w-0 flex flex-1 items-start gap-2">
-                          <span
-                            className="min-w-0 flex-1 truncate"
-                            style={{
-                              color: "var(--text-main)",
-                              textDecoration: declaration.active
-                                ? "none"
-                                : "line-through",
-                            }}
-                          >
-                            {declaration.value}
-                            {declaration.important ? " !important" : ""};
-                          </span>
-                          <span
-                            className="shrink-0 rounded-full px-2 py-[1px] text-[10px] uppercase tracking-[0.12em]"
-                            style={{
-                              color: declaration.active
-                                ? "#0f766e"
-                                : "#7c2d12",
-                              background: declaration.active
-                                ? "rgba(20, 184, 166, 0.16)"
-                                : "rgba(249, 115, 22, 0.14)",
-                            }}
-                          >
-                            {declaration.active ? "used" : "overridden"}
-                          </span>
+                          <div className="relative min-w-0 flex-1">
+                            <span
+                              className="min-w-0 block truncate"
+                              style={{
+                                color: "var(--text-main)",
+                                textDecoration:
+                                  declarationActive === false
+                                    ? "line-through"
+                                    : "none",
+                              }}
+                              onMouseEnter={() =>
+                                shouldPreviewDeclarationAsset(
+                                  declaration.property,
+                                  declaration.value,
+                                )
+                                  ? showAssetPreview(
+                                      declaration.value,
+                                      rule.source,
+                                      declarationKey,
+                                    )
+                                  : undefined
+                              }
+                              onMouseLeave={() => setHoveredAssetPreview(null)}
+                              title={`${declaration.property}: ${declaration.value}${declaration.important ? " !important" : ""}`}
+                              onDoubleClick={(event) => {
+                                event.stopPropagation();
+                                setEditingMatchedDeclaration({
+                                  ruleKey,
+                                  originalProperty: declaration.property,
+                                  property: declaration.property,
+                                  value: declaration.value,
+                                  isActive: declarationActive,
+                                  focusField: "value",
+                                });
+                              }}
+                            >
+                              {declaration.value}
+                              {declaration.important ? " !important" : ""};
+                            </span>
+                            {declarationPreview ? (
+                              <div
+                                className="pointer-events-none absolute left-0 top-full z-20 mt-1 overflow-hidden rounded-md border p-2"
+                                style={{
+                                  width: 132,
+                                  background: "rgba(255,255,255,0.97)",
+                                  borderColor: "var(--border-color)",
+                                  boxShadow: "0 10px 24px rgba(15,23,42,0.16)",
+                                }}
+                              >
+                                <img
+                                  src={declarationPreview}
+                                  alt={getAssetLabel(declarationPreview) || "CSS asset preview"}
+                                  className="block h-auto max-h-[84px] w-full rounded object-contain"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
+                        );
+                      })()
                     ),
                   )}
 
