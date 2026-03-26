@@ -872,6 +872,81 @@ const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
   return "inline stylesheet";
 };
 
+type LiveMatchedCssRuleRef = PreviewMatchedCssRule & {
+  styleRule: CSSStyleRule;
+};
+
+const collectLiveMatchedCssRuleRefsFromElement = (
+  element: Element | null,
+): LiveMatchedCssRuleRef[] => {
+  if (
+    !element ||
+    !(element instanceof Element) ||
+    typeof element.matches !== "function"
+  ) {
+    return [];
+  }
+
+  const results: LiveMatchedCssRuleRef[] = [];
+  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+    if (!rules) return;
+    Array.from(rules).forEach((rule) => {
+      try {
+        if (rule instanceof CSSStyleRule) {
+          const selector = String(rule.selectorText || "").trim();
+          if (!selector) return;
+          try {
+            if (!element.matches(selector)) return;
+          } catch {
+            return;
+          }
+          const declarations: PreviewMatchedCssDeclaration[] = [];
+          Array.from(rule.style || []).forEach((property) => {
+            const value = rule.style?.getPropertyValue(property);
+            if (!property || !value) return;
+            declarations.push({
+              property,
+              value,
+              important: rule.style?.getPropertyPriority(property) === "important",
+            });
+          });
+          if (declarations.length > 0) {
+            results.push({
+              selector,
+              source,
+              declarations,
+              styleRule: rule,
+            });
+          }
+          return;
+        }
+        const nestedRule = rule as CSSRule & { cssRules?: CSSRuleList };
+        if (nestedRule.cssRules) {
+          visitRules(nestedRule.cssRules, source);
+        }
+      } catch {
+        // Ignore inaccessible or unsupported rules.
+      }
+    });
+  };
+
+  const doc = element.ownerDocument;
+  if (!doc) return [];
+
+  Array.from(doc.styleSheets).forEach((sheet) => {
+    try {
+      visitRules(
+        (sheet as CSSStyleSheet).cssRules,
+        getStyleSheetSourceLabel(sheet as CSSStyleSheet),
+      );
+    } catch {
+      // Ignore inaccessible stylesheet rules.
+    }
+  });
+
+  return results;
+};
+
 const cssRuleSourcesMatch = (left: string, right: string) => {
   const normalizedLeft = normalizeProjectRelative(String(left || "")).toLowerCase();
   const normalizedRight = normalizeProjectRelative(String(right || "")).toLowerCase();
@@ -10336,8 +10411,14 @@ const App: React.FC = () => {
         previewFrameRef.current?.contentWindow?.document ??
         null;
       if (!frameDocument) return false;
+      const liveElement =
+        Array.isArray(elementPath) && elementPath.length > 0
+          ? getLivePreviewSelectedElement(elementPath)
+          : null;
 
       let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+      const normalizedRuleSelector = normalizeSelectorSignature(rule.selector);
+      const resolvedRuleSource = resolvePreviewMatchedRuleSourcePath(rule.source);
       const originalCssProperty = rule.originalProperty
         ? toCssPropertyName(rule.originalProperty)
         : "";
@@ -10371,11 +10452,42 @@ const App: React.FC = () => {
         });
       };
 
+      if (liveElement instanceof Element) {
+        let remainingLiveOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+        const liveMatchedRule = collectLiveMatchedCssRuleRefsFromElement(
+          liveElement,
+        ).find((candidate) => {
+          if (
+            normalizeSelectorSignature(candidate.selector) !==
+            normalizedRuleSelector
+          ) {
+            return false;
+          }
+          const matchesSource =
+            cssRuleSourcesMatch(candidate.source, rule.source) ||
+            cssRuleSourcesMatch(candidate.source, resolvedRuleSource || "");
+          if (!matchesSource) return false;
+          if (remainingLiveOccurrence > 0) {
+            remainingLiveOccurrence -= 1;
+            return false;
+          }
+          return true;
+        });
+        if (liveMatchedRule) {
+          applyToRule(liveMatchedRule.styleRule);
+          syncPreviewSelectionSnapshotFromLiveElement(elementPath || []);
+          return true;
+        }
+      }
+
       const visitRules = (rules: CSSRuleList | undefined): boolean => {
         if (!rules) return false;
         for (const cssRule of Array.from(rules)) {
           if (cssRule instanceof CSSStyleRule) {
-            if (String(cssRule.selectorText || "").trim() !== rule.selector) {
+            if (
+              normalizeSelectorSignature(String(cssRule.selectorText || "")) !==
+              normalizedRuleSelector
+            ) {
               continue;
             }
             if (remainingOccurrence > 0) {
@@ -10396,56 +10508,174 @@ const App: React.FC = () => {
         return false;
       };
 
-      for (const sheet of Array.from(frameDocument.styleSheets)) {
-        try {
-          if (
-            !cssRuleSourcesMatch(
-              getStyleSheetSourceLabel(sheet as CSSStyleSheet),
-              rule.source,
-            )
-          ) {
+      const selectorOnlyMatches: CSSStyleRule[] = [];
+      const collectSelectorMatches = (rules: CSSRuleList | undefined) => {
+        if (!rules) return;
+        for (const cssRule of Array.from(rules)) {
+          if (cssRule instanceof CSSStyleRule) {
+            const candidateSelector = normalizeSelectorSignature(
+              String(cssRule.selectorText || ""),
+            );
+            if (candidateSelector !== normalizedRuleSelector) {
+              continue;
+            }
+            if (liveElement instanceof Element) {
+              try {
+                if (!liveElement.matches(String(cssRule.selectorText || "").trim())) {
+                  continue;
+                }
+              } catch {
+                continue;
+              }
+            }
+            selectorOnlyMatches.push(cssRule);
             continue;
           }
-          if (visitRules((sheet as CSSStyleSheet).cssRules)) {
+          if (
+            cssRule instanceof CSSMediaRule ||
+            cssRule instanceof CSSSupportsRule ||
+            cssRule instanceof CSSLayerBlockRule
+          ) {
+            collectSelectorMatches(cssRule.cssRules);
+          }
+        }
+      };
+
+      for (const sheet of Array.from(frameDocument.styleSheets)) {
+        try {
+          const styleSheet = sheet as CSSStyleSheet;
+          const styleSheetCandidates = new Set<string>();
+          const styleSheetSource = getStyleSheetSourceLabel(styleSheet);
+          if (styleSheetSource) {
+            styleSheetCandidates.add(styleSheetSource);
+            styleSheetCandidates.add(normalizeProjectRelative(styleSheetSource));
+          }
+          const styleSheetHref = String(styleSheet.href || "");
+          if (styleSheetHref) {
+            styleSheetCandidates.add(styleSheetHref);
+            styleSheetCandidates.add(normalizeProjectRelative(styleSheetHref));
+            try {
+              const hrefUrl = new URL(styleSheetHref, window.location.href);
+              const mountRelative = extractMountRelativePath(hrefUrl.pathname);
+              if (mountRelative) {
+                styleSheetCandidates.add(mountRelative);
+                const virtualPath =
+                  resolveVirtualPathFromMountRelative(mountRelative);
+                if (virtualPath) {
+                  styleSheetCandidates.add(virtualPath);
+                  styleSheetCandidates.add(normalizeProjectRelative(virtualPath));
+                }
+              }
+            } catch {
+              // Ignore malformed stylesheet URLs.
+            }
+          }
+          const matchesSource = Array.from(styleSheetCandidates).some(
+            (candidate) =>
+              cssRuleSourcesMatch(candidate, rule.source) ||
+              cssRuleSourcesMatch(candidate, resolvedRuleSource || ""),
+          );
+          if (!matchesSource) {
+            collectSelectorMatches(styleSheet.cssRules);
+            continue;
+          }
+          if (visitRules(styleSheet.cssRules)) {
             if (elementPath && elementPath.length > 0) {
               syncPreviewSelectionSnapshotFromLiveElement(elementPath);
             }
             return true;
           }
+          collectSelectorMatches(styleSheet.cssRules);
         } catch {
           // Ignore inaccessible stylesheets.
         }
       }
 
+      if (selectorOnlyMatches.length > 0) {
+        const fallbackRule =
+          selectorOnlyMatches[
+            Math.min(remainingOccurrence, selectorOnlyMatches.length - 1)
+          ];
+        if (fallbackRule) {
+          applyToRule(fallbackRule);
+          if (elementPath && elementPath.length > 0) {
+            syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+          }
+          return true;
+        }
+      }
+
       return false;
+    },
+    [
+      getLivePreviewSelectedElement,
+      extractMountRelativePath,
+      resolveVirtualPathFromMountRelative,
+      resolvePreviewMatchedRuleSourcePath,
+      syncPreviewSelectionSnapshotFromLiveElement,
+    ],
+  );
+  const updatePreviewLiveStylesheetContent = useCallback(
+    (
+      sourcePath: string,
+      cssContent: string,
+      elementPath?: number[],
+    ) => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument || !sourcePath) return false;
+
+      const normalizedSourcePath = normalizeProjectRelative(sourcePath);
+      const nextCssText = rewriteInlineAssetRefs(
+        cssContent,
+        normalizedSourcePath,
+        filesRef.current,
+      );
+      let didUpdate = false;
+      const styleNodes = Array.from(
+        frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
+      );
+      styleNodes.forEach((styleNode) => {
+        const nodeSource = normalizeProjectRelative(
+          styleNode.getAttribute("data-source") || "",
+        );
+        if (!cssRuleSourcesMatch(nodeSource, normalizedSourcePath)) return;
+        styleNode.textContent = nextCssText;
+        didUpdate = true;
+      });
+
+      if (didUpdate && Array.isArray(elementPath) && elementPath.length > 0) {
+        window.setTimeout(() => {
+          syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+        }, 0);
+      }
+      return didUpdate;
     },
     [syncPreviewSelectionSnapshotFromLiveElement],
   );
-  const persistPreviewMatchedRuleToSourceFile = useCallback(
-    async (
+  const buildPreviewMatchedRulePatchedSource = useCallback(
+    (
       rule: PreviewMatchedRuleMutation,
       styles: Partial<React.CSSProperties>,
     ) => {
       const sourcePath = resolvePreviewMatchedRuleSourcePath(rule.source);
-      if (!sourcePath) return false;
-
-      const loadedSource = await loadFileContent(sourcePath, {
-        persistToState: false,
-      });
+      if (!sourcePath) return null;
       const sourceText =
-        typeof loadedSource === "string"
-          ? loadedSource
+        typeof textFileCacheRef.current[sourcePath] === "string"
+          ? textFileCacheRef.current[sourcePath]
           : typeof filesRef.current[sourcePath]?.content === "string"
             ? (filesRef.current[sourcePath]?.content as string)
             : "";
-      if (!sourceText) return false;
+      if (!sourceText) return null;
 
       const ruleRange = findCssRuleRange(
         sourceText,
         rule.selector,
         Math.max(0, rule.occurrenceIndex || 0),
       );
-      if (!ruleRange) return false;
+      if (!ruleRange) return null;
 
       const declarationHost = document.createElement("div");
       declarationHost.style.cssText = ruleRange.body;
@@ -10479,6 +10709,18 @@ const App: React.FC = () => {
         sourceText.slice(0, ruleRange.start) +
         nextRuleBlock +
         sourceText.slice(ruleRange.end);
+      return { sourcePath, nextSourceText };
+    },
+    [resolvePreviewMatchedRuleSourcePath],
+  );
+  const persistPreviewMatchedRuleToSourceFile = useCallback(
+    async (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      const patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
+      if (!patchedSource) return false;
+      const { sourcePath, nextSourceText } = patchedSource;
 
       textFileCacheRef.current[sourcePath] = nextSourceText;
       const existingFile = filesRef.current[sourcePath];
@@ -10514,9 +10756,8 @@ const App: React.FC = () => {
       return true;
     },
     [
+      buildPreviewMatchedRulePatchedSource,
       invalidatePreviewDocsForDependency,
-      loadFileContent,
-      resolvePreviewMatchedRuleSourcePath,
       schedulePreviewAutoSave,
     ],
   );
@@ -10629,7 +10870,19 @@ const App: React.FC = () => {
       const appliedLiveRule = shouldLivePreview
         ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
         : false;
-      if (shouldLivePreview && !appliedLiveRule) {
+      const patchedSource =
+        shouldLivePreview && !appliedLiveRule
+          ? buildPreviewMatchedRulePatchedSource(rule, styles)
+          : null;
+      const updatedLiveStylesheet =
+        shouldLivePreview && !appliedLiveRule && patchedSource
+          ? updatePreviewLiveStylesheetContent(
+              patchedSource.sourcePath,
+              patchedSource.nextSourceText,
+              nextPath,
+            )
+          : false;
+      if (shouldLivePreview && !appliedLiveRule && !updatedLiveStylesheet) {
         handleImmediatePreviewStyle(styles);
       }
       const currentPending = previewLocalCssDraftPendingRef.current;
@@ -10709,12 +10962,14 @@ const App: React.FC = () => {
     },
     [
       applyPreviewLocalCssPatchAtPath,
+      buildPreviewMatchedRulePatchedSource,
       applyPreviewMatchedRuleToLiveStylesheet,
       handleImmediatePreviewStyle,
       persistPreviewMatchedRuleToSourceFile,
       previewSelectedPath,
       removePreviewLocalStyleClassesAtPath,
       syncPreviewSelectionSnapshotFromLiveElement,
+      updatePreviewLiveStylesheetContent,
     ],
   );
   const handlePreviewStyleUpdateStable = useCallback(
