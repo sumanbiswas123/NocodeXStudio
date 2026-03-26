@@ -99,6 +99,26 @@ const buildMatchedDeclarationDraftKey = (
 ) =>
   `${buildMatchedRuleInstanceKey(rule)}::${normalizeKey(originalProperty)}`;
 
+const collapseRenderedDeclarations = (declarations: MatchedDeclaration[]) => {
+  const kept = new Map<string, MatchedDeclaration>();
+  declarations.forEach((declaration) => {
+    const key = [
+      normalizeKey(declaration.property),
+      String(declaration.value || "").trim(),
+      declaration.important ? "important" : "",
+    ].join("::");
+    const current = kept.get(key);
+    if (!current) {
+      kept.set(key, declaration);
+      return;
+    }
+    if (current.active !== true && declaration.active === true) {
+      kept.set(key, declaration);
+    }
+  });
+  return Array.from(kept.values());
+};
+
 const CSS_NUMERIC_TOKEN_PATTERN = /-?(?:\d+\.?\d*|\.\d+)/g;
 
 const countDecimalPlaces = (value: string) => {
@@ -989,7 +1009,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   declaration.value.toLowerCase().includes(query),
               )
             : nextDeclarations;
-          return filteredDeclarations;
+          return collapseRenderedDeclarations(filteredDeclarations);
         })(),
       }))
       .filter((rule) => rule.declarations.length > 0);

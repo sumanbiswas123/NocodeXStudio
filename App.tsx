@@ -318,6 +318,11 @@ type CdpMatchedStylesForNodeResult = {
   matchedCSSRules?: CdpRuleMatch[];
 };
 
+const toReactName = (key: string) =>
+  key.trim().replace(/-([a-z])/g, (_match, char: string) =>
+    char.toUpperCase(),
+  );
+
 type CdpInspectSelectedResponse = {
   ok?: boolean;
   matchedStyles?: CdpMatchedStylesForNodeResult;
@@ -426,9 +431,9 @@ const calculateSelectorSpecificity = (selectorText: string): CssSpecificity => {
   specificity[1] += pseudoClassMatches.length;
   working = working.replace(/:(?!:)[\w-]+(?:\([^)]*\))?/g, " ");
 
-  const elementMatches = working.match(
-    /(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g,
-  ) || [];
+  const elementMatches =
+    (working.match(/(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g) as string[] | null) ||
+    [];
   elementMatches.forEach((match) => {
     const token = match.trim();
     if (token && token !== "*") {
@@ -457,6 +462,10 @@ const annotateMatchedCssRuleActivity = (
   element: Element,
   rules: PreviewMatchedCssRule[],
 ): PreviewMatchedCssRule[] => {
+  const normalizedRules = rules.map((rule) => ({
+    ...rule,
+    declarations: dedupeExactRuleDeclarations(rule.declarations),
+  }));
   type Winner = {
     important: boolean;
     specificity: CssSpecificity;
@@ -467,7 +476,7 @@ const annotateMatchedCssRuleActivity = (
 
   const winnerByProperty = new Map<string, Winner>();
 
-  rules.forEach((rule, ruleIndex) => {
+  normalizedRules.forEach((rule, ruleIndex) => {
     const specificity = getMatchedSelectorSpecificity(element, rule.selector);
     rule.declarations.forEach((declaration, declarationIndex) => {
       const property = normalizeMatchedCssProperty(declaration.property);
@@ -527,7 +536,7 @@ const annotateMatchedCssRuleActivity = (
     });
   }
 
-  return rules.map((rule, ruleIndex) => ({
+  return normalizedRules.map((rule, ruleIndex) => ({
     ...rule,
     declarations: rule.declarations.map((declaration, declarationIndex) => {
       const winner = winnerByProperty.get(
@@ -991,6 +1000,22 @@ const normalizePresentationStylePatch = (
       return [key, normalizePresentationCssValue(cssProperty, value)];
     }),
   );
+
+const dedupeExactRuleDeclarations = (
+  declarations: PreviewMatchedCssDeclaration[],
+): PreviewMatchedCssDeclaration[] => {
+  const seen = new Set<string>();
+  return declarations.filter((declaration) => {
+    const key = [
+      normalizeMatchedCssProperty(declaration.property),
+      String(declaration.value || "").trim(),
+      declaration.important ? "important" : "",
+    ].join("::");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 const applyPatchToDeclarationEntries = (
   declarations: PreviewMatchedCssDeclaration[],
@@ -11636,9 +11661,14 @@ const App: React.FC = () => {
                               value: declaration.value,
                               important: Boolean(declaration.important),
                               active:
-                                declaration.active === undefined
+                                !("active" in declaration) ||
+                                (declaration as { active?: unknown }).active ===
+                                  undefined
                                   ? undefined
-                                  : Boolean(declaration.active),
+                                  : Boolean(
+                                      (declaration as { active?: unknown })
+                                        .active,
+                                    ),
                             }
                           : null;
                       })

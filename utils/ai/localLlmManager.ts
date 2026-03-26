@@ -106,29 +106,6 @@ async function spawnServer(serverExe: string, modelPath: string) {
 
 async function safeGetBaseDir(): Promise<string> {
   return "C:\\Users\\SumanBiswas\\Downloads\\nocode-x-studio";
-  const fallback = async () => {
-    const home = await Neutralino.os.getPath("home");
-    return joinFsPath(home, ".nocode-x-studio");
-  };
-  try {
-    const appData = await Neutralino.os.getPath("appData");
-    if (appData) return joinFsPath(appData, "nocode-x-studio");
-  } catch {
-    // ignore
-  }
-  try {
-    const userData = await Neutralino.os.getPath("userData");
-    if (userData) return joinFsPath(userData, "nocode-x-studio");
-  } catch {
-    // ignore
-  }
-  try {
-    const documents = await Neutralino.os.getPath("documents");
-    if (documents) return joinFsPath(documents, "nocode-x-studio");
-  } catch {
-    // ignore
-  }
-  return fallback();
 }
 
 export async function ensureLocalLlmReady(): Promise<LocalLlmInfo> {
