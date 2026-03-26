@@ -642,7 +642,10 @@ const collectMatchedCssRulesFromElement = (
     }
   });
 
-  return annotateMatchedCssRuleActivity(element, results);
+  return annotateMatchedCssRuleActivity(
+    element,
+    filterRedundantMatchedCssRules(results),
+  );
 };
 
 const getCssSourceBasename = (value: string) => {
@@ -879,6 +882,49 @@ const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
     );
   }
   return "inline stylesheet";
+};
+
+const isTemporaryMatchedRuleSource = (source: string) => {
+  const normalized = String(source || "").trim().toLowerCase();
+  return (
+    normalized === "inline stylesheet" ||
+    /^style-sheet-\d+-\d+$/.test(normalized)
+  );
+};
+
+const buildMatchedRuleDeclarationSignature = (
+  declarations: PreviewMatchedCssDeclaration[],
+) =>
+  declarations
+    .map((declaration) => ({
+      property: normalizeMatchedCssProperty(declaration.property),
+      value: String(declaration.value || "").trim(),
+      important: Boolean(declaration.important),
+    }))
+    .sort((left, right) => left.property.localeCompare(right.property))
+    .map(
+      (declaration) =>
+        `${declaration.property}:${declaration.value}:${declaration.important ? "important" : ""}`,
+    )
+    .join("|");
+
+const filterRedundantMatchedCssRules = (
+  rules: PreviewMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  const canonicalKeys = new Set(
+    rules
+      .filter((rule) => !isTemporaryMatchedRuleSource(rule.source))
+      .map(
+        (rule) =>
+          `${rule.selector}::${buildMatchedRuleDeclarationSignature(rule.declarations)}`,
+      ),
+  );
+
+  return rules.filter((rule) => {
+    if (!isTemporaryMatchedRuleSource(rule.source)) return true;
+    const key = `${rule.selector}::${buildMatchedRuleDeclarationSignature(rule.declarations)}`;
+    return !canonicalKeys.has(key);
+  });
 };
 
 type LiveMatchedCssRuleRef = PreviewMatchedCssRule & {
