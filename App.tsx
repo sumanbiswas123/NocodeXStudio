@@ -9230,6 +9230,11 @@ const App: React.FC = () => {
       ) {
         return;
       }
+      console.log("[NoCodeX CSS] nx-local-style fallback patch", {
+        selectedPreviewHtml,
+        elementPath,
+        styles,
+      });
 
       const htmlDirVirtual = selectedPreviewHtml.includes("/")
         ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
@@ -10474,6 +10479,13 @@ const App: React.FC = () => {
           return true;
         });
         if (liveMatchedRule) {
+          console.log("[NoCodeX CSS] live-rule-ref patch", {
+            selector: rule.selector,
+            source: rule.source,
+            resolvedSource: resolvedRuleSource,
+            occurrence: rule.occurrenceIndex || 0,
+            styles,
+          });
           applyToRule(liveMatchedRule.styleRule);
           syncPreviewSelectionSnapshotFromLiveElement(elementPath || []);
           return true;
@@ -10580,6 +10592,14 @@ const App: React.FC = () => {
             continue;
           }
           if (visitRules(styleSheet.cssRules)) {
+            console.log("[NoCodeX CSS] stylesheet-rules patch", {
+              selector: rule.selector,
+              source: rule.source,
+              resolvedSource: resolvedRuleSource,
+              styleSheetSource,
+              occurrence: rule.occurrenceIndex || 0,
+              styles,
+            });
             if (elementPath && elementPath.length > 0) {
               syncPreviewSelectionSnapshotFromLiveElement(elementPath);
             }
@@ -10597,6 +10617,13 @@ const App: React.FC = () => {
             Math.min(remainingOccurrence, selectorOnlyMatches.length - 1)
           ];
         if (fallbackRule) {
+          console.log("[NoCodeX CSS] selector-only fallback patch", {
+            selector: rule.selector,
+            source: rule.source,
+            resolvedSource: resolvedRuleSource,
+            occurrence: rule.occurrenceIndex || 0,
+            styles,
+          });
           applyToRule(fallbackRule);
           if (elementPath && elementPath.length > 0) {
             syncPreviewSelectionSnapshotFromLiveElement(elementPath);
@@ -10693,8 +10720,51 @@ const App: React.FC = () => {
         );
         if (!cssRuleSourcesMatch(nodeSource, normalizedSourcePath)) return;
         styleNode.textContent = nextCssText;
+        console.log("[NoCodeX CSS] data-source style override", {
+          sourcePath: normalizedSourcePath,
+          nodeSource,
+        });
         didUpdate = true;
       });
+
+      if (!didUpdate) {
+        const stylesheetLinks = Array.from(
+          frameDocument.querySelectorAll<HTMLLinkElement>(
+            'link[rel="stylesheet"][href]',
+          ),
+        );
+        stylesheetLinks.forEach((linkNode) => {
+          const hrefValue = String(linkNode.getAttribute("href") || "").trim();
+          if (!hrefValue) return;
+          const resolvedHref =
+            selectedPreviewHtmlRef.current &&
+            !/^(https?:|data:|blob:)/i.test(hrefValue)
+              ? resolveProjectRelativePath(
+                  selectedPreviewHtmlRef.current,
+                  hrefValue,
+                ) || hrefValue
+              : hrefValue;
+          const normalizedHref = normalizeProjectRelative(resolvedHref);
+          if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath)) return;
+
+          const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
+          let overrideNode = frameDocument.querySelector<HTMLStyleElement>(
+            overrideSelector,
+          );
+          if (!overrideNode) {
+            overrideNode = frameDocument.createElement("style");
+            overrideNode.setAttribute("data-nx-live-source", normalizedSourcePath);
+            linkNode.insertAdjacentElement("afterend", overrideNode);
+          }
+          overrideNode.textContent = nextCssText;
+          console.log("[NoCodeX CSS] link stylesheet override", {
+            sourcePath: normalizedSourcePath,
+            hrefValue,
+            resolvedHref: normalizedHref,
+          });
+          didUpdate = true;
+        });
+      }
 
       if (didUpdate && Array.isArray(elementPath) && elementPath.length > 0) {
         window.setTimeout(() => {
@@ -10771,6 +10841,13 @@ const App: React.FC = () => {
       const patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
       if (!patchedSource) return false;
       const { sourcePath, nextSourceText } = patchedSource;
+      console.log("[NoCodeX CSS] persisted matched rule to source", {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath,
+        occurrence: rule.occurrenceIndex || 0,
+        styles,
+      });
 
       textFileCacheRef.current[sourcePath] = nextSourceText;
       const existingFile = filesRef.current[sourcePath];
@@ -10917,6 +10994,14 @@ const App: React.FC = () => {
 
       const nextPath = [...previewSelectedPath];
       applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
+      console.log("[NoCodeX CSS] queue matched rule patch", {
+        selector: rule.selector,
+        source: rule.source,
+        occurrence: rule.occurrenceIndex || 0,
+        isActive: rule.isActive,
+        path: nextPath,
+        styles,
+      });
       const shouldLivePreview = rule.isActive !== false;
       const appliedLiveRule = shouldLivePreview
         ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
@@ -10934,6 +11019,13 @@ const App: React.FC = () => {
             )
           : false;
       if (shouldLivePreview && !appliedLiveRule && !updatedLiveStylesheet) {
+        console.log("[NoCodeX CSS] inline selected-element fallback", {
+          selector: rule.selector,
+          source: rule.source,
+          occurrence: rule.occurrenceIndex || 0,
+          path: nextPath,
+          styles,
+        });
         handleImmediatePreviewStyle(styles);
       }
       const currentPending = previewLocalCssDraftPendingRef.current;
@@ -10959,11 +11051,21 @@ const App: React.FC = () => {
             currentPending.styles,
           );
           if (persisted) {
+            console.log("[NoCodeX CSS] flushed previous pending rule to source", {
+              selector: currentPending.rule.selector,
+              source: currentPending.rule.source,
+              occurrence: currentPending.rule.occurrenceIndex || 0,
+            });
             await removePreviewLocalStyleClassesAtPath(
               currentPending.elementPath,
             );
             return;
           }
+          console.log("[NoCodeX CSS] previous pending rule fell back to nx-local-style", {
+            selector: currentPending.rule.selector,
+            source: currentPending.rule.source,
+            occurrence: currentPending.rule.occurrenceIndex || 0,
+          });
           await applyPreviewLocalCssPatchAtPath(
             currentPending.elementPath,
             currentPending.styles,
@@ -10997,10 +11099,20 @@ const App: React.FC = () => {
             pending.styles,
           );
           if (persisted) {
+            console.log("[NoCodeX CSS] timer flush persisted rule", {
+              selector: pending.rule.selector,
+              source: pending.rule.source,
+              occurrence: pending.rule.occurrenceIndex || 0,
+            });
             await removePreviewLocalStyleClassesAtPath(pending.elementPath);
             syncPreviewSelectionSnapshotFromLiveElement(pending.elementPath);
             return;
           }
+          console.log("[NoCodeX CSS] timer flush fell back to nx-local-style", {
+            selector: pending.rule.selector,
+            source: pending.rule.source,
+            occurrence: pending.rule.occurrenceIndex || 0,
+          });
           await applyPreviewLocalCssPatchAtPath(
             pending.elementPath,
             pending.styles,

@@ -676,7 +676,6 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         selector: rule.selector,
         source: rule.source,
         occurrenceIndex,
-        isActive: rule.declarations.some((declaration) => declaration.active),
       },
       { [toReactName(draft.key.trim())]: draft.value.trim() },
     );
