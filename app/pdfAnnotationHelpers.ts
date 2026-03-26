@@ -6,6 +6,7 @@ import {
   classifyAnnotationWithMl,
   computeMetrics,
   MetricsReport,
+  type AnnotationIntentLabel,
 } from "../utils/ai/AnnotationMLPipeline";
 import { deepScanMatcher } from "../utils/ai/DeepScanMatcher";
 import { resourceScanner } from "../utils/ai/ResourceScanner";
@@ -1784,15 +1785,18 @@ export function mapPdfAnnotationsToPageClusters(
     // For labels, we are more generous. We override if it's concise OR if ML already suspects a reference.
     // BUT we strictly respect the user's wish: if it's a main slide, don't force popup labels.
     const isSemanticIntentTarget = hasSemanticKeywords && !isMainSlide && (!isDescriptiveNote || mlClassification.annotationIntent.label === "referenceChange");
-    let finalIntent = mlClassification.annotationIntent.label;
+    let finalIntent:
+      | AnnotationIntentLabel
+      | "piChange"
+      | "siChange" = mlClassification.annotationIntent.label;
     if (isSemanticIntentTarget) {
       const lowerText = annotationTextMerged;
       if (/\b(pi|pitab|prescribing|qr)\w*/i.test(lowerText)) {
-        finalIntent = "piChange" as any;
+        finalIntent = "piChange";
       } else if (/\b(si|isi|ssi|safety)\w*/i.test(lowerText)) {
-        finalIntent = "siChange" as any;
+        finalIntent = "siChange";
       } else if (/\b(ref|referenc|footnote|citation)\w*/i.test(lowerText)) {
-        finalIntent = "referenceChange" as any;
+        finalIntent = "referenceChange";
       }
     }
     const semanticPopupIntent =

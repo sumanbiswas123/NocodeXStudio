@@ -1843,6 +1843,28 @@ export const buildPreviewRuntimeScript = (
 
   return `
   (function () {
+    var __NX_THEME_KEY = ${JSON.stringify(THEME_STORAGE_KEY)};
+    try {
+      var __storageProto = window.Storage && window.Storage.prototype;
+      if (__storageProto) {
+        var __origGetItem = __storageProto.getItem;
+        var __origSetItem = __storageProto.setItem;
+        var __origRemoveItem = __storageProto.removeItem;
+        __storageProto.getItem = function(key) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return 'light';
+          return __origGetItem.call(this, key);
+        };
+        __storageProto.setItem = function(key, value) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return;
+          return __origSetItem.call(this, key, value);
+        };
+        __storageProto.removeItem = function(key) {
+          if (this === window.localStorage && key === __NX_THEME_KEY) return;
+          return __origRemoveItem.call(this, key);
+        };
+      }
+    } catch (e) {}
+
     var __FILES = ${payload};
     var __FILE_KEYS = Object.keys(__FILES);
     var __LOWER_KEY_MAP = {};
@@ -2221,8 +2243,34 @@ export const buildPreviewRuntimeScript = (
       return __previewMode === 'edit';
     }
 
+    function isPreviewRuntimeHelperElement(el) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.getAttribute && (
+        el.getAttribute('data-preview-hover-badge') === 'true' ||
+        el.getAttribute('data-preview-hover-outline') === 'true' ||
+        el.getAttribute('data-preview-draw-draft') === 'true' ||
+        el.getAttribute('data-nx-inline-editing') === 'true'
+      )) {
+        return true;
+      }
+      var className = typeof el.className === 'string' ? el.className : '';
+      return className.indexOf('__nx-preview-runtime-helper') >= 0;
+    }
+
+    function getPreviewPathChildren(parent) {
+      var children = parent && parent.children ? parent.children : [];
+      var filtered = [];
+      for (var i = 0; i < children.length; i++) {
+        if (!isPreviewRuntimeHelperElement(children[i])) {
+          filtered.push(children[i]);
+        }
+      }
+      return filtered;
+    }
+
     function isPreviewBaseSelectable(el) {
       if (!el) return false;
+      if (isPreviewRuntimeHelperElement(el)) return false;
       var tag = String(el.tagName || '').toLowerCase();
       return Boolean(
         tag &&
@@ -2363,7 +2411,7 @@ export const buildPreviewRuntimeScript = (
       while (cursor && cursor !== document.body) {
         var parent = cursor.parentElement;
         if (!parent) return null;
-        var children = parent.children;
+        var children = getPreviewPathChildren(parent);
         var idx = -1;
         for (var i = 0; i < children.length; i++) {
           if (children[i] === cursor) {
@@ -2384,7 +2432,7 @@ export const buildPreviewRuntimeScript = (
       for (var i = 0; i < path.length; i++) {
         var idx = Number(path[i]);
         if (!isFinite(idx) || idx < 0) return null;
-        var children = cursor.children || [];
+        var children = getPreviewPathChildren(cursor);
         cursor = children[idx];
         if (!cursor) return null;
       }
@@ -2439,6 +2487,83 @@ export const buildPreviewRuntimeScript = (
         }
       } catch (e) {}
       return out;
+    }
+
+    function getStyleSheetSourceLabel(sheet) {
+      if (!sheet) return 'stylesheet';
+      try {
+        if (sheet.href) {
+          var href = String(sheet.href);
+          var cleanHref = href.split('?')[0].split('#')[0];
+          var parts = cleanHref.split('/');
+          return parts[parts.length - 1] || cleanHref || 'stylesheet';
+        }
+        var ownerNode = sheet.ownerNode;
+        if (ownerNode && ownerNode.getAttribute) {
+          var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
+          if (dataSource) return dataSource;
+        }
+      } catch (e) {}
+      return 'inline stylesheet';
+    }
+
+    function collectMatchedCssRulesForElement(el) {
+      var matches = [];
+      if (!el || !el.matches || !document.styleSheets) return matches;
+
+      function visitRules(ruleList, sourceLabel) {
+        if (!ruleList) return;
+        for (var i = 0; i < ruleList.length; i++) {
+          var rule = ruleList[i];
+          if (!rule) continue;
+          try {
+            if (rule.type === 1 && rule.selectorText) {
+              var selectorText = String(rule.selectorText || '').trim();
+              if (!selectorText) continue;
+              try {
+                if (!el.matches(selectorText)) continue;
+              } catch (selectorError) {
+                continue;
+              }
+              var declarations = [];
+              var style = rule.style;
+              if (style) {
+                for (var j = 0; j < style.length; j++) {
+                  var prop = style[j];
+                  var val = style.getPropertyValue(prop);
+                  if (!prop || !val) continue;
+                  declarations.push({
+                    property: prop,
+                    value: val,
+                    important: style.getPropertyPriority(prop) === 'important'
+                  });
+                }
+              }
+              if (declarations.length) {
+                matches.push({
+                  selector: selectorText,
+                  source: sourceLabel,
+                  declarations: declarations
+                });
+              }
+              continue;
+            }
+            if (rule.cssRules && rule.cssRules.length) {
+              visitRules(rule.cssRules, sourceLabel);
+            }
+          } catch (ruleError) {}
+        }
+      }
+
+      for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
+        var sheet = document.styleSheets[sheetIndex];
+        if (!sheet) continue;
+        try {
+          visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+        } catch (sheetError) {}
+      }
+
+      return matches;
     }
 
     function getCustomAttributes(el) {
@@ -2652,10 +2777,12 @@ export const buildPreviewRuntimeScript = (
         return;
       }
       if (payload.type === 'PREVIEW_APPLY_STYLE') {
+      console.log("DEBUG: Iframe Received PREVIEW_APPLY_STYLE", payload);
         var target = null;
         if (payload.path && payload.path.length) {
           target = readElementByPath(payload.path);
         }
+        console.log("DEBUG: Found target element in Iframe:", target);
         if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
           target = __previewSelectedEl;
         }
@@ -2709,7 +2836,8 @@ export const buildPreviewRuntimeScript = (
           src: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('src') || '') : ''),
           href: (__previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('href') || '') : ''),
           inlineStyle: __previewSelectedEl.getAttribute ? (__previewSelectedEl.getAttribute('style') || '') : '',
-          computedStyles: getElementComputedStyles(__previewSelectedEl)
+          computedStyles: getElementComputedStyles(__previewSelectedEl),
+          matchedCssRules: collectMatchedCssRulesForElement(__previewSelectedEl)
         });
       }
 
@@ -3086,7 +3214,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       src: extractImageSource(el),
       href: el.getAttribute ? (el.getAttribute('href') || '') : '',
       inlineStyle: el.getAttribute ? (el.getAttribute('style') || '') : '',
-      computedStyles: getElementComputedStyles(el)
+      computedStyles: getElementComputedStyles(el),
+      matchedCssRules: collectMatchedCssRulesForElement(el)
     });
   }
 
@@ -3146,8 +3275,34 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     return __previewMode === 'edit';
   }
 
+  function isPreviewRuntimeHelperElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.getAttribute && (
+      el.getAttribute('data-preview-hover-badge') === 'true' ||
+      el.getAttribute('data-preview-hover-outline') === 'true' ||
+      el.getAttribute('data-preview-draw-draft') === 'true' ||
+      el.getAttribute('data-nx-inline-editing') === 'true'
+    )) {
+      return true;
+    }
+    var className = typeof el.className === 'string' ? el.className : '';
+    return className.indexOf('__nx-preview-runtime-helper') >= 0;
+  }
+
+  function getPreviewPathChildren(parent) {
+    var children = parent && parent.children ? parent.children : [];
+    var filtered = [];
+    for (var i = 0; i < children.length; i++) {
+      if (!isPreviewRuntimeHelperElement(children[i])) {
+        filtered.push(children[i]);
+      }
+    }
+    return filtered;
+  }
+
   function isPreviewBaseSelectable(el) {
     if (!el) return false;
+    if (isPreviewRuntimeHelperElement(el)) return false;
     var tag = String(el.tagName || '').toLowerCase();
     return Boolean(
       tag &&
@@ -3319,7 +3474,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     while (cursor && cursor !== document.body) {
       var parent = cursor.parentElement;
       if (!parent) return null;
-      var children = parent.children;
+      var children = getPreviewPathChildren(parent);
       var idx = -1;
       for (var i = 0; i < children.length; i++) {
         if (children[i] === cursor) {
@@ -3340,7 +3495,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     for (var i = 0; i < path.length; i++) {
       var idx = Number(path[i]);
       if (!isFinite(idx) || idx < 0) return null;
-      var children = cursor.children || [];
+      var children = getPreviewPathChildren(cursor);
       cursor = children[idx];
       if (!cursor) return null;
     }
@@ -3395,6 +3550,83 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
     } catch (e) {}
     return out;
+  }
+
+  function getStyleSheetSourceLabel(sheet) {
+    if (!sheet) return 'stylesheet';
+    try {
+      if (sheet.href) {
+        var href = String(sheet.href);
+        var cleanHref = href.split('?')[0].split('#')[0];
+        var parts = cleanHref.split('/');
+        return parts[parts.length - 1] || cleanHref || 'stylesheet';
+      }
+      var ownerNode = sheet.ownerNode;
+      if (ownerNode && ownerNode.getAttribute) {
+        var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
+        if (dataSource) return dataSource;
+      }
+    } catch (e) {}
+    return 'inline stylesheet';
+  }
+
+  function collectMatchedCssRulesForElement(el) {
+    var matches = [];
+    if (!el || !el.matches || !document.styleSheets) return matches;
+
+    function visitRules(ruleList, sourceLabel) {
+      if (!ruleList) return;
+      for (var i = 0; i < ruleList.length; i++) {
+        var rule = ruleList[i];
+        if (!rule) continue;
+        try {
+          if (rule.type === 1 && rule.selectorText) {
+            var selectorText = String(rule.selectorText || '').trim();
+            if (!selectorText) continue;
+            try {
+              if (!el.matches(selectorText)) continue;
+            } catch (selectorError) {
+              continue;
+            }
+            var declarations = [];
+            var style = rule.style;
+            if (style) {
+              for (var j = 0; j < style.length; j++) {
+                var prop = style[j];
+                var val = style.getPropertyValue(prop);
+                if (!prop || !val) continue;
+                declarations.push({
+                  property: prop,
+                  value: val,
+                  important: style.getPropertyPriority(prop) === 'important'
+                });
+              }
+            }
+            if (declarations.length) {
+              matches.push({
+                selector: selectorText,
+                source: sourceLabel,
+                declarations: declarations
+              });
+            }
+            continue;
+          }
+          if (rule.cssRules && rule.cssRules.length) {
+            visitRules(rule.cssRules, sourceLabel);
+          }
+        } catch (ruleError) {}
+      }
+    }
+
+    for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
+      var sheet = document.styleSheets[sheetIndex];
+      if (!sheet) continue;
+      try {
+        visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+      } catch (sheetError) {}
+    }
+
+    return matches;
   }
 
   function getCustomAttributes(el) {
@@ -3755,10 +3987,12 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       return;
     }
     if (payload.type === 'PREVIEW_APPLY_STYLE') {
+    console.log("DEBUG: Iframe Received PREVIEW_APPLY_STYLE", payload);
       var target = null;
       if (payload.path && payload.path.length) {
         target = readElementByPath(payload.path);
       }
+      console.log("DEBUG: Found target element in Iframe:", target);
       if (!target && __previewSelectedEl && document.body && document.body.contains(__previewSelectedEl)) {
         target = __previewSelectedEl;
       }
@@ -3836,7 +4070,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         text: newEl.textContent || '',
         html: newEl.innerHTML || '',
         inlineStyle: newEl.getAttribute('style') || '',
-        computedStyles: computedStyles
+        computedStyles: computedStyles,
+        matchedCssRules: collectMatchedCssRulesForElement(newEl)
       }), '*');
     }
     if (payload.type === 'PREVIEW_APPLY_HTML' && payload.html) {
@@ -4487,10 +4722,24 @@ export const normalizeFontFamilyCssValue = (raw: string): string => {
 };
 
 export const readElementByPath = (root: Element, path: number[]): Element | null => {
+  const isPreviewRuntimeHelperElement = (element: Element | null): boolean => {
+    if (!element || !(element instanceof HTMLElement)) return false;
+    if (
+      element.getAttribute("data-preview-hover-badge") === "true" ||
+      element.getAttribute("data-preview-hover-outline") === "true" ||
+      element.getAttribute("data-preview-draw-draft") === "true" ||
+      element.getAttribute("data-nx-inline-editing") === "true"
+    ) {
+      return true;
+    }
+    return element.classList.contains("__nx-preview-runtime-helper");
+  };
   let cursor: Element | null = root;
   for (const step of path) {
     if (!cursor) return null;
-    const childElements: Element[] = Array.from(cursor.children);
+    const childElements: Element[] = Array.from(cursor.children).filter(
+      (child) => !isPreviewRuntimeHelperElement(child),
+    );
     cursor = childElements[step] ?? null;
   }
   return cursor;
@@ -6621,7 +6870,7 @@ export const PREVIEW_SELECTION_MODE_OPTIONS: Array<{
 }> = [
     { value: "default", label: "Default" },
     { value: "text", label: "Text" },
-    { value: "image", label: "Image" },
+    { value: "image", label: "Assets" },
     { value: "css", label: "CSS" },
   ];
 

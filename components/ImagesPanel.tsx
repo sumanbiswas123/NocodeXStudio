@@ -29,6 +29,9 @@ const getCompactFolderLabel = (name: string): string => {
   return suffixMatch ? suffixMatch[1] : normalizedName;
 };
 
+const getImageSrc = (content: string | Blob | undefined): string =>
+  typeof content === "string" ? content : "";
+
 const ImagesPanel: React.FC<ImagesPanelProps> = ({ files, activeFile, onLoadImage, theme }) => {
   const [search, setSearch] = useState("");
   const [activeImagePath, setActiveImagePath] = useState<string | null>(null);
@@ -81,7 +84,8 @@ const ImagesPanel: React.FC<ImagesPanelProps> = ({ files, activeFile, onLoadImag
   }, [expandedSlide, groupedBySlide, onLoadImage]);
 
   const activeImage = activeImagePath ? files[activeImagePath] : null;
-  const activeSrc = activeImage?.type === "image" ? activeImage.content : "";
+  const activeSrc =
+    activeImage?.type === "image" ? getImageSrc(activeImage.content) : "";
   const modalImageSequence = useMemo(() => {
     if (!expandedSlide) return [];
     return (groupedBySlide[expandedSlide] || []).map((img) => img.path);
@@ -181,8 +185,8 @@ const ImagesPanel: React.FC<ImagesPanelProps> = ({ files, activeFile, onLoadImag
                           title={img.path}
                         >
                           <div className="aspect-square w-full border-b flex items-center justify-center" style={{ borderColor: "var(--border-color)" }}>
-                            {img.content ? (
-                              <img src={img.content} alt={img.name} className="w-full h-full object-cover" />
+                            {getImageSrc(img.content) ? (
+                              <img src={getImageSrc(img.content)} alt={img.name} className="w-full h-full object-cover" />
                             ) : (
                               <ImageIcon size={18} style={{ color: "var(--text-muted)" }} />
                             )}

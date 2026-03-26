@@ -39,6 +39,8 @@ import {
   Wifi,
   Sun,
   Moon,
+  FileText,
+  Upload,
   Save,
   Undo2,
   Redo2,
@@ -52,9 +54,10 @@ import {
   Shrink,
   Expand,
   StickyNote,
-  X,
   Camera,
   FileDown,
+  MousePointer2,
+  Move,
 } from "lucide-react";
 
 import VibeAssistant from "./components/VibeAssistant";
@@ -63,7 +66,6 @@ import { AIPipeline } from "./utils/ai/AIPipeline";
 import EditorContent from "./app/EditorContent";
 import { Provider } from "react-redux";
 import { store } from "./src/store";
-import PdfSelector from "./src/components/PdfSelector";
 import PdfAnnotationsOverlay from "./src/components/PdfAnnotationsOverlay";
 import {
   setRecords,
@@ -203,7 +205,6 @@ import {
   PreviewSelectionMode,
   PreviewSyncSource,
   PendingPageSwitch,
-  PREVIEW_SELECTION_MODE_OPTIONS,
 } from "./app/appHelpers";
 import { resourceScanner } from "./utils/ai/ResourceScanner";
 const escapeConsoleHtml = (value: string): string =>
@@ -240,6 +241,952 @@ type ScreenshotMetadata = {
   imagePath: string;
   imageFileName: string;
 };
+
+type PreviewMatchedCssDeclaration = {
+  property: string;
+  value: string;
+  important?: boolean;
+  active?: boolean;
+};
+
+type PreviewMatchedCssRule = {
+  selector: string;
+  source: string;
+  declarations: PreviewMatchedCssDeclaration[];
+};
+
+type PreviewMatchedRuleMutation = {
+  selector: string;
+  source: string;
+  occurrenceIndex?: number;
+  originalProperty?: string;
+  isActive?: boolean;
+};
+
+type CssSpecificity = [number, number, number];
+
+type CdpComputedStyleEntry = {
+  name?: string;
+  value?: string;
+};
+
+type CdpComputedStyleForNodeResult = {
+  computedStyle?: CdpComputedStyleEntry[];
+};
+
+type CdpSpecificity = {
+  a?: number;
+  b?: number;
+  c?: number;
+};
+
+type CdpSelector = {
+  text?: string;
+  specificity?: CdpSpecificity;
+};
+
+type CdpSelectorList = {
+  text?: string;
+  selectors?: CdpSelector[];
+};
+
+type CdpCssProperty = {
+  name?: string;
+  value?: string;
+  important?: boolean;
+  disabled?: boolean;
+};
+
+type CdpRuleStyle = {
+  styleSheetId?: string;
+  cssProperties?: CdpCssProperty[];
+};
+
+type CdpRule = {
+  origin?: string;
+  styleSheetId?: string;
+  selectorList?: CdpSelectorList;
+  style?: CdpRuleStyle;
+};
+
+type CdpRuleMatch = {
+  rule?: CdpRule;
+  matchingSelectors?: number[];
+};
+
+type CdpMatchedStylesForNodeResult = {
+  matchedCSSRules?: CdpRuleMatch[];
+};
+
+const toReactName = (key: string) =>
+  key.trim().replace(/-([a-z])/g, (_match, char: string) =>
+    char.toUpperCase(),
+  );
+
+type CdpInspectSelectedResponse = {
+  ok?: boolean;
+  matchedStyles?: CdpMatchedStylesForNodeResult;
+  computedStyles?: CdpComputedStyleForNodeResult;
+};
+
+const normalizeMatchedCssProperty = (property: string) =>
+  String(property || "").trim().toLowerCase();
+
+const splitSelectorList = (selectorText: string): string[] => {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+
+  for (let index = 0; index < selectorText.length; index += 1) {
+    const char = selectorText[index];
+    if (quote) {
+      current += char;
+      if (char === quote && selectorText[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if ((char === ")" || char === "]") && depth > 0) {
+      depth -= 1;
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+};
+
+const compareSpecificity = (
+  left: CssSpecificity,
+  right: CssSpecificity,
+): number => {
+  if (left[0] !== right[0]) return left[0] - right[0];
+  if (left[1] !== right[1]) return left[1] - right[1];
+  return left[2] - right[2];
+};
+
+const maxSpecificity = (
+  left: CssSpecificity,
+  right: CssSpecificity,
+): CssSpecificity => (compareSpecificity(left, right) >= 0 ? left : right);
+
+const addSpecificity = (
+  base: CssSpecificity,
+  extra: CssSpecificity,
+): CssSpecificity => [base[0] + extra[0], base[1] + extra[1], base[2] + extra[2]];
+
+const calculateSelectorSpecificity = (selectorText: string): CssSpecificity => {
+  let working = String(selectorText || "");
+  let specificity: CssSpecificity = [0, 0, 0];
+
+  const functionalPseudoPattern =
+    /:(is|not|has|where)\(([^()]*|\((?:[^()]*|\([^()]*\))*\))*\)/gi;
+  working = working.replace(functionalPseudoPattern, (match, fnName, args) => {
+    if (String(fnName).toLowerCase() === "where") return " ";
+    const best = splitSelectorList(String(args || "")).reduce<CssSpecificity>(
+      (current, part) =>
+        maxSpecificity(current, calculateSelectorSpecificity(part)),
+      [0, 0, 0],
+    );
+    specificity = addSpecificity(specificity, best);
+    return " ";
+  });
+
+  const idMatches = working.match(/#[\w-]+/g) || [];
+  specificity[0] += idMatches.length;
+  working = working.replace(/#[\w-]+/g, " ");
+
+  const classMatches = working.match(/\.[\w-]+/g) || [];
+  specificity[1] += classMatches.length;
+  working = working.replace(/\.[\w-]+/g, " ");
+
+  const attributeMatches = working.match(/\[[^\]]+\]/g) || [];
+  specificity[1] += attributeMatches.length;
+  working = working.replace(/\[[^\]]+\]/g, " ");
+
+  const pseudoElementMatches = working.match(/::[\w-]+/g) || [];
+  specificity[2] += pseudoElementMatches.length;
+  working = working.replace(/::[\w-]+/g, " ");
+
+  const pseudoClassMatches =
+    working.match(/:(?!:)[\w-]+(?:\([^)]*\))?/g) || [];
+  specificity[1] += pseudoClassMatches.length;
+  working = working.replace(/:(?!:)[\w-]+(?:\([^)]*\))?/g, " ");
+
+  const elementMatches =
+    (working.match(/(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g) as string[] | null) ||
+    [];
+  elementMatches.forEach((match) => {
+    const token = match.trim();
+    if (token && token !== "*") {
+      specificity[2] += 1;
+    }
+  });
+
+  return specificity;
+};
+
+const getMatchedSelectorSpecificity = (
+  element: Element,
+  selectorText: string,
+): CssSpecificity =>
+  splitSelectorList(selectorText).reduce<CssSpecificity>((best, selector) => {
+    if (!selector) return best;
+    try {
+      if (!element.matches(selector)) return best;
+      return maxSpecificity(best, calculateSelectorSpecificity(selector));
+    } catch {
+      return best;
+    }
+  }, [0, 0, 0]);
+
+const annotateMatchedCssRuleActivity = (
+  element: Element,
+  rules: PreviewMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  const normalizedRules = rules.map((rule) => ({
+    ...rule,
+    declarations: dedupeExactRuleDeclarations(rule.declarations),
+  }));
+  type Winner = {
+    important: boolean;
+    specificity: CssSpecificity;
+    ruleIndex: number;
+    declarationIndex: number;
+    inline: boolean;
+  };
+
+  const winnerByProperty = new Map<string, Winner>();
+
+  normalizedRules.forEach((rule, ruleIndex) => {
+    const specificity = getMatchedSelectorSpecificity(element, rule.selector);
+    rule.declarations.forEach((declaration, declarationIndex) => {
+      const property = normalizeMatchedCssProperty(declaration.property);
+      if (!property) return;
+      const candidate: Winner = {
+        important: Boolean(declaration.important),
+        specificity,
+        ruleIndex,
+        declarationIndex,
+        inline: false,
+      };
+      const current = winnerByProperty.get(property);
+      if (!current) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (current.important !== candidate.important) {
+        if (candidate.important) {
+          winnerByProperty.set(property, candidate);
+        }
+        return;
+      }
+      const specificityDiff = compareSpecificity(
+        candidate.specificity,
+        current.specificity,
+      );
+      if (specificityDiff > 0) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (specificityDiff < 0) return;
+      if (candidate.ruleIndex > current.ruleIndex) {
+        winnerByProperty.set(property, candidate);
+        return;
+      }
+      if (
+        candidate.ruleIndex === current.ruleIndex &&
+        candidate.declarationIndex > current.declarationIndex
+      ) {
+        winnerByProperty.set(property, candidate);
+      }
+    });
+  });
+
+  if (element instanceof HTMLElement) {
+    const inlineStyle = element.style;
+    Array.from(inlineStyle).forEach((property) => {
+      const normalized = normalizeMatchedCssProperty(property);
+      if (!normalized) return;
+      winnerByProperty.set(normalized, {
+        important: inlineStyle.getPropertyPriority(property) === "important",
+        specificity: [Infinity, Infinity, Infinity],
+        ruleIndex: Number.MAX_SAFE_INTEGER,
+        declarationIndex: Number.MAX_SAFE_INTEGER,
+        inline: true,
+      });
+    });
+  }
+
+  return normalizedRules.map((rule, ruleIndex) => ({
+    ...rule,
+    declarations: rule.declarations.map((declaration, declarationIndex) => {
+      const winner = winnerByProperty.get(
+        normalizeMatchedCssProperty(declaration.property),
+      );
+      return {
+        ...declaration,
+        active:
+          Boolean(winner) &&
+          !winner?.inline &&
+          winner.ruleIndex === ruleIndex &&
+          winner.declarationIndex === declarationIndex,
+      };
+    }),
+  }));
+};
+
+const collectMatchedCssRulesFromElement = (
+  element: Element | null,
+): PreviewMatchedCssRule[] => {
+  if (
+    !element ||
+    !(element instanceof Element) ||
+    typeof element.matches !== "function"
+  ) {
+    return [];
+  }
+
+  const getSourceLabel = (sheet: CSSStyleSheet) => {
+    if (sheet.href) {
+      const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
+      const parts = cleanHref.split("/");
+      return parts[parts.length - 1] || cleanHref || "stylesheet";
+    }
+    const ownerNode = sheet.ownerNode;
+    if (ownerNode instanceof Element) {
+      return (
+        ownerNode.getAttribute("data-source") ||
+        ownerNode.getAttribute("data-href") ||
+        "inline stylesheet"
+      );
+    }
+    return "inline stylesheet";
+  };
+
+  const results: PreviewMatchedCssRule[] = [];
+
+  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+    if (!rules) return;
+    Array.from(rules).forEach((rule) => {
+      try {
+        const candidateRule = rule as CSSRule & {
+          selectorText?: string;
+          style?: CSSStyleDeclaration;
+          cssRules?: CSSRuleList;
+        };
+        if (rule.type === 1 && candidateRule.selectorText) {
+          const selector = String(candidateRule.selectorText || "").trim();
+          if (!selector) return;
+          try {
+            if (!element.matches(selector)) return;
+          } catch {
+            return;
+          }
+          const declarations: PreviewMatchedCssDeclaration[] = [];
+          Array.from(candidateRule.style || []).forEach((property) => {
+            const value = candidateRule.style?.getPropertyValue(property);
+            if (!property || !value) return;
+            declarations.push({
+              property,
+              value,
+              important:
+                candidateRule.style?.getPropertyPriority(property) ===
+                "important",
+            });
+          });
+          if (declarations.length) {
+            results.push({ selector, source, declarations });
+          }
+          return;
+        }
+
+        if (candidateRule.cssRules) {
+          visitRules(candidateRule.cssRules, source);
+        }
+      } catch {
+        // Ignore inaccessible or unsupported rules.
+      }
+    });
+  };
+
+  const doc = element.ownerDocument;
+  if (!doc) return [];
+
+  Array.from(doc.styleSheets).forEach((sheet) => {
+    try {
+      visitRules(
+        (sheet as CSSStyleSheet).cssRules,
+        getSourceLabel(sheet as CSSStyleSheet),
+      );
+    } catch {
+      // Ignore inaccessible stylesheet rules.
+    }
+  });
+
+  return annotateMatchedCssRuleActivity(element, results);
+};
+
+const getCssSourceBasename = (value: string) => {
+  const normalized = String(value || "")
+    .replace(/\\/g, "/")
+    .split("?")[0]
+    .split("#")[0];
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || normalized;
+};
+
+const normalizeSelectorSignature = (value: string) =>
+  String(value || "")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeCdpSpecificity = (
+  specificity: CdpSpecificity | undefined,
+): CssSpecificity => [
+  Number(specificity?.a || 0),
+  Number(specificity?.b || 0),
+  Number(specificity?.c || 0),
+];
+
+const toReactComputedStylesFromCdp = (
+  payload: CdpComputedStyleForNodeResult | undefined,
+): React.CSSProperties | null => {
+  const entries = Array.isArray(payload?.computedStyle)
+    ? payload.computedStyle
+    : [];
+  if (entries.length === 0) return null;
+  const out: Record<string, string> = {};
+  entries.forEach((entry) => {
+    if (!entry?.name || typeof entry.value !== "string") return;
+    out[toReactName(entry.name)] = entry.value;
+  });
+  return out as React.CSSProperties;
+};
+
+const derivePreviewMatchedCssRulesFromCdp = (
+  payload: CdpMatchedStylesForNodeResult | undefined,
+  fallbackRules: PreviewMatchedCssRule[],
+  inlineStyles?: React.CSSProperties | null,
+): PreviewMatchedCssRule[] => {
+  const matches = Array.isArray(payload?.matchedCSSRules)
+    ? payload.matchedCSSRules
+    : [];
+  if (matches.length === 0) return [];
+
+  const unusedFallbackIndexes = new Set(
+    fallbackRules.map((_rule, index) => index),
+  );
+
+  type DerivedRule = PreviewMatchedCssRule & {
+    derivedSpecificity: CssSpecificity;
+    sourceOrder: number;
+  };
+
+  const derivedRules: DerivedRule[] = matches
+    .map((match, matchIndex) => {
+      const rule = match?.rule;
+      const selectorText = String(rule?.selectorList?.text || "").trim();
+      if (!selectorText) return null;
+
+      const declarations = Array.isArray(rule?.style?.cssProperties)
+        ? rule.style.cssProperties
+            .filter(
+              (property) =>
+                property &&
+                !property.disabled &&
+                typeof property.name === "string" &&
+                property.name.trim().length > 0 &&
+                typeof property.value === "string" &&
+                property.value.trim().length > 0,
+            )
+            .map((property) => ({
+              property: String(property.name || "").trim(),
+              value: String(property.value || "").trim(),
+              important: Boolean(property.important),
+            }))
+        : [];
+      if (declarations.length === 0) return null;
+
+      const selectors = Array.isArray(rule?.selectorList?.selectors)
+        ? rule.selectorList.selectors
+        : [];
+      const matchingSelectors =
+        Array.isArray(match?.matchingSelectors) && match.matchingSelectors.length > 0
+          ? match.matchingSelectors
+          : selectors.map((_selector, index) => index);
+
+      const derivedSpecificity = matchingSelectors.reduce<CssSpecificity>(
+        (best, selectorIndex) => {
+          const selector = selectors[selectorIndex];
+          const selectorTextPart = String(selector?.text || "").trim();
+          const nextSpecificity =
+            selector?.specificity &&
+            (selector.specificity.a !== undefined ||
+              selector.specificity.b !== undefined ||
+              selector.specificity.c !== undefined)
+              ? normalizeCdpSpecificity(selector.specificity)
+              : selectorTextPart
+                ? calculateSelectorSpecificity(selectorTextPart)
+                : best;
+          return maxSpecificity(best, nextSpecificity);
+        },
+        [0, 0, 0],
+      );
+
+      let source = rule?.styleSheetId || rule?.origin || "stylesheet";
+      const matchingFallbackIndex = fallbackRules.findIndex(
+        (fallbackRule, fallbackIndex) =>
+          unusedFallbackIndexes.has(fallbackIndex) &&
+          normalizeSelectorSignature(fallbackRule.selector) ===
+            normalizeSelectorSignature(selectorText),
+      );
+      if (matchingFallbackIndex >= 0) {
+        source = fallbackRules[matchingFallbackIndex].source;
+        unusedFallbackIndexes.delete(matchingFallbackIndex);
+      } else {
+        source = getCssSourceBasename(source) || source;
+      }
+
+      return {
+        selector: selectorText,
+        source,
+        declarations,
+        derivedSpecificity,
+        sourceOrder: matchIndex,
+      };
+    })
+    .filter(Boolean) as DerivedRule[];
+
+  type Winner = {
+    important: boolean;
+    specificity: CssSpecificity;
+    sourceOrder: number;
+    declarationIndex: number;
+    inline: boolean;
+  };
+
+  const winnerByProperty = new Map<string, Winner>();
+  const applyWinnerCandidate = (property: string, candidate: Winner) => {
+    const current = winnerByProperty.get(property);
+    if (!current) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (current.important !== candidate.important) {
+      if (candidate.important) {
+        winnerByProperty.set(property, candidate);
+      }
+      return;
+    }
+    const specificityDiff = compareSpecificity(
+      candidate.specificity,
+      current.specificity,
+    );
+    if (specificityDiff > 0) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (specificityDiff < 0) return;
+    if (candidate.sourceOrder > current.sourceOrder) {
+      winnerByProperty.set(property, candidate);
+      return;
+    }
+    if (
+      candidate.sourceOrder === current.sourceOrder &&
+      candidate.declarationIndex > current.declarationIndex
+    ) {
+      winnerByProperty.set(property, candidate);
+    }
+  };
+
+  derivedRules.forEach((rule) => {
+    rule.declarations.forEach((declaration, declarationIndex) => {
+      const property = normalizeMatchedCssProperty(declaration.property);
+      if (!property) return;
+      applyWinnerCandidate(property, {
+        important: Boolean(declaration.important),
+        specificity: rule.derivedSpecificity,
+        sourceOrder: rule.sourceOrder,
+        declarationIndex,
+        inline: false,
+      });
+    });
+  });
+
+  Object.keys(inlineStyles || {}).forEach((property) => {
+    const cssProperty = normalizeMatchedCssProperty(toCssPropertyName(property));
+    if (!cssProperty) return;
+    applyWinnerCandidate(cssProperty, {
+      important: false,
+      specificity: [Infinity, Infinity, Infinity],
+      sourceOrder: Number.MAX_SAFE_INTEGER,
+      declarationIndex: Number.MAX_SAFE_INTEGER,
+      inline: true,
+    });
+  });
+
+  return derivedRules.map((rule) => ({
+    selector: rule.selector,
+    source: rule.source,
+    declarations: rule.declarations.map((declaration, declarationIndex) => {
+      const winner = winnerByProperty.get(
+        normalizeMatchedCssProperty(declaration.property),
+      );
+      return {
+        ...declaration,
+        active:
+          Boolean(winner) &&
+          !winner?.inline &&
+          winner.sourceOrder === rule.sourceOrder &&
+          winner.declarationIndex === declarationIndex,
+      };
+    }),
+  }));
+};
+
+const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
+  if (sheet.href) {
+    const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
+    const parts = cleanHref.split("/");
+    return parts[parts.length - 1] || cleanHref || "stylesheet";
+  }
+  const ownerNode = sheet.ownerNode;
+  if (ownerNode instanceof Element) {
+    return (
+      ownerNode.getAttribute("data-source") ||
+      ownerNode.getAttribute("data-href") ||
+      "inline stylesheet"
+    );
+  }
+  return "inline stylesheet";
+};
+
+type LiveMatchedCssRuleRef = PreviewMatchedCssRule & {
+  styleRule: CSSStyleRule;
+};
+
+const collectLiveMatchedCssRuleRefsFromElement = (
+  element: Element | null,
+): LiveMatchedCssRuleRef[] => {
+  if (
+    !element ||
+    !(element instanceof Element) ||
+    typeof element.matches !== "function"
+  ) {
+    return [];
+  }
+
+  const results: LiveMatchedCssRuleRef[] = [];
+  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+    if (!rules) return;
+    Array.from(rules).forEach((rule) => {
+      try {
+        if (rule instanceof CSSStyleRule) {
+          const selector = String(rule.selectorText || "").trim();
+          if (!selector) return;
+          try {
+            if (!element.matches(selector)) return;
+          } catch {
+            return;
+          }
+          const declarations: PreviewMatchedCssDeclaration[] = [];
+          Array.from(rule.style || []).forEach((property) => {
+            const value = rule.style?.getPropertyValue(property);
+            if (!property || !value) return;
+            declarations.push({
+              property,
+              value,
+              important: rule.style?.getPropertyPriority(property) === "important",
+            });
+          });
+          if (declarations.length > 0) {
+            results.push({
+              selector,
+              source,
+              declarations,
+              styleRule: rule,
+            });
+          }
+          return;
+        }
+        const nestedRule = rule as CSSRule & { cssRules?: CSSRuleList };
+        if (nestedRule.cssRules) {
+          visitRules(nestedRule.cssRules, source);
+        }
+      } catch {
+        // Ignore inaccessible or unsupported rules.
+      }
+    });
+  };
+
+  const doc = element.ownerDocument;
+  if (!doc) return [];
+
+  Array.from(doc.styleSheets).forEach((sheet) => {
+    try {
+      visitRules(
+        (sheet as CSSStyleSheet).cssRules,
+        getStyleSheetSourceLabel(sheet as CSSStyleSheet),
+      );
+    } catch {
+      // Ignore inaccessible stylesheet rules.
+    }
+  });
+
+  return results;
+};
+
+const cssRuleSourcesMatch = (left: string, right: string) => {
+  const normalizedLeft = normalizeProjectRelative(String(left || "")).toLowerCase();
+  const normalizedRight = normalizeProjectRelative(String(right || "")).toLowerCase();
+  if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
+    return true;
+  }
+  const baseLeft = getCssSourceBasename(left).toLowerCase();
+  const baseRight = getCssSourceBasename(right).toLowerCase();
+  return Boolean(baseLeft && baseRight && baseLeft === baseRight);
+};
+
+const extractAssetUrlFromCssValue = (raw: string) => {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const match = text.match(/url\((['"]?)(.*?)\1\)/i);
+  if (!match?.[2]) return "";
+  return match[2].trim();
+};
+
+const normalizePresentationCssValue = (
+  cssProperty: string,
+  rawValue: unknown,
+) => {
+  const valueRaw =
+    rawValue === undefined || rawValue === null ? "" : String(rawValue);
+  const normalizedFontValue =
+    cssProperty === "font-family"
+      ? normalizeFontFamilyCssValue(valueRaw)
+      : valueRaw;
+  return normalizedFontValue.replace(
+    /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
+    (_match, amount) => `${amount}rem`,
+  );
+};
+
+const normalizePresentationStylePatch = (
+  styles: Record<string, unknown>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(styles).map(([key, value]) => {
+      const cssProperty = toCssPropertyName(key);
+      return [key, normalizePresentationCssValue(cssProperty, value)];
+    }),
+  );
+
+const dedupeExactRuleDeclarations = (
+  declarations: PreviewMatchedCssDeclaration[],
+): PreviewMatchedCssDeclaration[] => {
+  const seen = new Set<string>();
+  return declarations.filter((declaration) => {
+    const key = [
+      normalizeMatchedCssProperty(declaration.property),
+      String(declaration.value || "").trim(),
+      declaration.important ? "important" : "",
+    ].join("::");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const applyPatchToDeclarationEntries = (
+  declarations: PreviewMatchedCssDeclaration[],
+  rule: PreviewMatchedRuleMutation,
+  styles: Partial<React.CSSProperties>,
+): PreviewMatchedCssDeclaration[] => {
+  const nextDeclarations = [...declarations];
+  const normalizedNextKeys = new Set<string>();
+  const originalCssProperty = rule.originalProperty
+    ? toCssPropertyName(rule.originalProperty)
+    : "";
+
+  Object.entries(styles).forEach(([key, rawValue]) => {
+    const cssProperty = toCssPropertyName(key);
+    const value = normalizePresentationCssValue(cssProperty, rawValue);
+    normalizedNextKeys.add(cssProperty.toLowerCase());
+    const existingIndex = nextDeclarations.findIndex(
+      (entry) => entry.property.toLowerCase() === cssProperty.toLowerCase(),
+    );
+    if (!value) {
+      if (existingIndex >= 0) nextDeclarations.splice(existingIndex, 1);
+      return;
+    }
+    if (existingIndex >= 0) {
+      nextDeclarations[existingIndex] = {
+        ...nextDeclarations[existingIndex],
+        property: cssProperty,
+        value,
+      };
+      return;
+    }
+    nextDeclarations.push({
+      property: cssProperty,
+      value,
+    });
+  });
+
+  if (
+    originalCssProperty &&
+    !normalizedNextKeys.has(originalCssProperty.toLowerCase())
+  ) {
+    const originalIndex = nextDeclarations.findIndex(
+      (entry) =>
+        entry.property.toLowerCase() === originalCssProperty.toLowerCase(),
+    );
+    if (originalIndex >= 0) {
+      nextDeclarations.splice(originalIndex, 1);
+    }
+  }
+
+  return nextDeclarations;
+};
+
+const findMatchingCssBrace = (source: string, openIndex: number) => {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let inComment = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (inComment) {
+      if (char === "*" && next === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === inString) inString = null;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      inString = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+};
+
+const findCssRuleRange = (
+  source: string,
+  selector: string,
+  occurrenceIndex = 0,
+) => {
+  const normalizedSelector = normalizeSelectorSignature(selector);
+  let currentOccurrence = 0;
+  let segmentStart = 0;
+  let inString: '"' | "'" | null = null;
+  let inComment = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (inComment) {
+      if (char === "*" && next === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === inString) inString = null;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      inString = char;
+      continue;
+    }
+    if (char === ";") {
+      segmentStart = index + 1;
+      continue;
+    }
+    if (char === "}") {
+      segmentStart = index + 1;
+      continue;
+    }
+    if (char !== "{") continue;
+
+    const rawHeader = source.slice(segmentStart, index);
+    const headerText = rawHeader.trim();
+    if (
+      headerText &&
+      !headerText.startsWith("@") &&
+      normalizeSelectorSignature(headerText) === normalizedSelector
+    ) {
+      if (currentOccurrence === occurrenceIndex) {
+        const closeIndex = findMatchingCssBrace(source, index);
+        if (closeIndex < 0) return null;
+        const leadingWhitespace = rawHeader.match(/^\s*/)?.[0] || "";
+        return {
+          start: segmentStart,
+          end: closeIndex + 1,
+          selectorText: headerText,
+          indent: leadingWhitespace,
+          body: source.slice(index + 1, closeIndex),
+        };
+      }
+      currentOccurrence += 1;
+    }
+
+    segmentStart = index + 1;
+  }
+
+  return null;
+};
 const ANNOTATION_INTENT_OPTIONS = [
   "stylingChange",
   "textualChange",
@@ -251,6 +1198,19 @@ const ANNOTATION_INTENT_OPTIONS = [
   "piChange",
   "siChange",
 ];
+
+const extractAssetSourceFromElement = (element: VirtualElement | null) => {
+  if (!element) return "";
+  if (typeof element.src === "string" && element.src.trim()) {
+    return element.src.trim();
+  }
+  const backgroundImage =
+    typeof element.styles?.backgroundImage === "string"
+      ? String(element.styles.backgroundImage)
+      : "";
+  const match = backgroundImage.match(/url\((['"]?)(.*?)\1\)/i);
+  return match?.[2] ? match[2] : "";
+};
 
 const ALLOW_POPUP_OPEN_FROM_PDF = false;
 
@@ -271,6 +1231,7 @@ const App: React.FC = () => {
     typeFilter: pdfAnnotationTypeFilter,
     typeOverrides: pdfAnnotationTypeOverrides,
     classifierMetrics: pdfAnnotationClassifierMetrics,
+    processingLogs: pdfAnnotationProcessingLogs,
   } = useSelector((state: RootState) => state.annotations);
 
   // --- Neutralino Setup ---
@@ -359,6 +1320,8 @@ const App: React.FC = () => {
   const [isZenMode, setIsZenMode] = useState(false);
   const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
   const [isDetachedEditorOpen, setIsDetachedEditorOpen] = useState(false);
+  const [isStyleInspectorSectionOpen, setIsStyleInspectorSectionOpen] =
+    useState(true);
   const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
     "terminal",
   );
@@ -448,9 +1411,9 @@ const App: React.FC = () => {
   const lastVibeUpdateRef = useRef<number>(0);
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<
-    "inspector" | "gallery"
-  >("inspector");
+  const [rightPanelMode, setRightPanelMode] = useState<"inspector" | "gallery">(
+    "inspector",
+  );
   const [isScreenshotGalleryOpen, setIsScreenshotGalleryOpen] = useState(false);
   const [screenshotItems, setScreenshotItems] = useState<ScreenshotMetadata[]>(
     [],
@@ -549,6 +1512,8 @@ const App: React.FC = () => {
     useState<VirtualElement | null>(null);
   const [previewSelectedComputedStyles, setPreviewSelectedComputedStyles] =
     useState<React.CSSProperties | null>(null);
+  const [previewSelectedMatchedCssRules, setPreviewSelectedMatchedCssRules] =
+    useState<PreviewMatchedCssRule[]>([]);
   const [propertiesPanelRequestedTab, setPropertiesPanelRequestedTab] =
     useState<"content" | "style" | "advanced" | null>(null);
   const [
@@ -571,6 +1536,7 @@ const App: React.FC = () => {
   }>({ open: false, x: 0, y: 0 });
   const quickTextEditRef = useRef<HTMLDivElement | null>(null);
   const quickTextRangeRef = useRef<Range | null>(null);
+  const lastAutoAssetReplaceKeyRef = useRef<string | null>(null);
   const QUICK_TEXT_PANEL_WIDTH = 320;
   const QUICK_TEXT_PANEL_HEIGHT = 220;
   const showQuickTextEdit = useCallback((x: number, y: number) => {
@@ -599,10 +1565,7 @@ const App: React.FC = () => {
       }
       nextX = Math.max(
         frameRect.left + spacing,
-        Math.min(
-          nextX,
-          frameRect.right - QUICK_TEXT_PANEL_WIDTH - spacing,
-        ),
+        Math.min(nextX, frameRect.right - QUICK_TEXT_PANEL_WIDTH - spacing),
       );
       const nextY = Math.max(
         frameRect.top + spacing,
@@ -724,6 +1687,16 @@ const App: React.FC = () => {
     elementPath: number[];
     html: string;
   } | null>(null);
+  const previewStyleDraftPendingRef = useRef<{
+    filePath: string;
+    elementPath: number[];
+    styles: Partial<React.CSSProperties>;
+  } | null>(null);
+  const previewLocalCssDraftPendingRef = useRef<{
+    elementPath: number[];
+    rule: PreviewMatchedRuleMutation;
+    styles: Partial<React.CSSProperties>;
+  } | null>(null);
   const applyPreviewDropCreateRef = useRef<
     ((type: string, clientX: number, clientY: number) => Promise<void>) | null
   >(null);
@@ -733,6 +1706,8 @@ const App: React.FC = () => {
   const lastPreviewPageSignalRef = useRef<{ path: string; at: number } | null>(
     null,
   );
+  const previewStyleDraftTimerRef = useRef<number | null>(null);
+  const previewLocalCssDraftTimerRef = useRef<number | null>(null);
   const BASE_STAGE_PADDING = 40;
   const EXPLORER_LOCK_TTL_MS = 6000;
   const LEFT_PANEL_MIN_WIDTH = 220;
@@ -836,6 +1811,29 @@ const App: React.FC = () => {
       (item) => item !== path,
     );
   }, []);
+
+  const invalidatePreviewDocsForDependency = useCallback(
+    (dependencyPath: string) => {
+      const normalizedDependency = normalizeProjectRelative(
+        dependencyPath || "",
+      ).toLowerCase();
+      if (!normalizedDependency) return;
+      Object.entries(previewDependencyIndexRef.current).forEach(
+        ([previewPath, dependencies]) => {
+          if (
+            dependencies.some(
+              (dependency) =>
+                normalizeProjectRelative(dependency || "").toLowerCase() ===
+                normalizedDependency,
+            )
+          ) {
+            invalidatePreviewDocCache(previewPath);
+          }
+        },
+      );
+    },
+    [invalidatePreviewDocCache],
+  );
 
   const cachePreviewDoc = useCallback((path: string, doc: string) => {
     if (!path) return;
@@ -1447,6 +2445,12 @@ const App: React.FC = () => {
     () => () => {
       if (autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
+      }
+      if (previewStyleDraftTimerRef.current !== null) {
+        window.clearTimeout(previewStyleDraftTimerRef.current);
+      }
+      if (previewLocalCssDraftTimerRef.current !== null) {
+        window.clearTimeout(previewLocalCssDraftTimerRef.current);
       }
       if (previewConsoleFlushTimerRef.current !== null) {
         window.clearTimeout(previewConsoleFlushTimerRef.current);
@@ -2719,6 +3723,23 @@ const App: React.FC = () => {
     },
     [root, selectedId, pushHistory],
   );
+  const handleUpdateIdentity = useCallback(
+    (identity: { id: string; className: string }) => {
+      if (!selectedId) return;
+      const nextId = identity.id.trim() || selectedId;
+      const nextClassName = identity.className.trim();
+      const newRoot = updateElementInTree(root, selectedId, (el) => ({
+        ...el,
+        id: nextId,
+        className: nextClassName || undefined,
+      }));
+      pushHistory(newRoot);
+      if (nextId !== selectedId) {
+        setSelectedId(nextId);
+      }
+    },
+    [root, selectedId, pushHistory],
+  );
 
   const handleUpdateAnimation = useCallback(
     (animation: string) => {
@@ -3009,10 +4030,7 @@ const App: React.FC = () => {
             "[NX-DEBUG] Failed to export mapping JSON:",
             exportError,
           );
-          appendPdfAnnotationLog(
-            "Debug export failed (non-blocking).",
-            "warn",
-          );
+          appendPdfAnnotationLog("Debug export failed (non-blocking).", "warn");
         }
       } catch (error) {
         console.error("Failed to analyze annotated PDF:", error);
@@ -3877,7 +4895,9 @@ const App: React.FC = () => {
       const nlPort = String((window as any).NL_PORT || "").trim();
       const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
       const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-      return previewServerOrigin ? `${previewServerOrigin}${mountPath}` : mountPath;
+      return previewServerOrigin
+        ? `${previewServerOrigin}${mountPath}`
+        : mountPath;
     },
     [projectPath, previewMountBasePath],
   );
@@ -3917,8 +4937,9 @@ const App: React.FC = () => {
       ".popup",
     ];
     const candidates = selectors
-      .flatMap((selector) =>
-        Array.from(doc.querySelectorAll(selector)) as HTMLElement[],
+      .flatMap(
+        (selector) =>
+          Array.from(doc.querySelectorAll(selector)) as HTMLElement[],
       )
       .filter(Boolean);
     for (const el of candidates) {
@@ -4017,10 +5038,7 @@ const App: React.FC = () => {
       });
       const dataUrl = canvas.toDataURL("image/png");
       const bytes = dataUrlToBytes(dataUrl);
-      await (Neutralino as any).filesystem.writeBinaryFile(
-        absImagePath,
-        bytes,
-      );
+      await (Neutralino as any).filesystem.writeBinaryFile(absImagePath, bytes);
       const metadata: ScreenshotMetadata = {
         id: `${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: createdAt.toISOString(),
@@ -4851,10 +5869,7 @@ const App: React.FC = () => {
       target.getAttribute("style") || "",
     );
     const computedStyles = extractComputedStylesFromElement(target);
-    const mergedStyles: React.CSSProperties = {
-      ...(computedStyles || {}),
-      ...inlineStyles,
-    };
+    const matchedCssRules = collectMatchedCssRulesFromElement(target);
     const nextElement: VirtualElement = {
       id:
         target.getAttribute("id") ||
@@ -4875,12 +5890,13 @@ const App: React.FC = () => {
       ...(extractCustomAttributesFromElement(target)
         ? { attributes: extractCustomAttributesFromElement(target) || {} }
         : {}),
-      styles: mergedStyles,
+      styles: inlineStyles,
       children: [],
     };
     setPreviewSelectedPath(path);
     setPreviewSelectedElement(nextElement);
     setPreviewSelectedComputedStyles(computedStyles);
+    setPreviewSelectedMatchedCssRules(matchedCssRules);
     setSelectedId(null);
     setIsCodePanelOpen(false);
     setIsRightPanelOpen(true);
@@ -5993,12 +7009,12 @@ const App: React.FC = () => {
         previewFrameRef.current?.contentWindow?.document ??
         null;
       if (!frameDocument?.body) return null;
-      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
-      if (byMarker) return byMarker;
       if (Array.isArray(path) && path.length > 0) {
         const byPath = readElementByPath(frameDocument.body, path);
         if (byPath) return byPath;
       }
+      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
+      if (byMarker) return byMarker;
       return null;
     },
     [],
@@ -6094,10 +7110,7 @@ const App: React.FC = () => {
         const pending = pendingPopupOpenRef.current;
         window.setTimeout(() => {
           if (!pendingPopupOpenRef.current) return;
-          const opened = openPopupInPreview(
-            pending.selector,
-            pending.popupId,
-          );
+          const opened = openPopupInPreview(pending.selector, pending.popupId);
           if (opened) {
             pendingPopupOpenRef.current = null;
           }
@@ -6163,11 +7176,7 @@ const App: React.FC = () => {
       doc.removeEventListener("contextmenu", handleContextMenu);
       doc.removeEventListener("selectionchange", handleSelectionChange);
     };
-  }, [
-    previewFrameLoadNonce,
-    hideQuickTextEdit,
-    positionQuickTextEditAtRange,
-  ]);
+  }, [previewFrameLoadNonce, hideQuickTextEdit, positionQuickTextEditAtRange]);
   useEffect(() => {
     if (selectedPreviewSrc) {
       injectMountedPreviewBridge(previewFrameRef.current);
@@ -6441,11 +7450,6 @@ const App: React.FC = () => {
         !/^none(?:\s|$)/i.test(computedAnimationCandidate)
           ? computedAnimationCandidate
           : "");
-      const mergedStyles: React.CSSProperties = {
-        ...(snapshotComputedStyles || {}),
-        ...snapshotInlineStyles,
-      };
-
       setPreviewSelectedPath(normalizedPath);
       setPreviewSelectedComputedStyles(snapshotComputedStyles);
       setPreviewSelectedElement({
@@ -6462,7 +7466,7 @@ const App: React.FC = () => {
         ...(snapshotClassName ? { className: snapshotClassName } : {}),
         ...(snapshotAttributes ? { attributes: snapshotAttributes } : {}),
         ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-        styles: mergedStyles,
+        styles: snapshotInlineStyles,
         children: [],
       });
     },
@@ -6473,6 +7477,165 @@ const App: React.FC = () => {
       selectedPreviewHtml,
     ],
   );
+  const syncPreviewSelectionSnapshotFromLiveElement = useCallback(
+    (elementPath: number[]) => {
+      const liveElement = getLivePreviewSelectedElement(elementPath);
+      if (!(liveElement instanceof HTMLElement)) return false;
+
+      const inlineStyles = parseInlineStyleText(
+        liveElement.getAttribute("style") || "",
+      );
+      const computedStyles =
+        extractComputedStylesFromElement(liveElement) || null;
+      const matchedCssRules = collectMatchedCssRulesFromElement(liveElement);
+      const liveAttributes =
+        extractCustomAttributesFromElement(liveElement) || undefined;
+      const liveSrc = liveElement.getAttribute("src") || "";
+      const liveHref = liveElement.getAttribute("href") || "";
+      const liveTag = String(liveElement.tagName || "div").toLowerCase();
+      const inlineAnimation =
+        typeof inlineStyles.animation === "string"
+          ? inlineStyles.animation.trim()
+          : "";
+      const computedAnimationCandidate =
+        computedStyles && typeof computedStyles.animation === "string"
+          ? computedStyles.animation.trim()
+          : "";
+      const resolvedAnimation =
+        inlineAnimation ||
+        (computedAnimationCandidate &&
+        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
+          ? computedAnimationCandidate
+          : "");
+
+      setPreviewSelectedComputedStyles(computedStyles);
+      setPreviewSelectedMatchedCssRules(matchedCssRules);
+      setPreviewSelectedElement((prev) => ({
+        id: liveElement.id || prev?.id || `preview-${Date.now()}`,
+        type: liveTag,
+        name: liveTag.toUpperCase(),
+        content: normalizeEditorMultilineText(
+          extractTextWithBreaks(liveElement),
+        ),
+        html: liveElement.innerHTML || prev?.html || "",
+        ...(liveSrc ? { src: liveSrc } : {}),
+        ...(liveHref ? { href: liveHref } : {}),
+        ...(liveElement.className ? { className: liveElement.className } : {}),
+        ...(liveAttributes ? { attributes: liveAttributes } : {}),
+        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+        styles: inlineStyles,
+        children: [],
+      }));
+
+      return true;
+    },
+    [getLivePreviewSelectedElement],
+  );
+  useEffect(() => {
+    const ensureCdpBridge = async () => {
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      if (!nlPort) return;
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 600);
+        try {
+          const response = await fetch("http://127.0.0.1:38991/health", {
+            signal: controller.signal,
+          });
+          if (response.ok) return;
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      } catch {
+        // Bridge is not running yet.
+      }
+
+      const appRoot = normalizePath(String((window as any).NL_PATH || ""));
+      if (!appRoot) return;
+
+      const candidatePaths = [
+        `${appRoot}/native/cdp_bridge.exe`,
+        `${appRoot}/native/cdp_bridge/target/release/cdp_bridge.exe`,
+        `${appRoot}/native/cdp_bridge/target/debug/cdp_bridge.exe`,
+      ];
+
+      for (const candidatePath of candidatePaths) {
+        try {
+          await (Neutralino as any).filesystem.getStats(candidatePath);
+          await (Neutralino as any).os.spawnProcess(
+            `"${candidatePath}" --cdp-port 9222 --listen-port 38991`,
+            appRoot,
+          );
+          return;
+        } catch {
+          // Try the next candidate path.
+        }
+      }
+    };
+
+    void ensureCdpBridge();
+  }, []);
+  useEffect(() => {
+    if (
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0 ||
+      !previewSelectedElement
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:38991/inspect-selected", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            cdp_port: 9222,
+            iframe_title: "project-preview",
+            selected_selector: ".__nx-preview-selected",
+            target_url_contains: window.location.origin,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const payload =
+          (await response.json()) as CdpInspectSelectedResponse | null;
+        if (!payload?.ok) return;
+
+        const cdpComputedStyles = toReactComputedStylesFromCdp(
+          payload.computedStyles,
+        );
+        const cdpMatchedCssRules = derivePreviewMatchedCssRulesFromCdp(
+          payload.matchedStyles,
+          previewSelectedMatchedCssRules,
+          previewSelectedElement.styles,
+        );
+
+        if (cdpComputedStyles) {
+          setPreviewSelectedComputedStyles(cdpComputedStyles);
+        }
+        if (cdpMatchedCssRules.length > 0) {
+          setPreviewSelectedMatchedCssRules(cdpMatchedCssRules);
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+    }, 120);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    previewRefreshNonce,
+    previewSelectedElement,
+    previewSelectedMatchedCssRules,
+    previewSelectedPath,
+  ]);
   const applyPreviewStyleUpdateAtPath = useCallback(
     async (
       elementPath: number[],
@@ -6487,27 +7650,8 @@ const App: React.FC = () => {
         return;
       }
 
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
       const liveTarget = getLivePreviewSelectedElement(elementPath);
-      if (
-        !(target instanceof HTMLElement) &&
-        !(liveTarget instanceof HTMLElement)
-      )
-        return;
-      const previewStylePatch: Record<string, string> = {};
-
-      for (const [key, rawValue] of Object.entries(styles)) {
+      const normalizedStyles = Object.entries(styles).map(([key, rawValue]) => {
         const cssKey = toCssPropertyName(key);
         const valueRaw =
           rawValue === undefined || rawValue === null ? "" : String(rawValue);
@@ -6515,42 +7659,27 @@ const App: React.FC = () => {
           cssKey === "font-family"
             ? normalizeFontFamilyCssValue(valueRaw)
             : valueRaw;
+        return { key, cssKey, value };
+      });
+      const previewStylePatch: Record<string, string> = {};
+      for (const { key, cssKey, value } of normalizedStyles) {
         previewStylePatch[key] = value;
+        if (!(liveTarget instanceof HTMLElement)) continue;
         if (!value) {
-          if (target instanceof HTMLElement) {
-            target.style.removeProperty(cssKey);
-          }
-          if (liveTarget instanceof HTMLElement) {
-            liveTarget.style.removeProperty(cssKey);
-          }
+          liveTarget.style.removeProperty(cssKey);
           continue;
         }
-        if (target instanceof HTMLElement) {
-          target.style.setProperty(
-            cssKey,
-            value,
-            cssKey === "font-family" ? "important" : "",
-          );
+        if (cssKey === "animation") {
+          liveTarget.style.setProperty("animation", "none");
+          // Force layout so the next assignment retriggers animation playback.
+          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+          liveTarget.offsetWidth;
         }
-        if (liveTarget instanceof HTMLElement) {
-          if (cssKey === "animation") {
-            liveTarget.style.setProperty("animation", "none");
-            // Force layout so the next assignment retriggers animation playback.
-            // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-            liveTarget.offsetWidth;
-          }
-          liveTarget.style.setProperty(
-            cssKey,
-            value,
-            cssKey === "font-family" ? "important" : "",
-          );
-        }
-      }
-      if (
-        target instanceof HTMLElement &&
-        !target.getAttribute("style")?.trim()
-      ) {
-        target.removeAttribute("style");
+        liveTarget.style.setProperty(
+          cssKey,
+          value,
+          cssKey === "font-family" ? "important" : "",
+        );
       }
       if (
         liveTarget instanceof HTMLElement &&
@@ -6564,14 +7693,6 @@ const App: React.FC = () => {
         styles: previewStylePatch,
       });
 
-      if (target instanceof HTMLElement) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath,
-        });
-      }
-
       const pathMatchesSelection =
         Array.isArray(previewSelectedPath) &&
         previewSelectedPath.length === elementPath.length &&
@@ -6580,35 +7701,123 @@ const App: React.FC = () => {
         );
       const shouldSyncSelected =
         options?.syncSelectedElement ?? pathMatchesSelection;
-      if (!shouldSyncSelected) return;
+      if (shouldSyncSelected && liveTarget instanceof HTMLElement) {
+        syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+      }
 
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              styles: {
-                ...prev.styles,
-                ...Object.fromEntries(
-                  Object.entries(styles).map(([key, rawValue]) => {
-                    if (key !== "fontFamily") return [key, rawValue];
-                    return [
-                      key,
-                      typeof rawValue === "string"
-                        ? normalizeFontFamilyCssValue(rawValue)
-                        : rawValue,
-                    ];
-                  }),
-                ),
-              },
-            }
-          : prev,
-      );
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      if (!(target instanceof HTMLElement)) return;
+      for (const { cssKey, value } of normalizedStyles) {
+        if (!value) {
+          target.style.removeProperty(cssKey);
+          continue;
+        }
+        target.style.setProperty(
+          cssKey,
+          value,
+          cssKey === "font-family" ? "important" : "",
+        );
+      }
+      if (!target.getAttribute("style")?.trim()) {
+        target.removeAttribute("style");
+      }
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath,
+      });
     },
     [
       getLivePreviewSelectedElement,
       loadFileContent,
       postPreviewPatchToFrame,
       persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+      syncPreviewSelectionSnapshotFromLiveElement,
+    ],
+  );
+  const queuePreviewStyleUpdate = useCallback(
+    (styles: Partial<React.CSSProperties>) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const targetPath = [...previewSelectedPath];
+      const currentPending = previewStyleDraftPendingRef.current;
+      const samePendingTarget =
+        currentPending &&
+        currentPending.filePath === selectedPreviewHtml &&
+        currentPending.elementPath.length === targetPath.length &&
+        currentPending.elementPath.every(
+          (segment, index) => segment === targetPath[index],
+        );
+
+      if (
+        currentPending &&
+        !samePendingTarget &&
+        currentPending.elementPath.length > 0
+      ) {
+        void applyPreviewStyleUpdateAtPath(
+          currentPending.elementPath,
+          currentPending.styles,
+          { syncSelectedElement: false },
+        );
+      }
+
+      previewStyleDraftPendingRef.current = {
+        filePath: selectedPreviewHtml,
+        elementPath: targetPath,
+        styles: {
+          ...(samePendingTarget ? currentPending?.styles || {} : {}),
+          ...styles,
+        },
+      };
+
+      if (!dirtyFilesRef.current.includes(selectedPreviewHtml)) {
+        dirtyFilesRef.current = [...dirtyFilesRef.current, selectedPreviewHtml];
+        setDirtyFiles((prev) =>
+          prev.includes(selectedPreviewHtml)
+            ? prev
+            : [...prev, selectedPreviewHtml],
+        );
+      }
+      markPreviewPathDirty(selectedPreviewHtml, targetPath);
+
+      if (previewStyleDraftTimerRef.current !== null) {
+        window.clearTimeout(previewStyleDraftTimerRef.current);
+      }
+      previewStyleDraftTimerRef.current = window.setTimeout(() => {
+        previewStyleDraftTimerRef.current = null;
+        const pending = previewStyleDraftPendingRef.current;
+        previewStyleDraftPendingRef.current = null;
+        if (!pending || pending.elementPath.length === 0) return;
+        void applyPreviewStyleUpdateAtPath(
+          pending.elementPath,
+          pending.styles,
+          { syncSelectedElement: true },
+        );
+      }, 120);
+    },
+    [
+      applyPreviewStyleUpdateAtPath,
+      markPreviewPathDirty,
       previewSelectedPath,
       selectedPreviewHtml,
     ],
@@ -6633,6 +7842,7 @@ const App: React.FC = () => {
       content?: string;
       html?: string;
       src?: string;
+      liveSrc?: string;
       href?: string;
     }) => {
       if (
@@ -6729,6 +7939,10 @@ const App: React.FC = () => {
         (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
       ) {
         const sourceValue = data.src.trim();
+        const liveResolvedSource =
+          (typeof data.liveSrc === "string" && data.liveSrc.trim()) ||
+          resolvePreviewAssetUrl(sourceValue) ||
+          sourceValue;
         const lowerTag =
           target instanceof HTMLElement
             ? target.tagName.toLowerCase()
@@ -6747,8 +7961,8 @@ const App: React.FC = () => {
           }
           if (liveTarget instanceof HTMLElement) {
             const previousSrc = liveTarget.getAttribute("src") || "";
-            if (previousSrc !== sourceValue) {
-              liveTarget.setAttribute("src", sourceValue);
+            if (previousSrc !== liveResolvedSource) {
+              liveTarget.setAttribute("src", liveResolvedSource);
               didChangeSrc = true;
             }
           }
@@ -6769,12 +7983,26 @@ const App: React.FC = () => {
               }
             }
             if (liveTarget instanceof HTMLElement) {
+              const liveBackground =
+                sourceValue.length === 0
+                  ? ""
+                  : /^url\(/i.test(sourceValue)
+                    ? sourceValue.replace(
+                        /url\((['"]?)(.*?)\1\)/i,
+                        (_match, quote, rawUrl) => {
+                          const resolved =
+                            resolvePreviewAssetUrl(rawUrl) || rawUrl;
+                          const nextQuote = quote || '"';
+                          return `url(${nextQuote}${resolved}${nextQuote})`;
+                        },
+                      )
+                    : `url("${liveResolvedSource}")`;
               const previous =
                 liveTarget.style.getPropertyValue("background-image");
-              if (previous !== nextBackground) {
+              if (previous !== liveBackground) {
                 liveTarget.style.setProperty(
                   "background-image",
-                  nextBackground,
+                  liveBackground,
                 );
                 didChangeSrc = true;
               }
@@ -6857,9 +8085,134 @@ const App: React.FC = () => {
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedPath,
+      resolvePreviewAssetUrl,
       selectedPreviewHtml,
     ],
   );
+  const handleReplacePreviewAsset = useCallback(async () => {
+    if (
+      !projectPath ||
+      !selectedPreviewHtml ||
+      !previewSelectedElement ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return false;
+    }
+
+    const selections = await (Neutralino as any).os.showOpenDialog(
+      "Select replacement asset",
+      {
+        multiSelections: false,
+        filters: [
+          {
+            name: "Assets",
+            extensions: [
+              "png",
+              "jpg",
+              "jpeg",
+              "webp",
+              "gif",
+              "svg",
+              "mp4",
+              "webm",
+              "mov",
+            ],
+          },
+          {
+            name: "Images",
+            extensions: ["png", "jpg", "jpeg", "webp", "gif", "svg"],
+          },
+          { name: "Video", extensions: ["mp4", "webm", "mov"] },
+        ],
+      },
+    );
+    const sourceAbsolutePath = Array.isArray(selections)
+      ? selections[0]
+      : selections;
+    if (!sourceAbsolutePath) {
+      lastAutoAssetReplaceKeyRef.current = null;
+      return false;
+    }
+
+    const htmlAbsolutePath = filePathIndexRef.current[selectedPreviewHtml];
+    const htmlDirAbsolute = htmlAbsolutePath
+      ? getParentPath(normalizePath(htmlAbsolutePath))
+      : null;
+    const htmlDirRelative = getParentPath(selectedPreviewHtml) || "";
+    if (!htmlDirAbsolute) return false;
+
+    const sourceName =
+      normalizePath(String(sourceAbsolutePath)).split("/").pop() || "asset";
+    const dotIndex = sourceName.lastIndexOf(".");
+    const rawBaseName =
+      dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
+    const extension = dotIndex > 0 ? sourceName.slice(dotIndex) : "";
+    const safeBaseName =
+      rawBaseName
+        .toLowerCase()
+        .replace(/[^a-z0-9-_]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "asset";
+    const uniqueFileName = `${safeBaseName}-${Date.now()}${extension}`;
+    const targetAbsolutePath = `${htmlDirAbsolute}/${uniqueFileName}`;
+    const targetRelativePath = htmlDirRelative
+      ? `${htmlDirRelative}/${uniqueFileName}`
+      : uniqueFileName;
+
+    await ensureDirectoryForFile(targetAbsolutePath);
+    try {
+      await (Neutralino as any).filesystem.copy(
+        normalizePath(String(sourceAbsolutePath)),
+        targetAbsolutePath,
+      );
+    } catch {
+      const binary = await (Neutralino as any).filesystem.readBinaryFile(
+        normalizePath(String(sourceAbsolutePath)),
+      );
+      await (Neutralino as any).filesystem.writeBinaryFile(
+        targetAbsolutePath,
+        binary,
+      );
+    }
+
+    filePathIndexRef.current[targetRelativePath] = targetAbsolutePath;
+    setFiles((prev) => ({
+      ...prev,
+      [targetRelativePath]: {
+        path: targetRelativePath,
+        name: uniqueFileName,
+        type: /\.(mp4|webm|mov)$/i.test(extension) ? "unknown" : "image",
+        content: "",
+      },
+    }));
+
+    try {
+      await loadFileContent(targetRelativePath, { persistToState: true });
+    } catch {
+      // Ignore preview cache warmup failures; the HTML patch below is the source of truth.
+    }
+
+    const nextLiveSrc =
+      typeof binaryAssetUrlCacheRef.current[targetRelativePath] === "string" &&
+      binaryAssetUrlCacheRef.current[targetRelativePath].length > 0
+        ? binaryAssetUrlCacheRef.current[targetRelativePath]
+        : resolvePreviewAssetUrl(uniqueFileName) || uniqueFileName;
+
+    await applyPreviewContentUpdate({
+      src: uniqueFileName,
+      liveSrc: nextLiveSrc,
+    });
+    return true;
+  }, [
+    applyPreviewContentUpdate,
+    ensureDirectoryForFile,
+    loadFileContent,
+    previewSelectedElement,
+    previewSelectedPath,
+    projectPath,
+    selectedPreviewHtml,
+  ]);
   const sanitizeQuickEditDocument = useCallback((doc: Document) => {
     const editables = doc.querySelectorAll<HTMLElement>("[contenteditable]");
     editables.forEach((el) => el.removeAttribute("contenteditable"));
@@ -6882,6 +8235,32 @@ const App: React.FC = () => {
     );
     overlays.forEach((el) => el.remove());
   }, []);
+  useEffect(() => {
+    if (previewSelectionMode !== "image") {
+      lastAutoAssetReplaceKeyRef.current = null;
+      return;
+    }
+    if (
+      interactionMode !== "preview" ||
+      !previewSelectedElement ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath)
+    ) {
+      return;
+    }
+    const assetSource = extractAssetSourceFromElement(previewSelectedElement);
+    if (!assetSource) return;
+    const selectionKey = previewSelectedPath.join(".");
+    if (lastAutoAssetReplaceKeyRef.current === selectionKey) return;
+    lastAutoAssetReplaceKeyRef.current = selectionKey;
+    void handleReplacePreviewAsset();
+  }, [
+    handleReplacePreviewAsset,
+    interactionMode,
+    previewSelectedElement,
+    previewSelectedPath,
+    previewSelectionMode,
+  ]);
   const applyQuickTextWrapTag = useCallback(
     async (tagName: "sup" | "sub") => {
       const frame = previewFrameRef.current;
@@ -7516,13 +8895,23 @@ const App: React.FC = () => {
         const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
         const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
         const nextTop = Math.round(drag.startTop + consumedTopDelta);
-        drag.target.style.setProperty("width", `${width}px`);
-        drag.target.style.setProperty("height", `${height}px`);
+        const widthValue = normalizePresentationCssValue("width", `${width}px`);
+        const heightValue = normalizePresentationCssValue(
+          "height",
+          `${height}px`,
+        );
+        const nextLeftValue = normalizePresentationCssValue(
+          "left",
+          `${nextLeft}px`,
+        );
+        const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
+        drag.target.style.setProperty("width", widthValue);
+        drag.target.style.setProperty("height", heightValue);
         if (affectsWest && drag.canMoveLeft) {
-          drag.target.style.setProperty("left", `${nextLeft}px`);
+          drag.target.style.setProperty("left", nextLeftValue);
         }
         if (affectsNorth && drag.canMoveTop) {
-          drag.target.style.setProperty("top", `${nextTop}px`);
+          drag.target.style.setProperty("top", nextTopValue);
         }
         setPreviewSelectedElement((prev) =>
           prev
@@ -7530,13 +8919,13 @@ const App: React.FC = () => {
                 ...prev,
                 styles: {
                   ...prev.styles,
-                  width: `${width}px`,
-                  height: `${height}px`,
+                  width: widthValue,
+                  height: heightValue,
                   ...(affectsWest && drag.canMoveLeft
-                    ? { left: `${nextLeft}px` }
+                    ? { left: nextLeftValue }
                     : {}),
                   ...(affectsNorth && drag.canMoveTop
-                    ? { top: `${nextTop}px` }
+                    ? { top: nextTopValue }
                     : {}),
                 },
               }
@@ -7601,6 +8990,11 @@ const App: React.FC = () => {
       if (!selectedPreviewHtml || !Array.isArray(previewSelectedPath)) return;
       const nextAnimation =
         typeof animation === "string" ? animation.trim() : "";
+      await applyPreviewStyleUpdateAtPath(
+        previewSelectedPath,
+        { animation: nextAnimation },
+        { syncSelectedElement: true },
+      );
       const loaded = await loadFileContent(selectedPreviewHtml);
       const sourceHtml =
         typeof loaded === "string" && loaded.length > 0
@@ -7789,7 +9183,6 @@ const App: React.FC = () => {
       if (!target.getAttribute("style")?.trim()) {
         target.removeAttribute("style");
       }
-
       const cssMarkerStart = `/* nocodex-local-animation:${animationClassName}:start */`;
       const cssMarkerEnd = `/* nocodex-local-animation:${animationClassName}:end */`;
       const cssRule = nextAnimation
@@ -7816,7 +9209,6 @@ const App: React.FC = () => {
           nextCss,
         );
       }
-
       setFiles((prev) => ({
         ...prev,
         ...upsertedAssets,
@@ -7824,7 +9216,7 @@ const App: React.FC = () => {
 
       const serialized = parsed.documentElement.outerHTML;
       await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: true,
+        refreshPreviewDoc: false,
       });
       setPreviewSelectedElement((prev) =>
         prev
@@ -7857,6 +9249,7 @@ const App: React.FC = () => {
       );
     },
     [
+      applyPreviewStyleUpdateAtPath,
       ensureDirectoryTree,
       loadFileContent,
       persistPreviewHtmlContent,
@@ -7897,6 +9290,11 @@ const App: React.FC = () => {
       ) {
         return;
       }
+      console.log("[NoCodeX CSS] nx-local-style fallback patch", {
+        selectedPreviewHtml,
+        elementPath,
+        styles,
+      });
 
       const htmlDirVirtual = selectedPreviewHtml.includes("/")
         ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
@@ -8025,12 +9423,7 @@ const App: React.FC = () => {
       const mergedRules = parseRuleBlock(existingBlock);
       for (const [key, rawValue] of Object.entries(styles)) {
         const cssKey = toCssPropertyName(key);
-        const valueRaw =
-          rawValue === undefined || rawValue === null ? "" : String(rawValue);
-        const value =
-          cssKey === "font-family"
-            ? normalizeFontFamilyCssValue(valueRaw)
-            : valueRaw;
+        const value = normalizePresentationCssValue(cssKey, rawValue);
         if (value) {
           mergedRules[cssKey] = value;
         } else {
@@ -8140,15 +9533,13 @@ const App: React.FC = () => {
       const shouldSyncSelected =
         options?.syncSelectedElement ?? pathMatchesSelection;
       if (!shouldSyncSelected) return;
+      if (syncPreviewSelectionSnapshotFromLiveElement(elementPath)) return;
       setPreviewSelectedElement((prev) =>
         prev
           ? {
               ...prev,
               className: nextClassName,
-              styles: {
-                ...prev.styles,
-                ...styles,
-              },
+              styles: parseInlineStyleText(target?.getAttribute("style") || ""),
             }
           : prev,
       );
@@ -8160,6 +9551,7 @@ const App: React.FC = () => {
       previewSelectedElement?.id,
       previewSelectedPath,
       selectedPreviewHtml,
+      syncPreviewSelectionSnapshotFromLiveElement,
     ],
   );
   const applyPreviewDrawCreate = useCallback(
@@ -8212,8 +9604,10 @@ const App: React.FC = () => {
 
       const drawTag = normalizePreviewDrawTag(tag);
       const normalizedStyles = {
-        ...Object.fromEntries(
-          Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+        ...normalizePresentationStylePatch(
+          Object.fromEntries(
+            Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
+          ),
         ),
         // Ensure drawn elements appear on top of existing content
         zIndex:
@@ -8761,10 +10155,12 @@ const App: React.FC = () => {
       )
         .toLowerCase()
         .replace(/[^a-z0-9_-]+/g, "-")}`;
+      const nextLeftValue = normalizePresentationCssValue("left", `${nextLeft}px`);
+      const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
       const styleRules: string[] = [
         "position: absolute",
-        `left: ${nextLeft}px`,
-        `top: ${nextTop}px`,
+        `left: ${nextLeftValue}`,
+        `top: ${nextTopValue}`,
       ];
       for (const [key, value] of Object.entries(nextElement.styles || {})) {
         if (value === undefined || value === null || value === "") continue;
@@ -8835,8 +10231,8 @@ const App: React.FC = () => {
           ensurePositionableHost(liveDropHost);
           liveNode.classList.add(instanceClassName);
           liveNode.style.setProperty("position", "absolute");
-          liveNode.style.setProperty("left", `${nextLeft}px`);
-          liveNode.style.setProperty("top", `${nextTop}px`);
+          liveNode.style.setProperty("left", nextLeftValue);
+          liveNode.style.setProperty("top", nextTopValue);
           if (requiresAddToolAssets) {
             liveNode.style.setProperty("max-width", "100%");
             liveNode.style.setProperty("box-sizing", "border-box");
@@ -8870,6 +10266,7 @@ const App: React.FC = () => {
         },
       });
       setPreviewSelectedComputedStyles(null);
+      setPreviewSelectedMatchedCssRules([]);
       setSelectedId(null);
       setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
@@ -8905,11 +10302,895 @@ const App: React.FC = () => {
     },
     [applyPreviewDropCreate, selectedPreviewHtml],
   );
+  const handleImmediatePreviewStyle = useCallback(
+    (styles: Partial<React.CSSProperties>) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const liveTarget = frameDocument?.body
+        ? readElementByPath(frameDocument.body, previewSelectedPath)
+        : null;
+      const previewStylePatch: Record<string, string> = {};
+
+      Object.entries(styles).forEach(([key, rawValue]) => {
+        const cssKey = toCssPropertyName(key);
+        const value = normalizePresentationCssValue(cssKey, rawValue);
+
+        previewStylePatch[key] = value;
+        if (!(liveTarget instanceof HTMLElement)) return;
+        if (!value) {
+          liveTarget.style.removeProperty(cssKey);
+          return;
+        }
+        liveTarget.style.setProperty(
+          cssKey,
+          value,
+          cssKey === "font-family" ? "important" : "",
+        );
+      });
+
+      if (
+        liveTarget instanceof HTMLElement &&
+        !liveTarget.getAttribute("style")?.trim()
+      ) {
+        liveTarget.removeAttribute("style");
+      }
+
+      postPreviewPatchToFrame({
+        type: "PREVIEW_APPLY_STYLE",
+        path: previewSelectedPath,
+        styles: previewStylePatch,
+      });
+      syncPreviewSelectionSnapshotFromLiveElement(previewSelectedPath);
+    },
+    [
+      postPreviewPatchToFrame,
+      previewSelectedPath,
+      syncPreviewSelectionSnapshotFromLiveElement,
+    ],
+  );
+  const resolvePreviewMatchedRuleSourcePath = useCallback((source: string) => {
+    if (selectedPreviewHtml) {
+      const selectedHtmlSource =
+        typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+          ? (filesRef.current[selectedPreviewHtml]?.content as string)
+          : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
+            ? textFileCacheRef.current[selectedPreviewHtml]
+            : "";
+      if (selectedHtmlSource) {
+        try {
+          const parsed = new DOMParser().parseFromString(
+            selectedHtmlSource,
+            "text/html",
+          );
+          const linkedCssCandidates = Array.from(
+            parsed.querySelectorAll<HTMLLinkElement>(
+              'link[rel="stylesheet"][href]',
+            ),
+          )
+            .map((node) =>
+              resolveProjectRelativePath(
+                selectedPreviewHtml,
+                node.getAttribute("href") || "",
+              ),
+            )
+            .filter((candidate): candidate is string => Boolean(candidate))
+            .filter((candidate) => filesRef.current[candidate]?.type === "css")
+            .filter((candidate) => cssRuleSourcesMatch(candidate, source));
+          if (linkedCssCandidates.length === 1) {
+            return linkedCssCandidates[0];
+          }
+        } catch {
+          // Ignore malformed HTML and continue to broader lookup.
+        }
+      }
+    }
+
+    const normalizedSource = normalizeProjectRelative(String(source || ""));
+    const exactMatch =
+      findFilePathCaseInsensitive(filesRef.current, normalizedSource) ||
+      (filesRef.current[normalizedSource]?.type === "css"
+        ? normalizedSource
+        : null);
+    if (exactMatch && filesRef.current[exactMatch]?.type === "css") {
+      return exactMatch;
+    }
+
+    const normalizedSuffix = normalizedSource.toLowerCase();
+    const basename = getCssSourceBasename(source).toLowerCase();
+    const candidates = Object.keys(filesRef.current).filter((path) => {
+      if (filesRef.current[path]?.type !== "css") return false;
+      const normalizedPath = normalizeProjectRelative(path).toLowerCase();
+      if (normalizedSuffix && normalizedPath.endsWith(normalizedSuffix)) {
+        return true;
+      }
+      return getCssSourceBasename(path).toLowerCase() === basename;
+    });
+
+    return candidates.length === 1 ? candidates[0] : null;
+  }, [selectedPreviewHtml]);
+  const resolveInspectorAssetPreviewUrl = useCallback(
+    (raw: string, source?: string) => {
+      const cleaned =
+        extractAssetUrlFromCssValue(raw) || String(raw || "").trim();
+      if (!cleaned) return "";
+      if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
+
+      const basePath =
+        source && source.length > 0
+          ? resolvePreviewMatchedRuleSourcePath(source) || selectedPreviewHtml
+          : selectedPreviewHtml;
+      const resolvedVirtual = basePath
+        ? resolveProjectRelativePath(basePath, cleaned) || cleaned
+        : cleaned;
+      const normalizedResolved = normalizeProjectRelative(resolvedVirtual);
+      const absolutePath =
+        filePathIndexRef.current[resolvedVirtual] ||
+        filePathIndexRef.current[normalizedResolved] ||
+        (projectPath
+          ? normalizePath(joinPath(projectPath, normalizedResolved))
+          : null);
+      if (!absolutePath) return cleaned;
+
+      const relativePath = previewMountBasePath
+        ? toMountRelativePath(previewMountBasePath, absolutePath)
+        : null;
+      if (!relativePath) return toFileUrl(absolutePath);
+
+      const nlPort = String((window as any).NL_PORT || "").trim();
+      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
+      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
+      return previewServerOrigin
+        ? `${previewServerOrigin}${mountPath}`
+        : mountPath;
+    },
+    [
+      previewMountBasePath,
+      projectPath,
+      resolvePreviewMatchedRuleSourcePath,
+      selectedPreviewHtml,
+    ],
+  );
+  const applyPreviewMatchedRuleToLiveStylesheet = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+      elementPath?: number[],
+    ) => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument) return false;
+      const liveElement =
+        Array.isArray(elementPath) && elementPath.length > 0
+          ? getLivePreviewSelectedElement(elementPath)
+          : null;
+
+      let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+      const normalizedRuleSelector = normalizeSelectorSignature(rule.selector);
+      const resolvedRuleSource = resolvePreviewMatchedRuleSourcePath(rule.source);
+      const originalCssProperty = rule.originalProperty
+        ? toCssPropertyName(rule.originalProperty)
+        : "";
+      const nextCssKeys = new Set(
+        Object.keys(styles).map((key) =>
+          toCssPropertyName(key).toLowerCase(),
+        ),
+      );
+
+      const applyToRule = (styleRule: CSSStyleRule) => {
+        if (
+          originalCssProperty &&
+          !nextCssKeys.has(originalCssProperty.toLowerCase())
+        ) {
+          styleRule.style.removeProperty(originalCssProperty);
+        }
+        Object.entries(styles).forEach(([key, rawValue]) => {
+          const cssKey = toCssPropertyName(key);
+          const value = normalizePresentationCssValue(cssKey, rawValue);
+          if (!value) {
+            styleRule.style.removeProperty(cssKey);
+            return;
+          }
+          const priority = styleRule.style.getPropertyPriority(cssKey);
+          styleRule.style.setProperty(cssKey, value, priority || "");
+        });
+      };
+
+      if (liveElement instanceof Element) {
+        let remainingLiveOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+        const liveMatchedRule = collectLiveMatchedCssRuleRefsFromElement(
+          liveElement,
+        ).find((candidate) => {
+          if (
+            normalizeSelectorSignature(candidate.selector) !==
+            normalizedRuleSelector
+          ) {
+            return false;
+          }
+          const matchesSource =
+            cssRuleSourcesMatch(candidate.source, rule.source) ||
+            cssRuleSourcesMatch(candidate.source, resolvedRuleSource || "");
+          if (!matchesSource) return false;
+          if (remainingLiveOccurrence > 0) {
+            remainingLiveOccurrence -= 1;
+            return false;
+          }
+          return true;
+        });
+        if (liveMatchedRule) {
+          console.log("[NoCodeX CSS] live-rule-ref patch", {
+            selector: rule.selector,
+            source: rule.source,
+            resolvedSource: resolvedRuleSource,
+            occurrence: rule.occurrenceIndex || 0,
+            styles,
+          });
+          applyToRule(liveMatchedRule.styleRule);
+          syncPreviewSelectionSnapshotFromLiveElement(elementPath || []);
+          return true;
+        }
+      }
+
+      const visitRules = (rules: CSSRuleList | undefined): boolean => {
+        if (!rules) return false;
+        for (const cssRule of Array.from(rules)) {
+          if (cssRule instanceof CSSStyleRule) {
+            if (
+              normalizeSelectorSignature(String(cssRule.selectorText || "")) !==
+              normalizedRuleSelector
+            ) {
+              continue;
+            }
+            if (remainingOccurrence > 0) {
+              remainingOccurrence -= 1;
+              continue;
+            }
+            applyToRule(cssRule);
+            return true;
+          }
+          if (
+            cssRule instanceof CSSMediaRule ||
+            cssRule instanceof CSSSupportsRule ||
+            cssRule instanceof CSSLayerBlockRule
+          ) {
+            if (visitRules(cssRule.cssRules)) return true;
+          }
+        }
+        return false;
+      };
+
+      const selectorOnlyMatches: CSSStyleRule[] = [];
+      const collectSelectorMatches = (rules: CSSRuleList | undefined) => {
+        if (!rules) return;
+        for (const cssRule of Array.from(rules)) {
+          if (cssRule instanceof CSSStyleRule) {
+            const candidateSelector = normalizeSelectorSignature(
+              String(cssRule.selectorText || ""),
+            );
+            if (candidateSelector !== normalizedRuleSelector) {
+              continue;
+            }
+            if (liveElement instanceof Element) {
+              try {
+                if (!liveElement.matches(String(cssRule.selectorText || "").trim())) {
+                  continue;
+                }
+              } catch {
+                continue;
+              }
+            }
+            selectorOnlyMatches.push(cssRule);
+            continue;
+          }
+          if (
+            cssRule instanceof CSSMediaRule ||
+            cssRule instanceof CSSSupportsRule ||
+            cssRule instanceof CSSLayerBlockRule
+          ) {
+            collectSelectorMatches(cssRule.cssRules);
+          }
+        }
+      };
+
+      for (const sheet of Array.from(frameDocument.styleSheets)) {
+        try {
+          const styleSheet = sheet as CSSStyleSheet;
+          const styleSheetCandidates = new Set<string>();
+          const styleSheetSource = getStyleSheetSourceLabel(styleSheet);
+          if (styleSheetSource) {
+            styleSheetCandidates.add(styleSheetSource);
+            styleSheetCandidates.add(normalizeProjectRelative(styleSheetSource));
+          }
+          const styleSheetHref = String(styleSheet.href || "");
+          if (styleSheetHref) {
+            styleSheetCandidates.add(styleSheetHref);
+            styleSheetCandidates.add(normalizeProjectRelative(styleSheetHref));
+            try {
+              const hrefUrl = new URL(styleSheetHref, window.location.href);
+              const mountRelative = extractMountRelativePath(hrefUrl.pathname);
+              if (mountRelative) {
+                styleSheetCandidates.add(mountRelative);
+                const virtualPath =
+                  resolveVirtualPathFromMountRelative(mountRelative);
+                if (virtualPath) {
+                  styleSheetCandidates.add(virtualPath);
+                  styleSheetCandidates.add(normalizeProjectRelative(virtualPath));
+                }
+              }
+            } catch {
+              // Ignore malformed stylesheet URLs.
+            }
+          }
+          const matchesSource = Array.from(styleSheetCandidates).some(
+            (candidate) =>
+              cssRuleSourcesMatch(candidate, rule.source) ||
+              cssRuleSourcesMatch(candidate, resolvedRuleSource || ""),
+          );
+          if (!matchesSource) {
+            collectSelectorMatches(styleSheet.cssRules);
+            continue;
+          }
+          if (visitRules(styleSheet.cssRules)) {
+            console.log("[NoCodeX CSS] stylesheet-rules patch", {
+              selector: rule.selector,
+              source: rule.source,
+              resolvedSource: resolvedRuleSource,
+              styleSheetSource,
+              occurrence: rule.occurrenceIndex || 0,
+              styles,
+            });
+            if (elementPath && elementPath.length > 0) {
+              syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+            }
+            return true;
+          }
+          collectSelectorMatches(styleSheet.cssRules);
+        } catch {
+          // Ignore inaccessible stylesheets.
+        }
+      }
+
+      if (selectorOnlyMatches.length > 0) {
+        const fallbackRule =
+          selectorOnlyMatches[
+            Math.min(remainingOccurrence, selectorOnlyMatches.length - 1)
+          ];
+        if (fallbackRule) {
+          console.log("[NoCodeX CSS] selector-only fallback patch", {
+            selector: rule.selector,
+            source: rule.source,
+            resolvedSource: resolvedRuleSource,
+            occurrence: rule.occurrenceIndex || 0,
+            styles,
+          });
+          applyToRule(fallbackRule);
+          if (elementPath && elementPath.length > 0) {
+            syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+          }
+          return true;
+        }
+      }
+
+      return false;
+    },
+    [
+      getLivePreviewSelectedElement,
+      extractMountRelativePath,
+      resolveVirtualPathFromMountRelative,
+      resolvePreviewMatchedRuleSourcePath,
+      syncPreviewSelectionSnapshotFromLiveElement,
+    ],
+  );
+  const applyPreviewMatchedRuleOptimisticState = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+      elementPath?: number[],
+    ) => {
+      const targetPath =
+        Array.isArray(elementPath) && elementPath.length > 0
+          ? elementPath
+          : previewSelectedPath;
+      const liveElement =
+        Array.isArray(targetPath) && targetPath.length > 0
+          ? getLivePreviewSelectedElement(targetPath)
+          : null;
+
+      setPreviewSelectedMatchedCssRules((current) => {
+        let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
+        let didPatchRule = false;
+        const nextRules = current.map((currentRule) => {
+          if (
+            !cssRuleSourcesMatch(currentRule.source, rule.source) ||
+            normalizeSelectorSignature(currentRule.selector) !==
+              normalizeSelectorSignature(rule.selector)
+          ) {
+            return currentRule;
+          }
+          if (remainingOccurrence > 0) {
+            remainingOccurrence -= 1;
+            return currentRule;
+          }
+          didPatchRule = true;
+          return {
+            ...currentRule,
+            declarations: applyPatchToDeclarationEntries(
+              currentRule.declarations,
+              rule,
+              styles,
+            ),
+          };
+        });
+
+        if (!didPatchRule) return current;
+        if (!(liveElement instanceof Element)) {
+          return nextRules;
+        }
+        return annotateMatchedCssRuleActivity(liveElement, nextRules);
+      });
+    },
+    [getLivePreviewSelectedElement, previewSelectedPath],
+  );
+  const updatePreviewLiveStylesheetContent = useCallback(
+    (
+      sourcePath: string,
+      cssContent: string,
+      elementPath?: number[],
+    ) => {
+      const frameDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      if (!frameDocument || !sourcePath) return false;
+
+      const normalizedSourcePath = normalizeProjectRelative(sourcePath);
+      const nextCssText = rewriteInlineAssetRefs(
+        cssContent,
+        normalizedSourcePath,
+        filesRef.current,
+      );
+      let didUpdate = false;
+      const styleNodes = Array.from(
+        frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
+      );
+      styleNodes.forEach((styleNode) => {
+        const nodeSource = normalizeProjectRelative(
+          styleNode.getAttribute("data-source") || "",
+        );
+        if (!cssRuleSourcesMatch(nodeSource, normalizedSourcePath)) return;
+        styleNode.textContent = nextCssText;
+        console.log("[NoCodeX CSS] data-source style override", {
+          sourcePath: normalizedSourcePath,
+          nodeSource,
+        });
+        didUpdate = true;
+      });
+
+      if (!didUpdate) {
+        const stylesheetLinks = Array.from(
+          frameDocument.querySelectorAll<HTMLLinkElement>(
+            'link[rel="stylesheet"][href]',
+          ),
+        );
+        stylesheetLinks.forEach((linkNode) => {
+          const hrefValue = String(linkNode.getAttribute("href") || "").trim();
+          if (!hrefValue) return;
+          const resolvedHref =
+            selectedPreviewHtmlRef.current &&
+            !/^(https?:|data:|blob:)/i.test(hrefValue)
+              ? resolveProjectRelativePath(
+                  selectedPreviewHtmlRef.current,
+                  hrefValue,
+                ) || hrefValue
+              : hrefValue;
+          const normalizedHref = normalizeProjectRelative(resolvedHref);
+          if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath)) return;
+
+          const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
+          let overrideNode = frameDocument.querySelector<HTMLStyleElement>(
+            overrideSelector,
+          );
+          if (!overrideNode) {
+            overrideNode = frameDocument.createElement("style");
+            overrideNode.setAttribute("data-nx-live-source", normalizedSourcePath);
+            linkNode.insertAdjacentElement("afterend", overrideNode);
+          }
+          overrideNode.textContent = nextCssText;
+          console.log("[NoCodeX CSS] link stylesheet override", {
+            sourcePath: normalizedSourcePath,
+            hrefValue,
+            resolvedHref: normalizedHref,
+          });
+          didUpdate = true;
+        });
+      }
+
+      if (didUpdate && Array.isArray(elementPath) && elementPath.length > 0) {
+        window.setTimeout(() => {
+          syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+        }, 0);
+      }
+      return didUpdate;
+    },
+    [syncPreviewSelectionSnapshotFromLiveElement],
+  );
+  const buildPreviewMatchedRulePatchedSource = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      const sourcePath = resolvePreviewMatchedRuleSourcePath(rule.source);
+      if (!sourcePath) return null;
+      const sourceText =
+        typeof textFileCacheRef.current[sourcePath] === "string"
+          ? textFileCacheRef.current[sourcePath]
+          : typeof filesRef.current[sourcePath]?.content === "string"
+            ? (filesRef.current[sourcePath]?.content as string)
+            : "";
+      if (!sourceText) return null;
+
+      const ruleRange = findCssRuleRange(
+        sourceText,
+        rule.selector,
+        Math.max(0, rule.occurrenceIndex || 0),
+      );
+      if (!ruleRange) return null;
+
+      const declarationHost = document.createElement("div");
+      declarationHost.style.cssText = ruleRange.body;
+      const existingDeclarations: PreviewMatchedCssDeclaration[] = [];
+      Array.from(declarationHost.style).forEach((property) => {
+        const value = declarationHost.style.getPropertyValue(property);
+        if (!property || !value) return;
+        existingDeclarations.push({
+          property,
+          value,
+          important:
+            declarationHost.style.getPropertyPriority(property) === "important",
+        });
+      });
+
+      const nextDeclarations = applyPatchToDeclarationEntries(
+        existingDeclarations,
+        rule,
+        styles,
+      );
+      const nextRuleBlock =
+        nextDeclarations.length > 0
+          ? `${ruleRange.indent}${ruleRange.selectorText} {\n${nextDeclarations
+              .map(
+                (entry) =>
+                  `${ruleRange.indent}  ${entry.property}: ${entry.value}${entry.important ? " !important" : ""};`,
+              )
+              .join("\n")}\n${ruleRange.indent}}`
+          : `${ruleRange.indent}${ruleRange.selectorText} {\n${ruleRange.indent}}`;
+      const nextSourceText =
+        sourceText.slice(0, ruleRange.start) +
+        nextRuleBlock +
+        sourceText.slice(ruleRange.end);
+      return { sourcePath, nextSourceText };
+    },
+    [resolvePreviewMatchedRuleSourcePath],
+  );
+  const persistPreviewMatchedRuleToSourceFile = useCallback(
+    async (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      const patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
+      if (!patchedSource) return false;
+      const { sourcePath, nextSourceText } = patchedSource;
+      console.log("[NoCodeX CSS] persisted matched rule to source", {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath,
+        occurrence: rule.occurrenceIndex || 0,
+        styles,
+      });
+
+      textFileCacheRef.current[sourcePath] = nextSourceText;
+      const existingFile = filesRef.current[sourcePath];
+      const nextFile: ProjectFile = existingFile
+        ? {
+            ...existingFile,
+            content: nextSourceText,
+            type: "css",
+          }
+        : {
+            path: sourcePath,
+            name: getCssSourceBasename(sourcePath) || "styles.css",
+            type: "css",
+            content: nextSourceText,
+          };
+      filesRef.current = {
+        ...filesRef.current,
+        [sourcePath]: nextFile,
+      };
+      setFiles((prev) => ({
+        ...prev,
+        [sourcePath]: nextFile,
+      }));
+      pendingPreviewWritesRef.current[sourcePath] = nextSourceText;
+      if (!dirtyFilesRef.current.includes(sourcePath)) {
+        dirtyFilesRef.current = [...dirtyFilesRef.current, sourcePath];
+      }
+      setDirtyFiles((prev) =>
+        prev.includes(sourcePath) ? prev : [...prev, sourcePath],
+      );
+      invalidatePreviewDocsForDependency(sourcePath);
+      schedulePreviewAutoSave();
+      return true;
+    },
+    [
+      buildPreviewMatchedRulePatchedSource,
+      invalidatePreviewDocsForDependency,
+      schedulePreviewAutoSave,
+    ],
+  );
+  const removePreviewLocalStyleClassesAtPath = useCallback(
+    async (elementPath: number[]) => {
+      if (
+        !selectedPreviewHtml ||
+        !Array.isArray(elementPath) ||
+        elementPath.length === 0
+      ) {
+        return false;
+      }
+
+      const loadedHtml = await loadFileContent(selectedPreviewHtml, {
+        persistToState: false,
+      });
+      const sourceHtml =
+        typeof loadedHtml === "string" && loadedHtml.length > 0
+          ? loadedHtml
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
+              ? textFileCacheRef.current[selectedPreviewHtml]
+              : "";
+      if (!sourceHtml) return false;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, elementPath);
+      const liveTarget = getLivePreviewSelectedElement(elementPath);
+      const classSource =
+        (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
+        (liveTarget instanceof HTMLElement
+          ? liveTarget.getAttribute("class")
+          : "") ||
+        "";
+      const removableTokens = String(classSource)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.startsWith("nx-local-style-"));
+      if (removableTokens.length === 0) return false;
+
+      const pruneTokens = (value: string | null) => {
+        const nextTokens = String(value || "")
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(
+            (token) => token && !token.startsWith("nx-local-style-"),
+          );
+        return nextTokens.join(" ");
+      };
+
+      if (target instanceof HTMLElement) {
+        const nextClassName = pruneTokens(target.getAttribute("class"));
+        if (nextClassName) {
+          target.setAttribute("class", nextClassName);
+        } else {
+          target.removeAttribute("class");
+        }
+      }
+
+      if (liveTarget instanceof HTMLElement) {
+        const nextClassName = pruneTokens(liveTarget.getAttribute("class"));
+        if (nextClassName) {
+          liveTarget.setAttribute("class", nextClassName);
+        } else {
+          liveTarget.removeAttribute("class");
+        }
+        const liveHead =
+          liveTarget.ownerDocument.head ||
+          liveTarget.ownerDocument.documentElement;
+        removableTokens.forEach((token) => {
+          liveHead
+            ?.querySelector(`style[data-nx-local-style="${token}"]`)
+            ?.remove();
+        });
+      }
+
+      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: false,
+        elementPath,
+      });
+      syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+      return true;
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      selectedPreviewHtml,
+      syncPreviewSelectionSnapshotFromLiveElement,
+    ],
+  );
+  const queuePreviewLocalCssPatch = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      if (
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const nextPath = [...previewSelectedPath];
+      applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
+      console.log("[NoCodeX CSS] queue matched rule patch", {
+        selector: rule.selector,
+        source: rule.source,
+        occurrence: rule.occurrenceIndex || 0,
+        isActive: rule.isActive,
+        path: nextPath,
+        styles,
+      });
+      const shouldLivePreview = rule.isActive !== false;
+      const appliedLiveRule = shouldLivePreview
+        ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
+        : false;
+      const patchedSource =
+        shouldLivePreview && !appliedLiveRule
+          ? buildPreviewMatchedRulePatchedSource(rule, styles)
+          : null;
+      const updatedLiveStylesheet =
+        shouldLivePreview && !appliedLiveRule && patchedSource
+          ? updatePreviewLiveStylesheetContent(
+              patchedSource.sourcePath,
+              patchedSource.nextSourceText,
+              nextPath,
+            )
+          : false;
+      if (shouldLivePreview && !appliedLiveRule && !updatedLiveStylesheet) {
+        console.log("[NoCodeX CSS] inline selected-element fallback", {
+          selector: rule.selector,
+          source: rule.source,
+          occurrence: rule.occurrenceIndex || 0,
+          path: nextPath,
+          styles,
+        });
+        handleImmediatePreviewStyle(styles);
+      }
+      const currentPending = previewLocalCssDraftPendingRef.current;
+      const sameTarget =
+        currentPending &&
+        currentPending.rule.selector === rule.selector &&
+        currentPending.rule.source === rule.source &&
+        (currentPending.rule.occurrenceIndex || 0) ===
+          (rule.occurrenceIndex || 0) &&
+        currentPending.elementPath.length === nextPath.length &&
+        currentPending.elementPath.every(
+          (segment, index) => segment === nextPath[index],
+        );
+
+      if (
+        currentPending &&
+        !sameTarget &&
+        currentPending.elementPath.length > 0
+      ) {
+        void (async () => {
+          const persisted = await persistPreviewMatchedRuleToSourceFile(
+            currentPending.rule,
+            currentPending.styles,
+          );
+          if (persisted) {
+            console.log("[NoCodeX CSS] flushed previous pending rule to source", {
+              selector: currentPending.rule.selector,
+              source: currentPending.rule.source,
+              occurrence: currentPending.rule.occurrenceIndex || 0,
+            });
+            await removePreviewLocalStyleClassesAtPath(
+              currentPending.elementPath,
+            );
+            return;
+          }
+          console.log("[NoCodeX CSS] previous pending rule fell back to nx-local-style", {
+            selector: currentPending.rule.selector,
+            source: currentPending.rule.source,
+            occurrence: currentPending.rule.occurrenceIndex || 0,
+          });
+          await applyPreviewLocalCssPatchAtPath(
+            currentPending.elementPath,
+            currentPending.styles,
+            {
+              syncSelectedElement: false,
+            },
+          );
+        })();
+      }
+
+      previewLocalCssDraftPendingRef.current = {
+        elementPath: nextPath,
+        rule,
+        styles: {
+          ...(sameTarget ? currentPending?.styles || {} : {}),
+          ...styles,
+        },
+      };
+
+      if (previewLocalCssDraftTimerRef.current !== null) {
+        window.clearTimeout(previewLocalCssDraftTimerRef.current);
+      }
+      previewLocalCssDraftTimerRef.current = window.setTimeout(() => {
+        previewLocalCssDraftTimerRef.current = null;
+        const pending = previewLocalCssDraftPendingRef.current;
+        previewLocalCssDraftPendingRef.current = null;
+        if (!pending || pending.elementPath.length === 0) return;
+        void (async () => {
+          const persisted = await persistPreviewMatchedRuleToSourceFile(
+            pending.rule,
+            pending.styles,
+          );
+          if (persisted) {
+            console.log("[NoCodeX CSS] timer flush persisted rule", {
+              selector: pending.rule.selector,
+              source: pending.rule.source,
+              occurrence: pending.rule.occurrenceIndex || 0,
+            });
+            await removePreviewLocalStyleClassesAtPath(pending.elementPath);
+            syncPreviewSelectionSnapshotFromLiveElement(pending.elementPath);
+            return;
+          }
+          console.log("[NoCodeX CSS] timer flush fell back to nx-local-style", {
+            selector: pending.rule.selector,
+            source: pending.rule.source,
+            occurrence: pending.rule.occurrenceIndex || 0,
+          });
+          await applyPreviewLocalCssPatchAtPath(
+            pending.elementPath,
+            pending.styles,
+            {
+              syncSelectedElement: true,
+            },
+          );
+        })();
+      }, 120);
+    },
+    [
+      applyPreviewLocalCssPatchAtPath,
+      applyPreviewMatchedRuleOptimisticState,
+      buildPreviewMatchedRulePatchedSource,
+      applyPreviewMatchedRuleToLiveStylesheet,
+      handleImmediatePreviewStyle,
+      persistPreviewMatchedRuleToSourceFile,
+      previewSelectedPath,
+      removePreviewLocalStyleClassesAtPath,
+      syncPreviewSelectionSnapshotFromLiveElement,
+      updatePreviewLiveStylesheetContent,
+    ],
+  );
   const handlePreviewStyleUpdateStable = useCallback(
     (styles: Partial<React.CSSProperties>) => {
-      void applyPreviewStyleUpdate(styles);
+      queuePreviewStyleUpdate(styles);
     },
-    [applyPreviewStyleUpdate],
+    [queuePreviewStyleUpdate],
   );
   const handlePreviewContentUpdateStable = useCallback(
     (data: {
@@ -8968,6 +11249,15 @@ const App: React.FC = () => {
             altKey?: boolean;
             editable?: boolean;
             computedStyles?: Record<string, string>;
+            matchedCssRules?: Array<{
+              selector?: string;
+              source?: string;
+              declarations?: Array<{
+                property?: string;
+                value?: string;
+                important?: boolean;
+              }>;
+            }>;
             parentPath?: number[];
             styles?: Record<string, string | number>;
           }
@@ -9254,10 +11544,6 @@ const App: React.FC = () => {
         const inlineStyles = parseInlineStyleText(
           liveElement.getAttribute("style") || "",
         );
-        const mergedStyles: React.CSSProperties = {
-          ...(computedStyles || {}),
-          ...inlineStyles,
-        };
         const liveAttributes =
           extractCustomAttributesFromElement(liveElement) || undefined;
         const liveSrc = liveElement.getAttribute("src") || "";
@@ -9291,7 +11577,7 @@ const App: React.FC = () => {
             : {}),
           ...(liveAttributes ? { attributes: liveAttributes } : {}),
           ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-          styles: mergedStyles,
+          styles: inlineStyles,
           children: [],
         }));
         return;
@@ -9301,11 +11587,14 @@ const App: React.FC = () => {
         const nextPath = normalizePreviewPath(payload.path);
         if (!nextPath) return;
         if (!payload.styles || typeof payload.styles !== "object") return;
-        const stylePatch = Object.fromEntries(
+        const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles).map(([key, value]) => [
             key,
             value == null ? "" : String(value),
-          ]),
+          ]).reduce<Record<string, string>>((acc, [key, value]) => {
+            acc[key] = value;
+            return acc;
+          }, {}),
         ) as Partial<React.CSSProperties>;
         void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
@@ -9317,37 +11606,91 @@ const App: React.FC = () => {
         const nextParentPath = normalizePreviewPath(payload.parentPath || []);
         if (!nextParentPath) return;
         if (typeof payload.tag !== "string" || !payload.tag.trim()) return;
-        const stylePatch = Object.fromEntries(
+        const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles || {}).map(([key, value]) => [
             key,
             value == null ? "" : String(value),
-          ]),
+          ]).reduce<Record<string, string>>((acc, [key, value]) => {
+            acc[key] = value;
+            return acc;
+          }, {}),
         ) as Record<string, string>;
         void applyPreviewDrawCreate(nextParentPath, payload.tag, stylePatch);
         return;
       }
 
       if (payload.type === "PREVIEW_SELECT") {
-        const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath || nextPath.length === 0) return;
+        console.log("DEBUG: Iframe reported selection:", payload);
 
+        // 1. Correctly sanitize and validate the path from the iframe
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath || nextPath.length === 0) {
+          console.warn("DEBUG: Selection ignored - invalid or empty path");
+          return;
+        }
+
+        // 2. Prepare data parsing
         const tag = (payload.tag || "div").toLowerCase();
         const id = payload.id ? String(payload.id) : `preview-${Date.now()}`;
         const inlineStyles = parseInlineStyleText(
           typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
         );
+
         const payloadComputedStyles =
           payload.computedStyles && typeof payload.computedStyles === "object"
             ? (payload.computedStyles as React.CSSProperties)
             : null;
 
+        const payloadMatchedCssRules = Array.isArray(payload.matchedCssRules)
+          ? (payload.matchedCssRules
+              .map((rule) => {
+                if (!rule || typeof rule !== "object") return null;
+                const selector =
+                  typeof rule.selector === "string" ? rule.selector : "";
+                const source =
+                  typeof rule.source === "string" ? rule.source : "stylesheet";
+                const declarations = Array.isArray(rule.declarations)
+                  ? (rule.declarations
+                      .map((declaration) => {
+                        if (!declaration || typeof declaration !== "object")
+                          return null;
+                        return typeof declaration.property === "string" &&
+                          typeof declaration.value === "string"
+                          ? {
+                              property: declaration.property,
+                              value: declaration.value,
+                              important: Boolean(declaration.important),
+                              active:
+                                !("active" in declaration) ||
+                                (declaration as { active?: unknown }).active ===
+                                  undefined
+                                  ? undefined
+                                  : Boolean(
+                                      (declaration as { active?: unknown })
+                                        .active,
+                                    ),
+                            }
+                          : null;
+                      })
+                      .filter(Boolean) as PreviewMatchedCssDeclaration[])
+                  : [];
+                if (!selector || declarations.length === 0) return null;
+                return { selector, source, declarations };
+              })
+              .filter(Boolean) as PreviewMatchedCssRule[])
+          : [];
         const liveElement = getLivePreviewSelectedElement(nextPath);
         const computedStyles =
           payloadComputedStyles ||
           extractComputedStylesFromElement(liveElement);
+        const liveMatchedCssRules = liveElement
+          ? collectMatchedCssRulesFromElement(liveElement)
+          : [];
+        const matchedCssRules =
+          liveMatchedCssRules.length > 0
+            ? liveMatchedCssRules
+            : payloadMatchedCssRules;
 
-        // Prefer the text sent directly from the iframe at click time (el.textContent)
-        // since it's the most reliable source. Fall back to DOM extraction if needed.
         const payloadText =
           typeof payload.text === "string" ? payload.text.trim() : "";
         const payloadHtml =
@@ -9355,6 +11698,7 @@ const App: React.FC = () => {
         const liveText = liveElement ? extractTextWithBreaks(liveElement) : "";
         const liveHtml =
           liveElement instanceof HTMLElement ? liveElement.innerHTML || "" : "";
+
         const payloadAttributes =
           payload.attributes && typeof payload.attributes === "object"
             ? (Object.fromEntries(
@@ -9366,13 +11710,10 @@ const App: React.FC = () => {
         const liveAttributes =
           extractCustomAttributesFromElement(liveElement) || {};
 
-        // Third-layer fallback: parse the saved source HTML from filesRef and read
-        // the text directly at the element path. This handles cases where the live
-        // DOM was reloaded/refreshed and payload.text is empty (e.g. immediately
-        // after a tool switch with no prior click).
         let savedHtmlText = "";
         let savedHtmlMarkup = "";
         let savedHtmlAttributes: Record<string, string> = {};
+
         if (
           ((!payloadText && !liveText) || (!payloadHtml && !liveHtml)) &&
           selectedPreviewHtml &&
@@ -9398,8 +11739,8 @@ const App: React.FC = () => {
                   extractCustomAttributesFromElement(savedEl) || {};
               }
             }
-          } catch {
-            // Ignore parse errors.
+          } catch (err) {
+            console.error("DEBUG: Failed to parse saved HTML", err);
           }
         }
 
@@ -9416,13 +11757,14 @@ const App: React.FC = () => {
             ? payload.href.trim()
             : "";
         const liveSrc =
-          liveElement && liveElement instanceof HTMLElement
+          liveElement instanceof HTMLElement
             ? liveElement.getAttribute("src") || ""
             : "";
         const liveHref =
-          liveElement && liveElement instanceof HTMLElement
+          liveElement instanceof HTMLElement
             ? liveElement.getAttribute("href") || ""
             : "";
+
         const resolvedSrc = payloadSrc || liveSrc || undefined;
         const resolvedHref = payloadHref || liveHref || undefined;
         const mergedAttributes = {
@@ -9434,10 +11776,7 @@ const App: React.FC = () => {
           Object.keys(mergedAttributes).length > 0
             ? mergedAttributes
             : undefined;
-        const mergedStyles: React.CSSProperties = {
-          ...(computedStyles || {}),
-          ...inlineStyles,
-        };
+
         const inlineAnimation =
           typeof inlineStyles.animation === "string"
             ? inlineStyles.animation.trim()
@@ -9453,28 +11792,39 @@ const App: React.FC = () => {
             ? computedAnimationCandidate
             : "");
 
+        // 3. Construct the VirtualElement with the PATH included
         const nextElement: VirtualElement = {
           id,
-          type: tag,
+          type: tag as any,
           name: tag.toUpperCase(),
           content: editableText,
-          ...(editableHtml ? { html: editableHtml } : {}),
-          ...(resolvedSrc ? { src: resolvedSrc } : {}),
-          ...(resolvedHref ? { href: resolvedHref } : {}),
+          html: editableHtml,
+          src: resolvedSrc,
+          href: resolvedHref,
           className:
             typeof payload.className === "string" &&
             payload.className.length > 0
               ? payload.className
               : undefined,
-          ...(resolvedAttributes ? { attributes: resolvedAttributes } : {}),
-          styles: mergedStyles,
-          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
+          attributes: resolvedAttributes,
+          styles: inlineStyles,
+          animation: resolvedAnimation || undefined,
           children: [],
+          path: nextPath, // <--- CRITICAL: This allows handleImmediatePreviewStyle to work
         };
 
+        console.log(
+          "DEBUG: Setting active inspector element with path:",
+          nextPath,
+        );
+
+        // 4. Update all relevant states
         setPreviewSelectedPath(nextPath);
         setPreviewSelectedElement(nextElement);
         setPreviewSelectedComputedStyles(computedStyles);
+        setPreviewSelectedMatchedCssRules(matchedCssRules);
+
+        // These ensure the right panel actually opens and focuses the element
         setSelectedId(null);
         setIsCodePanelOpen(false);
         setIsRightPanelOpen(true);
@@ -10021,7 +12371,10 @@ const App: React.FC = () => {
     if (!shouldPushTabletFrame) return 0;
 
     const rightActive =
-      isRightPanelOpen || isPdfAnnotationPanelOpen || isScreenshotGalleryOpen;
+      rightPanelMode === "inspector" ||
+      isRightPanelOpen ||
+      isPdfAnnotationPanelOpen ||
+      isScreenshotGalleryOpen;
     if (isLeftPanelOpen === rightActive) return 0;
 
     // Calculate push amount based on panel widths
@@ -10029,6 +12382,7 @@ const App: React.FC = () => {
     return isLeftPanelOpen ? pushAmount : -pushAmount;
   }, [
     isLeftPanelOpen,
+    rightPanelMode,
     isRightPanelOpen,
     isPdfAnnotationPanelOpen,
     isScreenshotGalleryOpen,
@@ -10037,6 +12391,16 @@ const App: React.FC = () => {
     deviceMode,
   ]);
   const baseOverflowX = bothPanelsOpen ? "scroll" : "auto";
+  const hasPdfAnnotationsLoaded = pdfAnnotationRecords.length > 0;
+  const isRightInspectorMode = rightPanelMode === "inspector";
+  const isRightInspectorAttached = isRightInspectorMode && isRightPanelOpen;
+  const showEmbeddedPdfAnnotations =
+    isPdfAnnotationPanelOpen &&
+    (hasPdfAnnotationsLoaded ||
+      isPdfAnnotationLoading ||
+      Boolean(pdfAnnotationError) ||
+      pdfAnnotationProcessingLogs.length > 0);
+  const showStyleInspectorSection = isStyleInspectorSectionOpen;
   const isTabletZoomMode = deviceMode === "tablet";
   const lockAllScrollAt50 = isTabletZoomMode && frameZoom === 50;
   const lockVerticalAt75Landscape =
@@ -10108,6 +12472,90 @@ const App: React.FC = () => {
         estimatedFrameWidthPx / 2 +
         20,
     ),
+  );
+  const applyPreviewIdentityUpdate = useCallback(
+    async (identity: { id: string; className: string }) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      if (!target && !liveTarget) return;
+
+      const nextId = identity.id.trim();
+      const nextClassName = identity.className.trim();
+
+      if (target) {
+        if (nextId) target.setAttribute("id", nextId);
+        else target.removeAttribute("id");
+        if (nextClassName) target.setAttribute("class", nextClassName);
+        else target.removeAttribute("class");
+      }
+      if (liveTarget) {
+        if (nextId) liveTarget.setAttribute("id", nextId);
+        else liveTarget.removeAttribute("id");
+        if (nextClassName) liveTarget.setAttribute("class", nextClassName);
+        else liveTarget.removeAttribute("class");
+      }
+
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+        });
+      }
+
+      setPreviewSelectedElement((prev) =>
+        prev
+          ? {
+              ...prev,
+              id: nextId || prev.id,
+              className: nextClassName || undefined,
+            }
+          : prev,
+      );
+    },
+    [
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
+      selectedPreviewHtml,
+    ],
+  );
+  const handlePreviewIdentityUpdateStable = useCallback(
+    (identity: { id: string; className: string }) => {
+      void applyPreviewIdentityUpdate(identity);
+    },
+    [applyPreviewIdentityUpdate],
+  );
+  const handlePreviewMatchedRulePropertyAdd = useCallback(
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      if (!previewSelectedPath || !Array.isArray(previewSelectedPath)) return;
+      queuePreviewLocalCssPatch(rule, styles);
+    },
+    [previewSelectedPath, queuePreviewLocalCssPatch],
   );
   const showDeviceFrameToolbar = true;
 
@@ -10917,7 +13365,9 @@ const App: React.FC = () => {
             <div className="h-4 w-px bg-gray-500/20"></div>
             <span
               className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e" }}
+              style={{
+                backgroundColor: dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e",
+              }}
               aria-hidden="true"
             />
             {interactionMode === "preview" && (
@@ -10982,9 +13432,13 @@ const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
         <div
-          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : (isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0")} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+          className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-700"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
           style={{
-            transform: isLeftPanelOpen ? "translateX(0)" : "translateX(0)",
+            transform: isLeftPanelOpen
+              ? "translateX(0) scale(1)"
+              : isPanelsSwapped
+                ? "translateX(8px) scale(0.985)"
+                : "translateX(-8px) scale(0.985)",
             width: isLeftPanelOpen
               ? "var(--left-panel-width)"
               : `${LEFT_PANEL_COLLAPSED_WIDTH}px`,
@@ -11009,6 +13463,7 @@ const App: React.FC = () => {
             overflowY: "hidden",
             overflowX: "hidden",
             transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+            transformOrigin: isPanelsSwapped ? "right center" : "left center",
           }}
         >
           <div
@@ -11065,6 +13520,26 @@ const App: React.FC = () => {
                 isPanelOpen={isLeftPanelOpen}
                 onTogglePanelOpen={setIsLeftPanelOpen}
                 showMasterTools={SHOW_MASTER_TOOLS}
+                showCollapseControl
+                animationElement={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? previewSelectedElement
+                    : selectedElement
+                }
+                isEditModeActive={
+                  interactionMode === "edit" ||
+                  (interactionMode === "preview" && previewMode === "edit")
+                }
+                onUpdateAnimation={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? handlePreviewAnimationUpdateStable
+                    : handleUpdateAnimation
+                }
+                onUpdateAnimationStyle={
+                  interactionMode === "preview" && previewSelectedElement
+                    ? handlePreviewStyleUpdateStable
+                    : handleUpdateStyle
+                }
               />
             </div>
             <div
@@ -11107,12 +13582,20 @@ const App: React.FC = () => {
                 ? `${consolePanelStageOffset}px`
                 : !isFloatingPanels &&
                     deviceMode !== "mobile" &&
-                    ((isPanelsSwapped && isLeftPanelOpen && !isRightPanelOpen) ||
-                      (!isPanelsSwapped && !isLeftPanelOpen && isRightPanelOpen))
-                  ? isPanelsSwapped
-                    ? "var(--left-panel-width)"
-                    : "var(--right-panel-width)"
-                  : 0,
+                    isRightInspectorAttached
+                  ? "var(--right-panel-width)"
+                  : !isFloatingPanels &&
+                      deviceMode !== "mobile" &&
+                      ((isPanelsSwapped &&
+                        isLeftPanelOpen &&
+                        !isRightPanelOpen) ||
+                        (!isPanelsSwapped &&
+                          !isLeftPanelOpen &&
+                          isRightPanelOpen))
+                    ? isPanelsSwapped
+                      ? "var(--left-panel-width)"
+                      : "var(--right-panel-width)"
+                    : 0,
             // When both panels open, no margins - content will scroll
           }}
         >
@@ -11144,11 +13627,9 @@ const App: React.FC = () => {
               style={{
                 perspective: "1000px",
                 paddingLeft: `${BASE_STAGE_PADDING}px`,
-                paddingRight:
-                  isPdfAnnotationPanelOpen && deviceMode !== "tablet"
-                    ? "400px"
-                    : `${BASE_STAGE_PADDING}px`,
+                paddingRight: `${BASE_STAGE_PADDING}px`,
                 width: "100%",
+                paddingBottom: `${BASE_STAGE_PADDING}px`,
                 minWidth: bothPanelsOpen
                   ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
                   : floatingHorizontalInset > 0
@@ -11246,144 +13727,313 @@ const App: React.FC = () => {
                         >
                           <RotateCw size={16} />
                         </button>
-                      {currentDevicePixelRatio >= 1.5 && (
-                        <>
-                          <div className="h-4 w-px bg-gray-500/20"></div>
-                          <div className="flex items-center gap-0.5 rounded-full px-0.5 py-0.5 border border-gray-500/20">
-                            {[50, 75, 100].map((zoom) => (
-                              <button
-                                key={zoom}
-                                onClick={() =>
-                                  setFrameZoom(zoom as 50 | 75 | 100)
-                                }
-                                className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold transition-all ${
-                                  frameZoom === zoom
-                                    ? theme === "light"
-                                      ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
-                                      : "bg-indigo-500/25 text-indigo-300"
-                                    : theme === "light"
-                                      ? "text-slate-500"
-                                      : "text-gray-300"
-                                }`}
-                                title={`Set frame zoom to ${zoom}%`}
-                              >
-                                {zoom}%
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                      <div className="h-4 w-px bg-gray-500/20"></div>
-                      <button
-                        className="glass-icon-btn navbar-icon-btn"
-                        onClick={toggleThemeWithTransition}
-                        title="Toggle Theme"
-                      >
-                        {theme === "dark" ? (
-                          <Sun size={16} />
-                        ) : (
-                          <Moon size={16} />
+                        {currentDevicePixelRatio >= 1.5 && (
+                          <>
+                            <div className="h-4 w-px bg-gray-500/20"></div>
+                            <div className="flex items-center gap-0.5 rounded-full px-0.5 py-0.5 border border-gray-500/20">
+                              {[50, 75, 100].map((zoom) => (
+                                <button
+                                  key={zoom}
+                                  onClick={() =>
+                                    setFrameZoom(zoom as 50 | 75 | 100)
+                                  }
+                                  className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold transition-all ${
+                                    frameZoom === zoom
+                                      ? theme === "light"
+                                        ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
+                                        : "bg-indigo-500/25 text-indigo-300"
+                                      : theme === "light"
+                                        ? "text-slate-500"
+                                        : "text-gray-300"
+                                  }`}
+                                  title={`Set frame zoom to ${zoom}%`}
+                                >
+                                  {zoom}%
+                                </button>
+                              ))}
+                            </div>
+                          </>
                         )}
-                      </button>
-                      <div className="h-4 w-px bg-gray-500/20"></div>
-                      <button
-                        className="glass-icon-btn navbar-icon-btn"
-                        onClick={runUndo}
-                        title="Undo (Ctrl+Z)"
-                      >
-                        <Undo2 size={16} />
-                      </button>
-                      <button
-                        className="glass-icon-btn navbar-icon-btn"
-                        onClick={runRedo}
-                        title="Redo (Ctrl+U)"
-                      >
-                        <Redo2 size={16} />
-                      </button>
-                      <div className="h-4 w-px bg-gray-500/20"></div>
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{
-                          backgroundColor:
-                            dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e",
-                        }}
-                        aria-hidden="true"
-                      />
-                      {interactionMode === "preview" && (
-                        <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
-                          <button
-                            onClick={() => setPreviewModeWithSync("edit")}
-                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                              previewMode === "edit"
-                                ? theme === "light"
-                                  ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
-                                  : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
-                                : theme === "light"
-                                  ? "text-slate-500"
-                                  : "text-gray-300"
-                            }`}
-                            title="LIVE Edit mode: select and edit elements"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => setPreviewModeWithSync("preview")}
-                            className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                              previewMode === "preview"
-                                ? theme === "light"
-                                  ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
-                                  : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
-                                : theme === "light"
-                                  ? "text-slate-500"
-                                  : "text-gray-300"
-                            }`}
-                            title="LIVE Preview mode: navigate and interact"
-                          >
-                            Preview
-                          </button>
-                        </div>
-                      )}
+                        <div className="h-4 w-px bg-gray-500/20"></div>
+                        <button
+                          className="glass-icon-btn navbar-icon-btn"
+                          onClick={toggleThemeWithTransition}
+                          title="Toggle Theme"
+                        >
+                          {theme === "dark" ? (
+                            <Sun size={16} />
+                          ) : (
+                            <Moon size={16} />
+                          )}
+                        </button>
+                        <div className="h-4 w-px bg-gray-500/20"></div>
+                        <button
+                          className="glass-icon-btn navbar-icon-btn"
+                          onClick={runUndo}
+                          title="Undo (Ctrl+Z)"
+                        >
+                          <Undo2 size={16} />
+                        </button>
+                        <button
+                          className="glass-icon-btn navbar-icon-btn"
+                          onClick={runRedo}
+                          title="Redo (Ctrl+U)"
+                        >
+                          <Redo2 size={16} />
+                        </button>
+                        <div className="h-4 w-px bg-gray-500/20"></div>
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{
+                            backgroundColor:
+                              dirtyFiles.length > 0 ? "#f59e0b" : "#22c55e",
+                          }}
+                          aria-hidden="true"
+                        />
+                        {interactionMode === "preview" && (
+                          <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+                            <button
+                              onClick={() => setPreviewModeWithSync("edit")}
+                              className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                                previewMode === "edit"
+                                  ? theme === "light"
+                                    ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
+                                    : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
+                                  : theme === "light"
+                                    ? "text-slate-500"
+                                    : "text-gray-300"
+                              }`}
+                              title="LIVE Edit mode: select and edit elements"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => setPreviewModeWithSync("preview")}
+                              className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
+                                previewMode === "preview"
+                                  ? theme === "light"
+                                    ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
+                                    : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
+                                  : theme === "light"
+                                    ? "text-slate-500"
+                                    : "text-gray-300"
+                              }`}
+                              title="LIVE Preview mode: navigate and interact"
+                            >
+                              Preview
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                    {deviceMode === "tablet" && SHOW_SCREENSHOT_FEATURES && (
+                    {deviceMode === "tablet" && (
                       <div
                         className={`absolute right-5 bottom-full z-0 transition-all animate-slideDown ${isZenMode ? "opacity-65" : ""}`}
-                        style={{ marginBottom: "-10px" }}
+                        style={{
+                          marginBottom: "-20px",
+                          transform: "translateY(3px)",
+                        }}
                       >
                         <div
-                          className="px-2.5 pt-1 pb-3 flex items-center gap-2 rounded-t-[10px] rounded-b-none border"
+                          className="px-0.5 pt-1 pb-3 flex items-end gap-3"
                           style={{
-                            background:
-                              theme === "dark"
-                                ? "rgba(12,18,30,0.96)"
-                                : "rgba(248,250,252,0.96)",
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(199,208,220,0.42)"
-                                : "rgba(15,23,42,0.14)",
-                            boxShadow:
-                              theme === "dark"
-                                ? "0 10px 24px rgba(2,6,23,0.34)"
-                                : "0 10px 24px rgba(15,23,42,0.10)",
-                            backdropFilter: "blur(14px)",
-                            borderBottomWidth: 0,
+                            background: "transparent",
+                            border: "none",
+                            boxShadow: "none",
+                            backdropFilter: "none",
                           }}
                         >
-                          <button
-                            className={`glass-icon-btn navbar-icon-btn rounded-md ${
-                              screenshotCaptureBusy ? "opacity-60" : ""
-                            }`}
-                            onClick={() => openScreenshotGallery(true)}
-                            disabled={screenshotCaptureBusy || !projectPath}
-                            title={
-                              projectPath
-                                ? "Capture iPad screenshot"
-                                : "Open a presentation first"
-                            }
-                            style={{ borderRadius: "8px" }}
+                          <div
+                            className="shrink-0 overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                            style={{
+                              maxWidth:
+                                sidebarInteractionMode === "inspect"
+                                  ? "18rem"
+                                  : "0rem",
+                              opacity:
+                                sidebarInteractionMode === "inspect" ? 1 : 0,
+                              transform:
+                                sidebarInteractionMode === "inspect"
+                                  ? "translateY(0) scale(1)"
+                                  : "translateY(16px) scale(0.96)",
+                              transformOrigin: "bottom right",
+                            }}
                           >
-                            <Camera size={16} />
-                          </button>
+                            <div
+                              className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(199,208,220,0.42)"
+                                    : "rgba(15,23,42,0.14)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(12,18,30,0.96)"
+                                    : "rgba(248,250,252,0.96)",
+                                boxShadow:
+                                  theme === "dark"
+                                    ? "0 10px 24px rgba(2,6,23,0.34)"
+                                    : "0 10px 24px rgba(15,23,42,0.10)",
+                                backdropFilter: "blur(14px)",
+                                borderBottomWidth: 0,
+                              }}
+                            >
+                              <div
+                                className="flex items-center gap-1 rounded-full border px-1.5 py-[2px]"
+                                style={{
+                                  borderColor:
+                                    theme === "dark"
+                                      ? "rgba(148,163,184,0.28)"
+                                      : "rgba(15,23,42,0.12)",
+                                  background:
+                                    theme === "dark"
+                                      ? "rgba(15,23,42,0.55)"
+                                      : "rgba(255,255,255,0.82)",
+                                }}
+                              >
+                                {[
+                                  { value: "default", label: "Default" },
+                                  { value: "text", label: "Text" },
+                                  { value: "image", label: "Assets" },
+                                ].map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className="rounded-full px-2 py-[3px] text-[8px] font-semibold uppercase tracking-[0.12em] transition-all"
+                                    style={{
+                                      color:
+                                        previewSelectionMode === option.value
+                                          ? theme === "dark"
+                                            ? "#ecfeff"
+                                            : "#155e75"
+                                          : theme === "dark"
+                                            ? "#cbd5e1"
+                                            : "#475569",
+                                      background:
+                                        previewSelectionMode === option.value
+                                          ? theme === "dark"
+                                            ? "rgba(34,211,238,0.2)"
+                                            : "rgba(14,165,233,0.16)"
+                                          : "transparent",
+                                      border:
+                                        previewSelectionMode === option.value
+                                          ? "1px solid rgba(34,211,238,0.42)"
+                                          : "1px solid transparent",
+                                    }}
+                                    onClick={() =>
+                                      setPreviewSelectionMode(
+                                        option.value as PreviewSelectionMode,
+                                      )
+                                    }
+                                    title={option.label}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
+                            style={{
+                              borderColor:
+                                theme === "dark"
+                                  ? "rgba(199,208,220,0.42)"
+                                  : "rgba(15,23,42,0.14)",
+                              background:
+                                theme === "dark"
+                                  ? "rgba(12,18,30,0.96)"
+                                  : "rgba(248,250,252,0.96)",
+                              boxShadow:
+                                theme === "dark"
+                                  ? "0 10px 24px rgba(2,6,23,0.34)"
+                                  : "0 10px 24px rgba(15,23,42,0.10)",
+                              backdropFilter: "blur(14px)",
+                              borderBottomWidth: 0,
+                            }}
+                          >
+                            <div
+                              className="flex items-center gap-1 rounded-[10px] px-1 py-1 border"
+                              style={{
+                                borderColor:
+                                  theme === "dark"
+                                    ? "rgba(148,163,184,0.28)"
+                                    : "rgba(15,23,42,0.12)",
+                                background:
+                                  theme === "dark"
+                                    ? "rgba(15,23,42,0.55)"
+                                    : "rgba(255,255,255,0.82)",
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="glass-icon-btn navbar-icon-btn rounded-md"
+                                onClick={() =>
+                                  handleSidebarInteractionModeChange("inspect")
+                                }
+                                title="Select Element"
+                                style={{
+                                  borderRadius: "8px",
+                                  color:
+                                    sidebarInteractionMode === "inspect"
+                                      ? theme === "dark"
+                                        ? "#67e8f9"
+                                        : "#0891b2"
+                                      : undefined,
+                                  background:
+                                    sidebarInteractionMode === "inspect"
+                                      ? theme === "dark"
+                                        ? "rgba(34,211,238,0.18)"
+                                        : "rgba(6,182,212,0.14)"
+                                      : undefined,
+                                }}
+                              >
+                                <MousePointer2 size={16} />
+                              </button>
+                              <button
+                                type="button"
+                                className="glass-icon-btn navbar-icon-btn rounded-md"
+                                onClick={() =>
+                                  handleSidebarInteractionModeChange("move")
+                                }
+                                title="Move Element"
+                                style={{
+                                  borderRadius: "8px",
+                                  color:
+                                    sidebarInteractionMode === "move"
+                                      ? theme === "dark"
+                                        ? "#fbbf24"
+                                        : "#b45309"
+                                      : undefined,
+                                  background:
+                                    sidebarInteractionMode === "move"
+                                      ? theme === "dark"
+                                        ? "rgba(245,158,11,0.2)"
+                                        : "rgba(245,158,11,0.14)"
+                                      : undefined,
+                                }}
+                              >
+                                <Move size={16} />
+                              </button>
+                            </div>
+                          </div>
+                          {SHOW_SCREENSHOT_FEATURES && (
+                            <button
+                              className={`glass-icon-btn navbar-icon-btn rounded-md ${
+                                screenshotCaptureBusy ? "opacity-60" : ""
+                              }`}
+                              onClick={() => openScreenshotGallery(true)}
+                              disabled={screenshotCaptureBusy || !projectPath}
+                              title={
+                                projectPath
+                                  ? "Capture iPad screenshot"
+                                  : "Open a presentation first"
+                              }
+                              style={{ borderRadius: "8px" }}
+                            >
+                              <Camera size={16} />
+                            </button>
+                          )}
                         </div>
                       </div>
                     )}
@@ -11610,26 +14260,21 @@ const App: React.FC = () => {
                               className="w-full max-w-6xl rounded-[42px] border px-24 py-24 text-center shadow-[0_42px_140px_rgba(15,23,42,0.16)]"
                               style={{
                                 background:
-                                  theme === "dark"
-                                    ? "linear-gradient(180deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.9) 100%)"
-                                    : "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
-                                borderColor:
-                                  theme === "dark"
-                                    ? "rgba(148,163,184,0.3)"
-                                    : "rgba(15,23,42,0.12)",
-                                color: "var(--text-main)",
+                                  "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
+                                borderColor: "rgba(15,23,42,0.12)",
+                                color: "#0f172a",
                                 backdropFilter: "blur(16px)",
                               }}
                             >
                               <div
                                 className="text-[44px] font-semibold uppercase tracking-[0.34em]"
-                                style={{ color: "var(--text-muted)" }}
+                                style={{ color: "#64748b" }}
                               >
                                 Welcome To NoCode X
                               </div>
                               <p
                                 className="mt-8 text-[30px] leading-[1.45] max-w-4xl mx-auto"
-                                style={{ color: "var(--text-muted)" }}
+                                style={{ color: "#64748b" }}
                               >
                                 Open a previous presentation or choose a new
                                 project folder directly from the frame.
@@ -11641,7 +14286,7 @@ const App: React.FC = () => {
                                   style={{
                                     background: "rgba(14,165,233,0.14)",
                                     border: "1px solid rgba(14,165,233,0.25)",
-                                    color: "var(--text-main)",
+                                    color: "#0f172a",
                                   }}
                                   onClick={() => {
                                     void handleOpenFolder();
@@ -11654,7 +14299,7 @@ const App: React.FC = () => {
                                 <div className="mt-12 text-left">
                                   <div
                                     className="text-[18px] font-semibold uppercase tracking-[0.24em] text-center"
-                                    style={{ color: "var(--text-muted)" }}
+                                    style={{ color: "#64748b" }}
                                   >
                                     Recent Presentations
                                   </div>
@@ -11671,15 +14316,9 @@ const App: React.FC = () => {
                                           type="button"
                                           className="w-full rounded-[22px] border px-6 py-5 text-left transition-colors"
                                           style={{
-                                            borderColor:
-                                              theme === "dark"
-                                                ? "rgba(148,163,184,0.24)"
-                                                : "rgba(15,23,42,0.12)",
-                                            background:
-                                              theme === "dark"
-                                                ? "rgba(15,23,42,0.48)"
-                                                : "rgba(255,255,255,0.68)",
-                                            color: "var(--text-main)",
+                                            borderColor: "rgba(15,23,42,0.12)",
+                                            background: "rgba(255,255,255,0.68)",
+                                            color: "#0f172a",
                                           }}
                                           onClick={() => {
                                             void handleOpenFolder(recentPath);
@@ -11692,7 +14331,7 @@ const App: React.FC = () => {
                                           <div
                                             className="mt-2 truncate text-[15px]"
                                             style={{
-                                              color: "var(--text-muted)",
+                                              color: "#64748b",
                                             }}
                                           >
                                             {recentPath}
@@ -11706,7 +14345,7 @@ const App: React.FC = () => {
                               {projectPath ? (
                                 <div
                                   className="mt-8 text-[18px]"
-                                  style={{ color: "var(--text-muted)" }}
+                                  style={{ color: "#64748b" }}
                                 >
                                   Current project:{" "}
                                   {
@@ -11751,44 +14390,46 @@ const App: React.FC = () => {
                         )}
                         {interactionMode === "preview" &&
                           isPdfAnnotationPanelOpen &&
-                          filteredAnnotationsForCurrentSlide.map((annotation) => {
-                            const isFocused =
-                              focusedAnnotationForCurrentSlide?.annotationId ===
-                              annotation.annotationId;
-                            const isPopup = isPopupAnnotation(annotation);
-                            return (
-                              <div
-                                key={annotation.annotationId}
-                                className={`absolute pointer-events-none rounded-[18px] border-2 ${
-                                  isFocused ? "z-30" : "z-20"
-                                }`}
-                                style={{
-                                  left: `${annotation.positionPct.left}%`,
-                                  top: `${annotation.positionPct.top}%`,
-                                  width: `${Math.max(2, annotation.positionPct.width)}%`,
-                                  height: `${Math.max(2, annotation.positionPct.height)}%`,
-                                  borderColor: isFocused
-                                    ? "rgba(239,68,68,0.98)"
-                                    : isPopup
-                                      ? "rgba(34,211,238,0.85)"
-                                      : "rgba(34,197,94,0.9)",
-                                  boxShadow: isFocused
-                                    ? "0 0 0 5px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.45), inset 0 0 0 1px rgba(255,255,255,0.82)"
-                                    : isPopup
-                                      ? "0 0 0 3px rgba(34,211,238,0.18), 0 0 22px rgba(34,211,238,0.32), inset 0 0 0 1px rgba(255,255,255,0.65)"
-                                      : "0 0 0 3px rgba(34,197,94,0.2), 0 0 22px rgba(34,197,94,0.34), inset 0 0 0 1px rgba(255,255,255,0.65)",
-                                  background: isFocused
-                                    ? "rgba(239,68,68,0.08)"
-                                    : isPopup
-                                      ? "rgba(34,211,238,0.06)"
-                                      : "rgba(34,197,94,0.06)",
-                                  animation: isFocused
-                                    ? "pulse 1.1s ease-in-out 2"
-                                    : "none",
-                                }}
-                              />
-                            );
-                          })}
+                          filteredAnnotationsForCurrentSlide.map(
+                            (annotation) => {
+                              const isFocused =
+                                focusedAnnotationForCurrentSlide?.annotationId ===
+                                annotation.annotationId;
+                              const isPopup = isPopupAnnotation(annotation);
+                              return (
+                                <div
+                                  key={annotation.annotationId}
+                                  className={`absolute pointer-events-none rounded-[18px] border-2 ${
+                                    isFocused ? "z-30" : "z-20"
+                                  }`}
+                                  style={{
+                                    left: `${annotation.positionPct.left}%`,
+                                    top: `${annotation.positionPct.top}%`,
+                                    width: `${Math.max(2, annotation.positionPct.width)}%`,
+                                    height: `${Math.max(2, annotation.positionPct.height)}%`,
+                                    borderColor: isFocused
+                                      ? "rgba(239,68,68,0.98)"
+                                      : isPopup
+                                        ? "rgba(34,211,238,0.85)"
+                                        : "rgba(34,197,94,0.9)",
+                                    boxShadow: isFocused
+                                      ? "0 0 0 5px rgba(239,68,68,0.35), 0 0 28px rgba(239,68,68,0.45), inset 0 0 0 1px rgba(255,255,255,0.82)"
+                                      : isPopup
+                                        ? "0 0 0 3px rgba(34,211,238,0.18), 0 0 22px rgba(34,211,238,0.32), inset 0 0 0 1px rgba(255,255,255,0.65)"
+                                        : "0 0 0 3px rgba(34,197,94,0.2), 0 0 22px rgba(34,197,94,0.34), inset 0 0 0 1px rgba(255,255,255,0.65)",
+                                    background: isFocused
+                                      ? "rgba(239,68,68,0.08)"
+                                      : isPopup
+                                        ? "rgba(34,211,238,0.06)"
+                                        : "rgba(34,197,94,0.06)",
+                                    animation: isFocused
+                                      ? "pulse 1.1s ease-in-out 2"
+                                      : "none",
+                                  }}
+                                />
+                              );
+                            },
+                          )}
                         {!shouldShowFrameWelcome && (
                           <div
                             className={`w-full h-full transition-opacity duration-200 ${
@@ -12092,377 +14733,439 @@ const App: React.FC = () => {
         </div>
         {/* end stage */}
 
-        {/* Right Sidebar */}
-        <div
-          className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
-          style={{
-            transform: isRightPanelOpen
-              ? "translateX(0)"
-              : isFloatingPanels
-                ? "translateX(calc(100% + 2.5rem))"
-                : isPanelsSwapped
-                  ? "translateX(-100%)"
-                  : "translateX(100%)",
-            width: isFloatingPanels
-              ? "var(--right-panel-width)"
-              : "var(--right-panel-width)",
-            left: isFloatingPanels
-              ? `${rightPanelFloatingPosition.left}px`
-              : undefined,
-            top: isFloatingPanels
-              ? `${rightPanelFloatingPosition.top}px`
-              : undefined,
-            minHeight: isFloatingPanels ? "30vh" : undefined,
-            maxHeight: isFloatingPanels
-              ? "min(70vh, calc(100vh - 7.5rem))"
-              : undefined,
-            height: isFloatingPanels ? "fit-content" : undefined,
-            borderRadius: isFloatingPanels ? "1rem" : undefined,
-            border: isFloatingPanels
-              ? theme === "light"
-                ? "1px solid rgba(15, 23, 42, 0.18)"
-                : "1px solid rgba(255, 255, 255, 0.25)"
-              : undefined,
-            background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
-            overflowY: isFloatingPanels ? "auto" : undefined,
-            overflowX: isFloatingPanels ? "hidden" : undefined,
-            transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
-          }}
-        >
+        {isRightInspectorMode && (
           <div
-            className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-              isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
-            }`}
+            className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-700"} right-0 top-0 bottom-0 ${isZenMode || isCodePanelOpen || !isRightPanelOpen ? "pointer-events-none" : ""}`}
             style={{
-              background:
-                theme === "dark"
-                  ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
-                  : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
-              backdropFilter: "blur(14px)",
+              width: "var(--right-panel-width)",
+              overflow: "hidden",
+              transform: isRightPanelOpen
+                ? "translateX(0) scale(1)"
+                : "translateX(calc(100% + 0.75rem)) scale(0.985)",
+              opacity: isRightPanelOpen ? 1 : 0,
+              transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+              transformOrigin: "right center",
             }}
           >
             <div
-              className="h-11 shrink-0 px-3 flex items-center justify-between"
-              onMouseDown={handleRightPanelDragStart}
+              className="h-full min-h-full relative flex flex-col overflow-hidden"
               style={{
-                borderBottom:
-                  theme === "dark"
-                    ? "1px solid rgba(148,163,184,0.28)"
-                    : "1px solid rgba(0,0,0,0.1)",
                 background:
                   theme === "dark"
-                    ? "linear-gradient(90deg, rgba(99,102,241,0.2), rgba(16,185,129,0.16), rgba(15,23,42,0.0))"
-                    : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
+                    ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                    : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
+                backdropFilter: "blur(14px)",
+                borderTopLeftRadius: "28px",
+                borderBottomLeftRadius: "28px",
               }}
             >
-              <div className="flex items-center gap-2">
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{
-                    backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
-                    boxShadow:
-                      theme === "dark"
-                        ? "0 0 10px rgba(255,255,255,0.8)"
-                        : "0 0 10px rgba(139,92,246,0.8)",
-                  }}
-                />
-                <span
-                  className="text-[11px] uppercase tracking-[0.2em] font-semibold"
-                  style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
-                >
-                  {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {rightPanelMode === "gallery" ? (
+              <div
+                className="shrink-0 border-b px-3 py-2"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(148,163,184,0.22)"
+                      : "rgba(15,23,42,0.08)",
+                  background:
+                    theme === "dark"
+                      ? "rgba(15,23,42,0.42)"
+                      : "rgba(255,255,255,0.78)",
+                }}
+              >
+                <div className="flex items-center justify-end gap-2">
                   <button
                     type="button"
-                    className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                    className="h-9 min-w-[44px] rounded-xl border px-2 flex items-center justify-center transition-colors text-[11px] font-semibold tracking-[0.14em]"
                     style={{
-                      background:
-                        theme === "dark"
-                          ? "rgba(248,113,113,0.12)"
-                          : "rgba(248,113,113,0.18)",
                       borderColor:
                         theme === "dark"
-                          ? "rgba(248,113,113,0.4)"
-                          : "rgba(248,113,113,0.35)",
-                      color: theme === "dark" ? "#fecdd3" : "#be123c",
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(15,23,42,0.12)",
+                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                      background: showStyleInspectorSection
+                        ? theme === "dark"
+                          ? "rgba(99,102,241,0.2)"
+                          : "rgba(99,102,241,0.14)"
+                        : "transparent",
                     }}
-                    onClick={closeScreenshotGallery}
-                    title="Close gallery"
+                    onClick={() =>
+                      setIsStyleInspectorSectionOpen((current) => !current)
+                    }
+                    title={
+                      showStyleInspectorSection
+                        ? "Hide styles section"
+                        : "Show styles section"
+                    }
                   >
-                    Close
+                    CSS
                   </button>
-                ) : (
                   <button
                     type="button"
-                    className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
+                    className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
                     style={{
-                      background:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.7)"
-                          : "rgba(255,255,255,0.7)",
                       borderColor:
                         theme === "dark"
-                          ? "rgba(148,163,184,0.32)"
-                          : "rgba(0,0,0,0.1)",
-                      color: theme === "dark" ? "#94a3b8" : "#64748b",
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(15,23,42,0.12)",
+                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                      background: showEmbeddedPdfAnnotations
+                        ? theme === "dark"
+                          ? "rgba(34,211,238,0.18)"
+                          : "rgba(14,165,233,0.14)"
+                        : "transparent",
                     }}
                     onClick={() => {
-                      setIsRightPanelOpen(false);
-                      setRightPanelMode("inspector");
+                      if (hasPdfAnnotationsLoaded) {
+                        dispatch(setIsOpen(!isPdfAnnotationPanelOpen));
+                        return;
+                      }
+                      handleOpenPdfAnnotationsPicker();
                     }}
-                    title="Close inspector panel"
+                    disabled={!projectPath || isPdfAnnotationLoading}
+                    title={
+                      projectPath
+                        ? hasPdfAnnotationsLoaded
+                          ? isPdfAnnotationPanelOpen
+                            ? "Hide PDF annotations"
+                            : "Show PDF annotations"
+                          : "Load annotated PDF"
+                        : "Open a presentation first"
+                    }
                   >
-                    <X size={12} />
+                    {isPdfAnnotationLoading ? (
+                      <RotateCw size={15} className="animate-spin" />
+                    ) : (
+                      <FileText size={15} />
+                    )}
                   </button>
-                )}
-              </div>
-            </div>
-            {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
-              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                <div
-                  className="shrink-0 px-3 py-2 border-b"
-                  style={{
-                    borderColor:
-                      theme === "dark"
-                        ? "rgba(148,163,184,0.28)"
-                        : "rgba(0,0,0,0.1)",
-                    background:
-                      theme === "dark"
-                        ? "rgba(15,23,42,0.42)"
-                        : "rgba(255,255,255,0.72)",
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div
-                      className="text-[10px] font-semibold uppercase tracking-[0.2em]"
-                      style={{
-                        color: theme === "dark" ? "#94a3b8" : "#64748b",
-                      }}
-                    >
-                      Screenshots
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                        style={{
-                          borderColor:
-                            theme === "dark"
-                              ? "rgba(148,163,184,0.38)"
-                              : "rgba(15,23,42,0.18)",
-                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                        }}
-                        onClick={() => void loadGalleryItems()}
-                        title="Refresh gallery"
-                      >
-                        Refresh
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                        style={{
-                          borderColor:
-                            theme === "dark"
-                              ? "rgba(34,211,238,0.45)"
-                              : "rgba(8,145,178,0.3)",
-                          color: theme === "dark" ? "#a5f3fc" : "#0e7490",
-                          opacity: screenshotCaptureBusy ? 0.6 : 1,
-                        }}
-                        onClick={() => void handleScreenshotCapture()}
-                        disabled={screenshotCaptureBusy}
-                        title="Capture screenshot"
-                      >
-                        {screenshotCaptureBusy ? "Capturing..." : "Capture"}
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                        style={{
-                          borderColor:
-                            theme === "dark"
-                              ? "rgba(148,163,184,0.38)"
-                              : "rgba(15,23,42,0.18)",
-                          color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                        }}
-                        onClick={() => void handleRevealScreenshotsFolder()}
-                        title="Reveal screenshots folder"
-                      >
-                        Reveal
-                      </button>
-                    </div>
-                  </div>
-                  <div
-                    className="mt-2 text-[10px] uppercase tracking-[0.12em]"
-                    style={{
-                      color: theme === "dark" ? "#94a3b8" : "#64748b",
-                    }}
-                  >
-                    {screenshotItems.length} items
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
-                  {screenshotItems.length === 0 ? (
-                    <div
-                      className="rounded-xl border px-4 py-6 text-center text-xs"
-                      style={{
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(148,163,184,0.3)"
-                            : "rgba(15,23,42,0.12)",
-                        color: theme === "dark" ? "#94a3b8" : "#64748b",
-                      }}
-                    >
-                      No screenshots yet. Capture one from the iPad button.
-                    </div>
-                  ) : (
-                    screenshotItems.map((item) => {
-                      const imageUrl = screenshotPreviewUrls[item.id] || "";
-                      return (
-                        <div
-                          key={item.id}
-                          className="rounded-2xl border overflow-hidden"
-                          style={{
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(148,163,184,0.3)"
-                                : "rgba(15,23,42,0.12)",
-                            background:
-                              theme === "dark"
-                                ? "rgba(15,23,42,0.65)"
-                                : "rgba(255,255,255,0.7)",
-                          }}
-                        >
-                          {imageUrl && (
-                            <img
-                              src={imageUrl}
-                              alt={item.imageFileName}
-                              className="w-full h-40 object-cover"
-                            />
-                          )}
-                          <div className="p-3 space-y-2">
-                            <div className="text-xs font-semibold">
-                              {item.slideId || "Unknown slide"}
-                              {item.popupId ? ` • ${item.popupId}` : ""}
-                            </div>
-                            <div className="text-[10px] opacity-70">
-                              {new Date(item.createdAt).toLocaleString()}
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                style={{
-                                  borderColor:
-                                    theme === "dark"
-                                      ? "rgba(34,211,238,0.45)"
-                                      : "rgba(8,145,178,0.3)",
-                                  color:
-                                    theme === "dark"
-                                      ? "#a5f3fc"
-                                      : "#0e7490",
-                                }}
-                                onClick={() =>
-                                  void handleOpenScreenshotItem(item)
-                                }
-                              >
-                                Open
-                              </button>
-                              <button
-                                type="button"
-                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                style={{
-                                  borderColor:
-                                    theme === "dark"
-                                      ? "rgba(148,163,184,0.38)"
-                                      : "rgba(15,23,42,0.18)",
-                                  color:
-                                    theme === "dark"
-                                      ? "#e2e8f0"
-                                      : "#0f172a",
-                                }}
-                                onClick={() =>
-                                  void handleRevealScreenshotsFolder()
-                                }
-                              >
-                                Reveal
-                              </button>
-                              <button
-                                type="button"
-                                className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                style={{
-                                  borderColor:
-                                    theme === "dark"
-                                      ? "rgba(248,113,113,0.45)"
-                                      : "rgba(248,113,113,0.35)",
-                                  color:
-                                    theme === "dark"
-                                      ? "#fecdd3"
-                                      : "#be123c",
-                                }}
-                                onClick={() =>
-                                  void handleDeleteScreenshotItem(item)
-                                }
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-                <div
-                  className="shrink-0 px-3 py-3 border-t"
-                  style={{
-                    borderColor:
-                      theme === "dark"
-                        ? "rgba(148,163,184,0.28)"
-                        : "rgba(0,0,0,0.1)",
-                    background:
-                      theme === "dark"
-                        ? "rgba(15,23,42,0.42)"
-                        : "rgba(255,255,255,0.72)",
-                  }}
-                >
                   <button
                     type="button"
-                    className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
+                    className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
                     style={{
                       borderColor:
                         theme === "dark"
-                          ? "rgba(14,165,233,0.45)"
-                          : "rgba(8,145,178,0.3)",
-                      color: theme === "dark" ? "#bae6fd" : "#0e7490",
-                      opacity: isPdfExporting ? 0.6 : 1,
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(15,23,42,0.12)",
+                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
                     }}
-                    onClick={() => void handleExportEditablePdf()}
-                    disabled={isPdfExporting || !projectPath}
+                    onClick={handleRefreshPdfAnnotationMapping}
+                    disabled={!projectPath || isPdfAnnotationLoading}
+                    title="Upload annotated PDF"
                   >
-                    <FileDown size={14} />
-                    {isPdfExporting
-                      ? "Exporting Editable PDF..."
-                      : "Export Editable PDF"}
+                    <Upload size={15} />
                   </button>
-                  {pdfExportLogs.length > 0 && (
-                    <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
-                      {pdfExportLogs.map((log, index) => (
-                        <div key={`${index}-${log}`} className="opacity-80">
-                          {log}
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
-            ) : (
-              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                {interactionMode === "preview" && (
+
+              {showEmbeddedPdfAnnotations ? (
+                <>
                   <div
-                    className="shrink-0 px-2.5 py-2 border-b"
+                    className="min-h-0 overflow-hidden"
+                    style={{
+                      flex: showStyleInspectorSection ? "0 0 48%" : "1 1 auto",
+                      background:
+                        theme === "dark"
+                          ? "rgba(2,6,23,0.18)"
+                          : "rgba(248,250,252,0.62)",
+                    }}
+                  >
+                    <PdfAnnotationsOverlay
+                      currentPreviewSlideId={currentPreviewSlideId ?? null}
+                      theme={theme as "light" | "dark"}
+                      onJumpToAnnotation={handleJumpToPdfAnnotation}
+                      embedded
+                    />
+                  </div>
+                  {showStyleInspectorSection ? (
+                    <div
+                      className="shrink-0 h-[8px]"
+                      style={{
+                        background:
+                          theme === "dark"
+                            ? "linear-gradient(90deg, rgba(34,211,238,0.1) 0%, rgba(56,189,248,0.42) 22%, rgba(14,165,233,0.2) 50%, rgba(34,211,238,0.42) 78%, rgba(34,211,238,0.1) 100%)"
+                            : "linear-gradient(90deg, rgba(125,211,252,0.18) 0%, rgba(14,165,233,0.55) 22%, rgba(6,182,212,0.22) 50%, rgba(14,165,233,0.55) 78%, rgba(125,211,252,0.18) 100%)",
+                        boxShadow:
+                          theme === "dark"
+                            ? "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(255,255,255,0.03)"
+                            : "inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(14,165,233,0.08)",
+                      }}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+
+              {showStyleInspectorSection ? (
+                <div
+                  className="min-h-0 flex-1 overflow-hidden px-2 pt-2 pb-2"
+                  style={{
+                    borderTop: showEmbeddedPdfAnnotations
+                      ? "none"
+                      : theme === "dark"
+                        ? "1px solid rgba(148,163,184,0.12)"
+                        : "1px solid rgba(15,23,42,0.05)",
+                    background:
+                      theme === "dark"
+                        ? "rgba(2,6,23,0.3)"
+                        : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  <div
+                    className="h-full overflow-hidden rounded-[20px]"
+                    style={{
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.3)"
+                          : "rgba(255,255,255,0.8)",
+                    }}
+                  >
+                    <StyleInspectorPanel
+                      element={inspectorElement}
+                      availableFonts={availableFonts}
+                      onImmediateChange={handleImmediatePreviewStyle} // <--- ADD THIS
+                      onUpdateContent={
+                        previewSelectedElement
+                          ? handlePreviewContentUpdateStable
+                          : handleUpdateContent
+                      }
+                      onToggleTextTag={
+                        previewSelectedElement
+                          ? (tag) => {
+                              void applyPreviewTagUpdate(
+                                previewSelectedElement.type === tag
+                                  ? "span"
+                                  : tag,
+                              );
+                            }
+                          : undefined
+                      }
+                      onWrapTextTag={
+                        previewSelectedElement
+                          ? (tag) => {
+                              void applyQuickTextWrapTag(tag);
+                            }
+                          : undefined
+                      }
+                      selectionMode={
+                        previewSelectedElement ? previewSelectionMode : "default"
+                      }
+                      resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
+                      onUpdateStyle={
+                        previewSelectedElement
+                          ? handlePreviewStyleUpdateStable
+                          : handleUpdateStyle
+                      }
+                      onUpdateIdentity={
+                        previewSelectedElement
+                          ? handlePreviewIdentityUpdateStable
+                          : handleUpdateIdentity
+                      }
+                      onReplaceAsset={
+                        previewSelectedElement
+                          ? () => {
+                              void handleReplacePreviewAsset();
+                            }
+                          : undefined
+                      }
+                      onAddMatchedRuleProperty={
+                        previewSelectedElement
+                          ? handlePreviewMatchedRulePropertyAdd
+                          : undefined
+                      }
+                      matchedCssRules={
+                        previewSelectedElement ? previewSelectedMatchedCssRules : []
+                      }
+                      computedStyles={
+                        previewSelectedElement ? previewSelectedComputedStyles : null
+                      }
+                    />
+                  </div>
+                </div>
+              ) : !showEmbeddedPdfAnnotations ? (
+                <div
+                  className="min-h-0 flex-1 flex items-center justify-center px-6 text-center"
+                  style={{
+                    color: theme === "dark" ? "#94a3b8" : "#64748b",
+                  }}
+                >
+                  <div className="text-[12px] tracking-[0.16em] uppercase">
+                    Enable CSS or PDF to inspect this slide
+                  </div>
+                </div>
+              ) : null}
+
+              <div
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  boxShadow:
+                    theme === "dark"
+                      ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                      : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+                }}
+              />
+              {isRightInspectorAttached ? (
+                <button
+                  type="button"
+                  onClick={() => setIsRightPanelOpen(false)}
+                  className="absolute top-3 left-3 z-20 h-8 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
+                  style={{
+                    borderColor:
+                      theme === "dark"
+                        ? "rgba(148,163,184,0.28)"
+                        : "rgba(15,23,42,0.12)",
+                    color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                    background:
+                      theme === "dark"
+                        ? "rgba(15,23,42,0.88)"
+                        : "rgba(255,255,255,0.92)",
+                    boxShadow:
+                      theme === "dark"
+                        ? "0 8px 18px rgba(2,6,23,0.24)"
+                        : "0 8px 18px rgba(15,23,42,0.08)",
+                  }}
+                  title="Collapse right panel"
+                >
+                  <PanelRightClose size={14} />
+                  <span>Hide</span>
+                </button>
+              ) : null}
+            </div>
+            <div
+              onMouseDown={handleRightPanelResizeStart}
+              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+              title="Resize panel"
+            />
+          </div>
+        )}
+
+        {/* Right Sidebar */}
+        {rightPanelMode === "gallery" && (
+          <div
+            className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
+            style={{
+              transform: isRightPanelOpen
+                ? "translateX(0)"
+                : isFloatingPanels
+                  ? "translateX(calc(100% + 2.5rem))"
+                  : isPanelsSwapped
+                    ? "translateX(-100%)"
+                    : "translateX(100%)",
+              width: "var(--right-panel-width)",
+              left: isFloatingPanels
+                ? `${rightPanelFloatingPosition.left}px`
+                : undefined,
+              top: isFloatingPanels
+                ? `${rightPanelFloatingPosition.top}px`
+                : undefined,
+              minHeight: isFloatingPanels ? "30vh" : undefined,
+              maxHeight: isFloatingPanels
+                ? "min(70vh, calc(100vh - 7.5rem))"
+                : undefined,
+              height: isFloatingPanels ? "fit-content" : undefined,
+              borderRadius: isFloatingPanels ? "1rem" : undefined,
+              border: isFloatingPanels
+                ? theme === "light"
+                  ? "1px solid rgba(15, 23, 42, 0.18)"
+                  : "1px solid rgba(255, 255, 255, 0.25)"
+                : undefined,
+              background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
+              overflowY: isFloatingPanels ? "auto" : undefined,
+              overflowX: isFloatingPanels ? "hidden" : undefined,
+              transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+            }}
+          >
+            <div
+              className={`h-full min-h-full relative flex flex-col overflow-hidden ${isFloatingPanels ? "rounded-2xl overflow-hidden" : ""}`}
+              style={{
+                background:
+                  theme === "dark"
+                    ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
+                    : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
+                backdropFilter: "blur(14px)",
+              }}
+            >
+              <div
+                className="h-11 shrink-0 px-3 flex items-center justify-between"
+                onMouseDown={handleRightPanelDragStart}
+                style={{
+                  borderBottom:
+                    theme === "dark"
+                      ? "1px solid rgba(148,163,184,0.28)"
+                      : "1px solid rgba(0,0,0,0.1)",
+                  background:
+                    theme === "dark"
+                      ? "linear-gradient(90deg, rgba(99,102,241,0.2), rgba(16,185,129,0.16), rgba(15,23,42,0.0))"
+                      : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{
+                      backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
+                      boxShadow:
+                        theme === "dark"
+                          ? "0 0 10px rgba(255,255,255,0.8)"
+                          : "0 0 10px rgba(139,92,246,0.8)",
+                    }}
+                  />
+                  <span
+                    className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                    style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
+                  >
+                    {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {rightPanelMode === "gallery" ? (
+                    <button
+                      type="button"
+                      className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+                      style={{
+                        background:
+                          theme === "dark"
+                            ? "rgba(248,113,113,0.12)"
+                            : "rgba(248,113,113,0.18)",
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(248,113,113,0.4)"
+                            : "rgba(248,113,113,0.35)",
+                        color: theme === "dark" ? "#fecdd3" : "#be123c",
+                      }}
+                      onClick={closeScreenshotGallery}
+                      title="Close gallery"
+                    >
+                      Close
+                    </button>
+                  ) : !isFloatingPanels ? (
+                    <button
+                      type="button"
+                      className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
+                      style={{
+                        background:
+                          theme === "dark"
+                            ? "rgba(15,23,42,0.7)"
+                            : "rgba(255,255,255,0.7)",
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(148,163,184,0.32)"
+                            : "rgba(0,0,0,0.1)",
+                        color: theme === "dark" ? "#94a3b8" : "#64748b",
+                      }}
+                      onClick={() => {
+                        setIsRightPanelOpen(false);
+                        setRightPanelMode("inspector");
+                      }}
+                      title="Collapse right panel"
+                    >
+                      <PanelRightClose size={12} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
+                <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                  <div
+                    className="shrink-0 px-3 py-2 border-b"
                     style={{
                       borderColor:
                         theme === "dark"
@@ -12474,122 +15177,360 @@ const App: React.FC = () => {
                           : "rgba(255,255,255,0.72)",
                     }}
                   >
+                    <div className="flex items-center justify-between gap-2">
+                      <div
+                        className="text-[10px] font-semibold uppercase tracking-[0.2em]"
+                        style={{
+                          color: theme === "dark" ? "#94a3b8" : "#64748b",
+                        }}
+                      >
+                        Screenshots
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          style={{
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(148,163,184,0.38)"
+                                : "rgba(15,23,42,0.18)",
+                            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                          }}
+                          onClick={() => void loadGalleryItems()}
+                          title="Refresh gallery"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          style={{
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(34,211,238,0.45)"
+                                : "rgba(8,145,178,0.3)",
+                            color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                            opacity: screenshotCaptureBusy ? 0.6 : 1,
+                          }}
+                          onClick={() => void handleScreenshotCapture()}
+                          disabled={screenshotCaptureBusy}
+                          title="Capture screenshot"
+                        >
+                          {screenshotCaptureBusy ? "Capturing..." : "Capture"}
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          style={{
+                            borderColor:
+                              theme === "dark"
+                                ? "rgba(148,163,184,0.38)"
+                                : "rgba(15,23,42,0.18)",
+                            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
+                          }}
+                          onClick={() => void handleRevealScreenshotsFolder()}
+                          title="Reveal screenshots folder"
+                        >
+                          Reveal
+                        </button>
+                      </div>
+                    </div>
                     <div
-                      className="text-[9px] font-semibold uppercase tracking-[0.16em] px-1"
+                      className="mt-2 text-[10px] uppercase tracking-[0.12em]"
                       style={{
                         color: theme === "dark" ? "#94a3b8" : "#64748b",
                       }}
-                    ></div>
-                    <div className="mt-1 grid grid-cols-4 gap-1">
-                      {PREVIEW_SELECTION_MODE_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          onClick={() => setPreviewSelectionMode(option.value)}
-                          className="px-1.5 py-1 rounded-md text-[9px] font-semibold uppercase tracking-wide transition-all"
-                          style={{
-                            color:
-                              previewSelectionMode === option.value
-                                ? theme === "dark"
-                                  ? "#ecfeff"
-                                  : "#155e75"
-                                : theme === "dark"
-                                  ? "#cbd5e1"
-                                  : "#475569",
-                            background:
-                              previewSelectionMode === option.value
-                                ? theme === "dark"
-                                  ? "rgba(34,211,238,0.2)"
-                                  : "rgba(14,165,233,0.16)"
-                                : theme === "dark"
-                                  ? "rgba(15,23,42,0.68)"
-                                  : "rgba(241,245,249,0.9)",
-                            border:
-                              previewSelectionMode === option.value
-                                ? "1px solid rgba(34,211,238,0.55)"
-                                : theme === "dark"
-                                  ? "1px solid rgba(148,163,184,0.28)"
-                                  : "1px solid rgba(148,163,184,0.26)",
-                          }}
-                          title={option.label}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
+                    >
+                      {screenshotItems.length} items
                     </div>
                   </div>
-                )}
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  {interactionMode === "inspect" && selectedId ? (
-                    <StyleInspectorPanel
-                      element={inspectorElement}
-                      onUpdateStyle={handleUpdateStyle}
-                      computedStyles={null}
-                    />
-                  ) : (
-                    <PropertiesPanel
-                      element={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? previewSelectedElement
-                          : selectedElement
-                      }
-                      requestedTab={propertiesPanelRequestedTab}
-                      requestedTabNonce={propertiesPanelRequestedTabNonce}
-                      onUpdateStyle={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? handlePreviewStyleUpdateStable
-                          : handleUpdateStyle
-                      }
-                      onUpdateContent={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? handlePreviewContentUpdateStable
-                          : handleUpdateContent
-                      }
-                      onUpdateAttributes={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? handlePreviewAttributesUpdateStable
-                          : handleUpdateAttributes
-                      }
-                      onUpdateAnimation={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? handlePreviewAnimationUpdateStable
-                          : handleUpdateAnimation
-                      }
-                      onDelete={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? handlePreviewDeleteStable
-                          : handleDeleteElement
-                      }
-                      onAddElement={
-                        interactionMode === "preview" && previewSelectedElement
-                          ? noopPropertiesAction
-                          : handleAddElement
-                      }
-                      onMoveOrder={noopMoveOrder}
-                      resolveImage={resolvePreviewImagePath}
-                      availableFonts={availableFonts}
-                    />
-                  )}
+                  <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
+                    {screenshotItems.length === 0 ? (
+                      <div
+                        className="rounded-xl border px-4 py-6 text-center text-xs"
+                        style={{
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(148,163,184,0.3)"
+                              : "rgba(15,23,42,0.12)",
+                          color: theme === "dark" ? "#94a3b8" : "#64748b",
+                        }}
+                      >
+                        No screenshots yet. Capture one from the iPad button.
+                      </div>
+                    ) : (
+                      screenshotItems.map((item) => {
+                        const imageUrl = screenshotPreviewUrls[item.id] || "";
+                        return (
+                          <div
+                            key={item.id}
+                            className="rounded-2xl border overflow-hidden"
+                            style={{
+                              borderColor:
+                                theme === "dark"
+                                  ? "rgba(148,163,184,0.3)"
+                                  : "rgba(15,23,42,0.12)",
+                              background:
+                                theme === "dark"
+                                  ? "rgba(15,23,42,0.65)"
+                                  : "rgba(255,255,255,0.7)",
+                            }}
+                          >
+                            {imageUrl && (
+                              <img
+                                src={imageUrl}
+                                alt={item.imageFileName}
+                                className="w-full h-40 object-cover"
+                              />
+                            )}
+                            <div className="p-3 space-y-2">
+                              <div className="text-xs font-semibold">
+                                {item.slideId || "Unknown slide"}
+                                {item.popupId ? ` • ${item.popupId}` : ""}
+                              </div>
+                              <div className="text-[10px] opacity-70">
+                                {new Date(item.createdAt).toLocaleString()}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                  style={{
+                                    borderColor:
+                                      theme === "dark"
+                                        ? "rgba(34,211,238,0.45)"
+                                        : "rgba(8,145,178,0.3)",
+                                    color:
+                                      theme === "dark" ? "#a5f3fc" : "#0e7490",
+                                  }}
+                                  onClick={() =>
+                                    void handleOpenScreenshotItem(item)
+                                  }
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                  style={{
+                                    borderColor:
+                                      theme === "dark"
+                                        ? "rgba(148,163,184,0.38)"
+                                        : "rgba(15,23,42,0.18)",
+                                    color:
+                                      theme === "dark" ? "#e2e8f0" : "#0f172a",
+                                  }}
+                                  onClick={() =>
+                                    void handleRevealScreenshotsFolder()
+                                  }
+                                >
+                                  Reveal
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                                  style={{
+                                    borderColor:
+                                      theme === "dark"
+                                        ? "rgba(248,113,113,0.45)"
+                                        : "rgba(248,113,113,0.35)",
+                                    color:
+                                      theme === "dark" ? "#fecdd3" : "#be123c",
+                                  }}
+                                  onClick={() =>
+                                    void handleDeleteScreenshotItem(item)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div
+                    className="shrink-0 px-3 py-3 border-t"
+                    style={{
+                      borderColor:
+                        theme === "dark"
+                          ? "rgba(148,163,184,0.28)"
+                          : "rgba(0,0,0,0.1)",
+                      background:
+                        theme === "dark"
+                          ? "rgba(15,23,42,0.42)"
+                          : "rgba(255,255,255,0.72)",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
+                      style={{
+                        borderColor:
+                          theme === "dark"
+                            ? "rgba(14,165,233,0.45)"
+                            : "rgba(8,145,178,0.3)",
+                        color: theme === "dark" ? "#bae6fd" : "#0e7490",
+                        opacity: isPdfExporting ? 0.6 : 1,
+                      }}
+                      onClick={() => void handleExportEditablePdf()}
+                      disabled={isPdfExporting || !projectPath}
+                    >
+                      <FileDown size={14} />
+                      {isPdfExporting
+                        ? "Exporting Editable PDF..."
+                        : "Export Editable PDF"}
+                    </button>
+                    {pdfExportLogs.length > 0 && (
+                      <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
+                        {pdfExportLogs.map((log, index) => (
+                          <div key={`${index}-${log}`} className="opacity-80">
+                            {log}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                  <div className="min-h-0 flex-1 overflow-hidden">
+                    {interactionMode === "inspect" && selectedId ? (
+                      <StyleInspectorPanel
+                        element={inspectorElement}
+                        availableFonts={availableFonts}
+                        onImmediateChange={handleImmediatePreviewStyle}
+                        onUpdateContent={
+                          previewSelectedElement
+                            ? handlePreviewContentUpdateStable
+                            : handleUpdateContent
+                        }
+                        onToggleTextTag={
+                          previewSelectedElement
+                            ? (tag) => {
+                                void applyPreviewTagUpdate(
+                                  previewSelectedElement.type === tag
+                                    ? "span"
+                                    : tag,
+                                );
+                              }
+                            : undefined
+                        }
+                        onWrapTextTag={
+                          previewSelectedElement
+                            ? (tag) => {
+                                void applyQuickTextWrapTag(tag);
+                              }
+                            : undefined
+                        }
+                        selectionMode={
+                          previewSelectedElement
+                            ? previewSelectionMode
+                            : "default"
+                        }
+                        resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
+                        onUpdateStyle={
+                          previewSelectedElement
+                            ? handlePreviewStyleUpdateStable
+                            : handleUpdateStyle
+                        }
+                        onUpdateIdentity={
+                          previewSelectedElement
+                            ? handlePreviewIdentityUpdateStable
+                            : handleUpdateIdentity
+                        }
+                        onReplaceAsset={undefined}
+                        onAddMatchedRuleProperty={
+                          previewSelectedElement
+                            ? handlePreviewMatchedRulePropertyAdd
+                            : undefined
+                        }
+                        matchedCssRules={
+                          previewSelectedElement
+                            ? previewSelectedMatchedCssRules
+                            : []
+                        }
+                        computedStyles={
+                          previewSelectedElement
+                            ? previewSelectedComputedStyles
+                            : null
+                        }
+                      />
+                    ) : (
+                      <PropertiesPanel
+                        element={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? previewSelectedElement
+                            : selectedElement
+                        }
+                        requestedTab={propertiesPanelRequestedTab}
+                        requestedTabNonce={propertiesPanelRequestedTabNonce}
+                        onUpdateStyle={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? handlePreviewStyleUpdateStable
+                            : handleUpdateStyle
+                        }
+                        onUpdateContent={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? handlePreviewContentUpdateStable
+                            : handleUpdateContent
+                        }
+                        onUpdateAttributes={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? handlePreviewAttributesUpdateStable
+                            : handleUpdateAttributes
+                        }
+                        onUpdateAnimation={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? handlePreviewAnimationUpdateStable
+                            : handleUpdateAnimation
+                        }
+                        onDelete={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? handlePreviewDeleteStable
+                            : handleDeleteElement
+                        }
+                        onAddElement={
+                          interactionMode === "preview" &&
+                          previewSelectedElement
+                            ? noopPropertiesAction
+                            : handleAddElement
+                        }
+                        onMoveOrder={noopMoveOrder}
+                        resolveImage={resolvePreviewImagePath}
+                        availableFonts={availableFonts}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+              <div
+                className="pointer-events-none absolute inset-0 rounded-2xl"
+                style={{
+                  boxShadow:
+                    theme === "dark"
+                      ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
+                      : "inset 0 0 0 1px rgba(255,255,255,0.45)",
+                }}
+              />
+            </div>
+            {isRightPanelOpen && (
+              <div
+                onMouseDown={handleRightPanelResizeStart}
+                className={`absolute top-0 ${isPanelsSwapped ? "right-0" : "left-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
+                title="Resize panel"
+              />
             )}
-            <div
-              className="pointer-events-none absolute inset-0 rounded-2xl"
-              style={{
-                boxShadow:
-                  theme === "dark"
-                    ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
-                    : "inset 0 0 0 1px rgba(255,255,255,0.45)",
-              }}
-            />
           </div>
-          {isRightPanelOpen && (
-            <div
-              onMouseDown={handleRightPanelResizeStart}
-              className={`absolute top-0 ${isPanelsSwapped ? "right-0" : "left-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
-              title="Resize panel"
-            />
-          )}
-        </div>
+        )}
       </div>
 
       {/* Code Panel */}
@@ -12739,12 +15680,61 @@ const App: React.FC = () => {
         </div>
       </div>
 
+      {!isRightPanelOpen &&
+      isRightInspectorMode &&
+      !isZenMode &&
+      !isCodePanelOpen ? (
+        <div
+          className="fixed z-[95] transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          style={{
+            right: "1rem",
+            top: "1rem",
+            opacity: 1,
+            transform: "translateY(0)",
+          }}
+        >
+          <button
+            type="button"
+            className="h-12 px-3 rounded-2xl border backdrop-blur-xl flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+            style={{
+              background:
+                theme === "light"
+                  ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
+              border: "1px solid var(--border-color)",
+              boxShadow: "0 8px 20px rgba(15,23,42,0.14)",
+              color: "var(--text-muted)",
+            }}
+            onClick={() => {
+              setRightPanelMode("inspector");
+              setIsRightPanelOpen(true);
+              setIsCodePanelOpen(false);
+            }}
+            title="Show right inspector"
+          >
+            <PanelRight
+              size={16}
+              style={{
+                color: theme === "dark" ? "#67e8f9" : "#0891b2",
+                transform: "scaleX(-1)",
+              }}
+            />
+            <span
+              className="text-[10px] font-semibold uppercase tracking-[0.16em]"
+              style={{ color: theme === "dark" ? "#a5f3fc" : "#0e7490" }}
+            >
+              Show
+            </span>
+          </button>
+        </div>
+      ) : null}
+
       {/* Console Panel — Chrome-like side panel */}
       <div
         ref={bottomPanelRef}
         className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isZenMode || isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
         style={{
-          right: "1rem",
+          left: "1rem",
           bottom: "1rem",
         }}
       >
@@ -12956,25 +15946,6 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
-
-      {/* PDF Selector — top-right header pill */}
-      <PdfSelector
-        onSelectPdf={handleOpenPdfAnnotationsPicker}
-        onRefreshPdf={handleRefreshPdfAnnotationMapping}
-        onExportEditablePdf={handleExportEditablePdf}
-        isExporting={isPdfExporting}
-        showExportEditablePdf={SHOW_SCREENSHOT_FEATURES}
-        projectPath={projectPath}
-        theme={theme as "light" | "dark"}
-        side={isPanelsSwapped ? "left" : "right"}
-      />
-
-      {/* PDF Annotations Overlay — compact left-side overlay */}
-      <PdfAnnotationsOverlay
-        currentPreviewSlideId={currentPreviewSlideId ?? null}
-        theme={theme as "light" | "dark"}
-        onJumpToAnnotation={handleJumpToPdfAnnotation}
-      />
     </div>
   );
 };

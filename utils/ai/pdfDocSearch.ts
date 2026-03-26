@@ -42,29 +42,6 @@ async function ensureCacheDir() {
 
 async function safeGetBaseDir(): Promise<string> {
   return "C:\\Users\\SumanBiswas\\Downloads\\nocode-x-studio";
-  const fallback = async () => {
-    const home = await Neutralino.os.getPath("home");
-    return `${home}\\.nocode-x-studio`;
-  };
-  try {
-    const appData = await Neutralino.os.getPath("appData");
-    if (appData) return `${appData}\\nocode-x-studio`;
-  } catch {
-    // ignore
-  }
-  try {
-    const userData = await Neutralino.os.getPath("userData");
-    if (userData) return `${userData}\\nocode-x-studio`;
-  } catch {
-    // ignore
-  }
-  try {
-    const documents = await Neutralino.os.getPath("documents");
-    if (documents) return `${documents}\\nocode-x-studio`;
-  } catch {
-    // ignore
-  }
-  return fallback();
 }
 
 async function loadCachedPdf(sourcePath: string): Promise<PdfCacheEntry | null> {
