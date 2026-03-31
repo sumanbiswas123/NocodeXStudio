@@ -8,58 +8,74 @@ type RightPanelFloatingPosition = {
 };
 
 type ScreenshotGalleryPanelProps = {
-  isFloatingPanels: boolean;
-  isPanelsSwapped: boolean;
-  isResizingRightPanel: boolean;
-  isDraggingRightPanel: boolean;
-  isCodePanelOpen: boolean;
-  isRightPanelOpen: boolean;
-  rightPanelFloatingPosition: RightPanelFloatingPosition;
-  theme: "dark" | "light";
-  rightPanelMode: "inspector" | "gallery";
-  screenshotCaptureBusy: boolean;
-  screenshotItems: ScreenshotMetadata[];
-  screenshotPreviewUrls: Record<string, string>;
-  isPdfExporting: boolean;
-  pdfExportLogs: string[];
-  projectPath: string | null;
-  onRightPanelDragStart: (event: React.MouseEvent<HTMLDivElement>) => void;
-  onCloseGallery: () => void;
-  onCollapsePanel: () => void;
-  onRefreshGallery: () => void;
-  onCaptureScreenshot: () => void;
-  onRevealScreenshotsFolder: () => void;
-  onOpenScreenshotItem: (item: ScreenshotMetadata) => void;
-  onDeleteScreenshotItem: (item: ScreenshotMetadata) => void;
-  onExportEditablePdf: () => void;
+  shellState: {
+    isFloatingPanels: boolean;
+    isPanelsSwapped: boolean;
+    isResizingRightPanel: boolean;
+    isDraggingRightPanel: boolean;
+    isCodePanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    rightPanelFloatingPosition: RightPanelFloatingPosition;
+    theme: "dark" | "light";
+    rightPanelMode: "inspector" | "gallery";
+    projectPath: string | null;
+  };
+  galleryState: {
+    screenshotCaptureBusy: boolean;
+    screenshotItems: ScreenshotMetadata[];
+    screenshotPreviewUrls: Record<string, string>;
+    isPdfExporting: boolean;
+    pdfExportLogs: string[];
+  };
+  actions: {
+    onRightPanelDragStart: (event: React.MouseEvent<HTMLDivElement>) => void;
+    onCloseGallery: () => void;
+    onCollapsePanel: () => void;
+    onRefreshGallery: () => void;
+    onCaptureScreenshot: () => void;
+    onRevealScreenshotsFolder: () => void;
+    onOpenScreenshotItem: (item: ScreenshotMetadata) => void;
+    onDeleteScreenshotItem: (item: ScreenshotMetadata) => void;
+    onExportEditablePdf: () => void;
+  };
 };
 
 const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
-  isFloatingPanels,
-  isPanelsSwapped,
-  isResizingRightPanel,
-  isDraggingRightPanel,
-  isCodePanelOpen,
-  isRightPanelOpen,
-  rightPanelFloatingPosition,
-  theme,
-  rightPanelMode,
-  screenshotCaptureBusy,
-  screenshotItems,
-  screenshotPreviewUrls,
-  isPdfExporting,
-  pdfExportLogs,
-  projectPath,
-  onRightPanelDragStart,
-  onCloseGallery,
-  onCollapsePanel,
-  onRefreshGallery,
-  onCaptureScreenshot,
-  onRevealScreenshotsFolder,
-  onOpenScreenshotItem,
-  onDeleteScreenshotItem,
-  onExportEditablePdf,
+  shellState,
+  galleryState,
+  actions,
 }) => {
+  const {
+    isFloatingPanels,
+    isPanelsSwapped,
+    isResizingRightPanel,
+    isDraggingRightPanel,
+    isCodePanelOpen,
+    isRightPanelOpen,
+    rightPanelFloatingPosition,
+    theme,
+    rightPanelMode,
+    projectPath,
+  } = shellState;
+  const {
+    screenshotCaptureBusy,
+    screenshotItems,
+    screenshotPreviewUrls,
+    isPdfExporting,
+    pdfExportLogs,
+  } = galleryState;
+  const {
+    onRightPanelDragStart,
+    onCloseGallery,
+    onCollapsePanel,
+    onRefreshGallery,
+    onCaptureScreenshot,
+    onRevealScreenshotsFolder,
+    onOpenScreenshotItem,
+    onDeleteScreenshotItem,
+    onExportEditablePdf,
+  } = actions;
+
   return (
     <div
       className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}

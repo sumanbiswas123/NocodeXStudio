@@ -6,7 +6,6 @@ type UsePanelLayoutStateOptions = {
   appRootRef: React.RefObject<HTMLDivElement | null>;
   deviceMode: "desktop" | "mobile" | "tablet";
   interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
-  isCodePanelOpen: boolean;
   quickTextEdit: {
     open: boolean;
     x: number;
@@ -61,7 +60,6 @@ export const usePanelLayoutState = ({
   appRootRef,
   deviceMode,
   interactionMode,
-  isCodePanelOpen,
   quickTextEdit,
 }: UsePanelLayoutStateOptions): UsePanelLayoutStateResult => {
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);

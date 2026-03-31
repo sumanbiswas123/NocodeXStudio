@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { VirtualElement } from "../../types";
+import type { VirtualElement } from "../../../types";
 import {
   parseNumericCssValue,
   readElementByPath,
-} from "../helpers/appHelpers";
-import { normalizePresentationCssValue } from "../helpers/previewCssHelpers";
+} from "../../helpers/appHelpers";
+import { normalizePresentationCssValue } from "../../helpers/previewCssHelpers";
 
 type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 

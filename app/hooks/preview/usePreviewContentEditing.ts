@@ -1,21 +1,21 @@
 import { useCallback } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { FileMap, VirtualElement } from "../../types";
+import type { FileMap, VirtualElement } from "../../../types";
 import type {
   PreviewMatchedCssRule,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 import {
   applyPreviewInlineEdit as applyPreviewInlineEditHelper,
   applyPreviewInlineEditDraft as applyPreviewInlineEditDraftHelper,
   persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
   syncPreviewSelectionSnapshotFromLiveElement as syncPreviewSelectionSnapshotFromLiveElementHelper,
-} from "../helpers/previewSelectionHelpers";
+} from "../../helpers/previewSelectionHelpers";
 import {
   applyPreviewContentUpdate as applyPreviewContentUpdateHelper,
   applyPreviewStyleUpdateAtPath as applyPreviewStyleUpdateAtPathHelper,
   queuePreviewStyleUpdate as queuePreviewStyleUpdateHelper,
-} from "../helpers/previewUpdateHelpers";
+} from "../../helpers/previewUpdateHelpers";
 
 type PersistPreviewHtmlContentFn = (
   path: string,

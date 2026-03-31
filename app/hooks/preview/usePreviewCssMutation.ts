@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import type { FileMap, ProjectFile, VirtualElement } from "../../types";
+import type { FileMap, ProjectFile, VirtualElement } from "../../../types";
 import {
   findFilePathCaseInsensitive,
   getParentPath,
@@ -15,7 +15,7 @@ import {
   resolveProjectRelativePath,
   rewriteInlineAssetRefs,
   toCssPropertyName,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 import {
   annotateMatchedCssRuleActivity,
   applyPatchToDeclarationEntries,
@@ -29,7 +29,7 @@ import {
   type PreviewMatchedCssDeclaration,
   type PreviewMatchedCssRule,
   type PreviewMatchedRuleMutation,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 
 type PersistPreviewHtmlContentFn = (
   path: string,

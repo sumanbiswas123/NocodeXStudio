@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Neutralino from "@neutralinojs/lib";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { FileMap } from "../../types";
+import type { FileMap } from "../../../types";
 import {
   CONFIG_JSON_PATH,
   PORTFOLIO_CONFIG_PATH,
   getConfigPathCandidates,
   resolveConfigPathFromFiles,
   scoreConfigContent,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type ConfigModalTab = "references" | "slides" | "configRaw";
 

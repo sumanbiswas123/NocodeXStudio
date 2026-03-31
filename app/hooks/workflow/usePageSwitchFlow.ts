@@ -1,13 +1,12 @@
 import { useCallback, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { FileMap } from "../../types";
+import type { FileMap } from "../../../types";
 import {
   PendingPageSwitch,
   PreviewSyncSource,
   findFilePathCaseInsensitive,
-  normalizePath,
   normalizeProjectRelative,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo } from "react";
-import { FileMap } from "../../types";
+import { FileMap } from "../../../types";
 import {
   clearPreviewModeSync,
   handlePreviewFrameLoad as handlePreviewFrameLoadHelper,
@@ -7,7 +7,7 @@ import {
   postPreviewFrameMessage,
   postPreviewModeToFrame as postPreviewModeToFrameHelper,
   schedulePreviewModeSync,
-} from "../runtime/previewFrameBridge";
+} from "../../runtime/previewFrameBridge";
 import {
   MOUNTED_PREVIEW_BRIDGE_SCRIPT,
   PREVIEW_MOUNT_PATH,
@@ -18,7 +18,7 @@ import {
   normalizeProjectRelative,
   readElementByPath,
   toMountRelativePath,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 type PreviewToolMode = "edit" | "inspect" | "draw" | "move";

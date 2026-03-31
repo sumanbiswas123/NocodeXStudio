@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import type { FileMap, ProjectFile, VirtualElement } from "../../types";
+import type { FileMap, ProjectFile, VirtualElement } from "../../../types";
 import {
   ADD_TOOL_COMPONENT_PRESETS,
   ADD_TOOL_COMPONENTS_CSS_CONTENT,
@@ -28,11 +28,11 @@ import {
   relativePathBetweenVirtualFiles,
   resolveProjectRelativePath,
   toCssPropertyName,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 import {
   normalizePresentationCssValue,
   normalizePresentationStylePatch,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 
 type UsePreviewCreationOptions = {
   ensureDirectoryTreeStable: (path: string) => Promise<void> | void;

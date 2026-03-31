@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PreviewConsoleEntry, PreviewConsoleLevel } from "../helpers/appHelpers";
-import { renderDetachedConsoleWindow } from "../runtime/detachedConsoleWindow";
+import type { PreviewConsoleEntry, PreviewConsoleLevel } from "../../helpers/appHelpers";
+import { renderDetachedConsoleWindow } from "../../runtime/detachedConsoleWindow";
 
 type UsePreviewConsoleOptions = {
   maxEntries: number;

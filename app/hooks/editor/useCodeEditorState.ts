@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo } from "react";
 import * as Neutralino from "@neutralinojs/lib";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { FileMap, ProjectFile } from "../../types";
-import { isCodeEditableFile, isSvgPath } from "../helpers/appHelpers";
+import type { FileMap, ProjectFile } from "../../../types";
+import { isCodeEditableFile, isSvgPath } from "../../helpers/appHelpers";
 
 type UseCodeEditorStateOptions = {
   activeFile: string | null;

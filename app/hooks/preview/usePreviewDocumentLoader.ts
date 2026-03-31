@@ -1,12 +1,12 @@
 import { useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import type { FileMap } from "../../types";
-import type { PreviewHistoryEntry } from "../helpers/appHelpers";
+import type { FileMap } from "../../../types";
+import type { PreviewHistoryEntry } from "../../helpers/appHelpers";
 import {
   createPreviewDocument,
   resolveProjectRelativePath,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type UsePreviewDocumentLoaderOptions = {
   cachePreviewDoc: (path: string, doc: string) => void;

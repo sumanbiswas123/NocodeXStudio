@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { VirtualElement } from "../../types";
+import { VirtualElement } from "../../../types";
 import {
   dataUrlToBytes as dataUrlToBytesHelper,
   findVisiblePopupInDoc as findVisiblePopupInDocHelper,
@@ -7,7 +7,7 @@ import {
   resolvePreviewAssetUrl as resolvePreviewAssetUrlHelper,
   resolveProjectWorkspacePath,
   writeJsonIndexFile,
-} from "../helpers/mediaWorkspaceHelpers";
+} from "../../helpers/mediaWorkspaceHelpers";
 import {
   captureScreenshot,
   deleteScreenshotItem,
@@ -18,7 +18,7 @@ import {
   SCREENSHOT_DIR,
   SCREENSHOT_INDEX_FILE,
   ScreenshotMetadata,
-} from "../helpers/screenshotWorkspace";
+} from "../../helpers/screenshotWorkspace";
 
 type PendingPopupRef = React.MutableRefObject<{
   selector: string | null;

@@ -12,65 +12,73 @@ import {
 } from "../helpers/appHelpers";
 
 type AppOverlaysProps = {
-  theme: "light" | "dark";
-  isFloatingPanels: boolean;
-  isCodePanelOpen: boolean;
-  setIsCodePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  isRightPanelOpen: boolean;
-  setIsRightPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  rightPanelMode: "inspector" | "gallery";
-  setRightPanelMode: React.Dispatch<
-    React.SetStateAction<"inspector" | "gallery">
-  >;
-  isCompactConsoleOpening: boolean;
-  previewConsoleErrorCount: number;
-  handleOpenDetachedConsole: () => void;
-  isConfigModalOpen: boolean;
-  setIsConfigModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  configModalInitialTab: "references" | "slides" | "configRaw" | "general";
-  isConfigModalSlidesOnly: boolean;
-  files: FileMap;
-  configPathForModal: string;
-  portfolioPathForModal: string;
-  handleSaveConfig: (
-    newConfigContent: string,
-    newPortfolioContent: string,
-  ) => Promise<void>;
-  autoSaveEnabled: boolean;
-  setAutoSaveEnabled: React.Dispatch<React.SetStateAction<boolean>>;
-  panelSide: "default" | "swapped";
-  setPanelSide: React.Dispatch<React.SetStateAction<"default" | "swapped">>;
-  projectPath: string | null;
-  selectedFolderCloneSource: string | null;
-  setSelectedFolderCloneSource: React.Dispatch<
-    React.SetStateAction<string | null>
-  >;
-  isDetachedEditorOpen: boolean;
-  closeCodePanel: () => void;
-  activeDetachedEditorFilePath: string | null;
-  activeDetachedEditorContent: string;
-  activeDetachedEditorIsDirty: boolean;
-  handleDetachedEditorSelectFile: (path: string) => void;
-  handleDetachedEditorChange: (value: string) => void;
-  detachedEditorIsTextEditable: boolean;
-  saveCodeDraftAtPath: (path: string) => Promise<void>;
-  loadFileContent: (
-    path: string,
-    options?: { persistToState?: boolean },
-  ) => Promise<string | Blob | null | undefined>;
-  setCodeDraftByPath: React.Dispatch<
-    React.SetStateAction<Record<string, string>>
-  >;
-  setCodeDirtyPathSet: React.Dispatch<
-    React.SetStateAction<Record<string, true>>
-  >;
-  isPdfExporting: boolean;
-  pdfExportLogs: string[];
-  clearPdfExportLogs: () => void;
-  activeCodeContent: string;
-  handleCodeDraftChange: (value: string) => void;
-  activeCodeFilePath: string | null;
-  saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
+  shellState: {
+    theme: "light" | "dark";
+    isFloatingPanels: boolean;
+    isCodePanelOpen: boolean;
+    isRightPanelOpen: boolean;
+    rightPanelMode: "inspector" | "gallery";
+    isCompactConsoleOpening: boolean;
+    previewConsoleErrorCount: number;
+    isConfigModalOpen: boolean;
+    configModalInitialTab: "references" | "slides" | "configRaw" | "general";
+    isConfigModalSlidesOnly: boolean;
+    autoSaveEnabled: boolean;
+    panelSide: "default" | "swapped";
+    projectPath: string | null;
+    selectedFolderCloneSource: string | null;
+  };
+  configState: {
+    files: FileMap;
+    configPathForModal: string;
+    portfolioPathForModal: string;
+  };
+  editorState: {
+    isDetachedEditorOpen: boolean;
+    activeDetachedEditorFilePath: string | null;
+    activeDetachedEditorContent: string;
+    activeDetachedEditorIsDirty: boolean;
+    detachedEditorIsTextEditable: boolean;
+    activeCodeContent: string;
+    activeCodeFilePath: string | null;
+    isPdfExporting: boolean;
+    pdfExportLogs: string[];
+    saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
+  };
+  actions: {
+    setIsCodePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    setIsRightPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    setRightPanelMode: React.Dispatch<
+      React.SetStateAction<"inspector" | "gallery">
+    >;
+    handleOpenDetachedConsole: () => void;
+    setIsConfigModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    handleSaveConfig: (
+      newConfigContent: string,
+      newPortfolioContent: string,
+    ) => Promise<void>;
+    setAutoSaveEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+    setPanelSide: React.Dispatch<React.SetStateAction<"default" | "swapped">>;
+    setSelectedFolderCloneSource: React.Dispatch<
+      React.SetStateAction<string | null>
+    >;
+    closeCodePanel: () => void;
+    handleDetachedEditorSelectFile: (path: string) => void;
+    handleDetachedEditorChange: (value: string) => void;
+    saveCodeDraftAtPath: (path: string) => Promise<void>;
+    loadFileContent: (
+      path: string,
+      options?: { persistToState?: boolean },
+    ) => Promise<string | Blob | null | undefined>;
+    setCodeDraftByPath: React.Dispatch<
+      React.SetStateAction<Record<string, string>>
+    >;
+    setCodeDirtyPathSet: React.Dispatch<
+      React.SetStateAction<Record<string, true>>
+    >;
+    clearPdfExportLogs: () => void;
+    handleCodeDraftChange: (value: string) => void;
+  };
 };
 
 const getCodeLanguage = (path: string | null): CodeLanguage => {
@@ -87,52 +95,61 @@ const getCodeLanguage = (path: string | null): CodeLanguage => {
 };
 
 const AppOverlays: React.FC<AppOverlaysProps> = ({
-  theme,
-  isFloatingPanels,
-  isCodePanelOpen,
-  setIsCodePanelOpen,
-  isRightPanelOpen,
-  setIsRightPanelOpen,
-  rightPanelMode,
-  setRightPanelMode,
-  isCompactConsoleOpening,
-  previewConsoleErrorCount,
-  handleOpenDetachedConsole,
-  isConfigModalOpen,
-  setIsConfigModalOpen,
-  configModalInitialTab,
-  isConfigModalSlidesOnly,
-  files,
-  configPathForModal,
-  portfolioPathForModal,
-  handleSaveConfig,
-  autoSaveEnabled,
-  setAutoSaveEnabled,
-  panelSide,
-  setPanelSide,
-  projectPath,
-  selectedFolderCloneSource,
-  setSelectedFolderCloneSource,
-  isDetachedEditorOpen,
-  closeCodePanel,
-  activeDetachedEditorFilePath,
-  activeDetachedEditorContent,
-  activeDetachedEditorIsDirty,
-  handleDetachedEditorSelectFile,
-  handleDetachedEditorChange,
-  detachedEditorIsTextEditable,
-  saveCodeDraftAtPath,
-  loadFileContent,
-  setCodeDraftByPath,
-  setCodeDirtyPathSet,
-  isPdfExporting,
-  pdfExportLogs,
-  clearPdfExportLogs,
-  activeCodeContent,
-  handleCodeDraftChange,
-  activeCodeFilePath,
-  saveCodeDraftsRef,
+  shellState,
+  configState,
+  editorState,
+  actions,
 }) => {
+  const {
+    theme,
+    isFloatingPanels,
+    isCodePanelOpen,
+    isRightPanelOpen,
+    rightPanelMode,
+    isCompactConsoleOpening,
+    previewConsoleErrorCount,
+    isConfigModalOpen,
+    configModalInitialTab,
+    isConfigModalSlidesOnly,
+    autoSaveEnabled,
+    panelSide,
+    projectPath,
+    selectedFolderCloneSource,
+  } = shellState;
+  const { files, configPathForModal, portfolioPathForModal } = configState;
+  const {
+    isDetachedEditorOpen,
+    activeDetachedEditorFilePath,
+    activeDetachedEditorContent,
+    activeDetachedEditorIsDirty,
+    detachedEditorIsTextEditable,
+    activeCodeContent,
+    activeCodeFilePath,
+    isPdfExporting,
+    pdfExportLogs,
+    saveCodeDraftsRef,
+  } = editorState;
+  const {
+    setIsCodePanelOpen,
+    setIsRightPanelOpen,
+    setRightPanelMode,
+    handleOpenDetachedConsole,
+    setIsConfigModalOpen,
+    handleSaveConfig,
+    setAutoSaveEnabled,
+    setPanelSide,
+    setSelectedFolderCloneSource,
+    closeCodePanel,
+    handleDetachedEditorSelectFile,
+    handleDetachedEditorChange,
+    saveCodeDraftAtPath,
+    loadFileContent,
+    setCodeDraftByPath,
+    setCodeDirtyPathSet,
+    clearPdfExportLogs,
+    handleCodeDraftChange,
+  } = actions;
+
   const isRightInspectorMode = rightPanelMode === "inspector";
 
   return (

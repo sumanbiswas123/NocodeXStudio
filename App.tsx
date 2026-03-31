@@ -4,78 +4,69 @@ import React, {
   useCallback,
   useRef,
   useLayoutEffect,
-  useMemo,
 } from "react";
 import { flushSync } from "react-dom";
-import StyleInspectorPanel from "./components/StyleInspectorPanel";
-import { INITIAL_ROOT, INJECTED_STYLES } from "./constants";
+import { INITIAL_ROOT } from "./constants";
 import {
   VirtualElement,
   FileMap,
   HistoryState,
 } from "./types";
 import * as Neutralino from "@neutralinojs/lib";
-import {
-  PanelRightClose,
-  RotateCw,
-  FileText,
-  Upload,
-} from "lucide-react";
 import { Provider } from "react-redux";
 import { store } from "./src/store";
-import PdfAnnotationsOverlay from "./src/components/PdfAnnotationsOverlay";
 import {
   setIsOpen,
 } from "./src/store/annotationSlice";
 import { useDispatch, useSelector } from "react-redux";
 import { RootState } from "./src/store";
 import AppOverlays from "./app/ui/AppOverlays";
-import DeviceFrameChrome from "./app/ui/DeviceFrameChrome";
-import DeviceFrameScreen from "./app/ui/DeviceFrameScreen";
-import DeviceFrameToolbar from "./app/ui/DeviceFrameToolbar";
+import AppTopLevelLayers from "./app/ui/AppTopLevelLayers";
 import LeftSidebarShell from "./app/ui/LeftSidebarShell";
+import MainStageShell from "./app/ui/MainStageShell";
+import RightInspectorShell from "./app/ui/RightInspectorShell";
 import {
   persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
 } from "./app/helpers/previewSelectionHelpers";
 import ScreenshotGalleryPanel from "./app/ui/ScreenshotGalleryPanel";
-import { useCodeEditorState } from "./app/hooks/useCodeEditorState";
-import { usePreviewContentEditing } from "./app/hooks/usePreviewContentEditing";
-import { usePreviewElementActions } from "./app/hooks/usePreviewElementActions";
-import { usePreviewGeometry } from "./app/hooks/usePreviewGeometry";
-import { usePreviewCreation } from "./app/hooks/usePreviewCreation";
-import { usePreviewCssMutation } from "./app/hooks/usePreviewCssMutation";
-import { usePreviewDocumentLoader } from "./app/hooks/usePreviewDocumentLoader";
-import { usePreviewInspectorRuntime } from "./app/hooks/usePreviewInspectorRuntime";
-import { usePreviewFrameMessages } from "./app/hooks/usePreviewFrameMessages";
-import { usePreviewFrameBridgeState } from "./app/hooks/usePreviewFrameBridgeState";
-import { usePreviewConsole } from "./app/hooks/usePreviewConsole";
-import { useConfigModalFlow } from "./app/hooks/useConfigModalFlow";
-import { usePreviewHistoryFlow } from "./app/hooks/usePreviewHistoryFlow";
-import { usePdfAnnotationWorkflow } from "./app/hooks/usePdfAnnotationWorkflow";
-import { usePageSwitchFlow } from "./app/hooks/usePageSwitchFlow";
-import { useProjectFileActions } from "./app/hooks/useProjectFileActions";
-import { usePanelLayoutState } from "./app/hooks/usePanelLayoutState";
-import { useStageLayoutState } from "./app/hooks/useStageLayoutState";
-import { useScreenshotGallery } from "./app/hooks/useScreenshotGallery";
-import { useAppShellControls } from "./app/hooks/useAppShellControls";
+import { useCodeEditorState } from "./app/hooks/editor/useCodeEditorState";
+import { usePreviewContentEditing } from "./app/hooks/preview/usePreviewContentEditing";
+import { usePreviewElementActions } from "./app/hooks/preview/usePreviewElementActions";
+import { usePreviewGeometry } from "./app/hooks/preview/usePreviewGeometry";
+import { usePreviewCreation } from "./app/hooks/preview/usePreviewCreation";
+import { usePreviewCssMutation } from "./app/hooks/preview/usePreviewCssMutation";
+import { usePreviewDocumentLoader } from "./app/hooks/preview/usePreviewDocumentLoader";
+import { usePreviewInspectorRuntime } from "./app/hooks/preview/usePreviewInspectorRuntime";
+import { usePreviewFrameMessages } from "./app/hooks/preview/usePreviewFrameMessages";
+import { usePreviewFrameBridgeState } from "./app/hooks/preview/usePreviewFrameBridgeState";
+import { usePreviewConsole } from "./app/hooks/preview/usePreviewConsole";
+import { useConfigModalFlow } from "./app/hooks/workflow/useConfigModalFlow";
+import { usePreviewHistoryFlow } from "./app/hooks/preview/usePreviewHistoryFlow";
+import { usePdfAnnotationWorkflow } from "./app/hooks/workflow/usePdfAnnotationWorkflow";
+import { usePageSwitchFlow } from "./app/hooks/workflow/usePageSwitchFlow";
+import { useProjectFileActions } from "./app/hooks/workflow/useProjectFileActions";
+import { usePanelLayoutState } from "./app/hooks/layout/usePanelLayoutState";
+import { useStageLayoutState } from "./app/hooks/layout/useStageLayoutState";
+import { useScreenshotGallery } from "./app/hooks/workflow/useScreenshotGallery";
+import { useAppShellControls } from "./app/hooks/shell/useAppShellControls";
+import { useTopLevelLayersViewModel } from "./app/hooks/viewModels/useTopLevelLayersViewModel";
+import { useLeftSidebarViewModel } from "./app/hooks/viewModels/useLeftSidebarViewModel";
+import { useMainStageViewModel } from "./app/hooks/viewModels/useMainStageViewModel";
+import { useRightInspectorViewModel } from "./app/hooks/viewModels/useRightInspectorViewModel";
+import { useScreenshotGalleryViewModel } from "./app/hooks/viewModels/useScreenshotGalleryViewModel";
+import { useAppOverlaysViewModel } from "./app/hooks/viewModels/useAppOverlaysViewModel";
+import { useCanvasEditingHandlers } from "./app/hooks/canvas/useCanvasEditingHandlers";
+import { usePreviewSelectionState } from "./app/hooks/preview/usePreviewSelectionState";
 import {
-  collectMatchedCssRulesFromElement,
   PreviewMatchedCssRule,
   PreviewMatchedRuleMutation,
 } from "./app/helpers/previewCssHelpers";
 import {
-  isEdaProject,
-  findElementById,
-  collectPathIdsToElement,
-  updateElementInTree,
-  deleteElementFromTree,
   normalizePath,
-  PREVIEW_MOUNT_PATH,
   THEME_STORAGE_KEY,
   PREVIEW_AUTOSAVE_STORAGE_KEY,
   PANEL_SIDE_STORAGE_KEY,
   SHOW_SCREENSHOT_FEATURES,
-  SHOW_MASTER_TOOLS,
   MAX_CANVAS_HISTORY,
   MAX_PREVIEW_CONSOLE_ENTRIES,
   MAX_PREVIEW_DOC_CACHE_ENTRIES,
@@ -97,43 +88,14 @@ import {
   toByteArray,
   normalizeProjectRelative,
   findFilePathCaseInsensitive,
-  toMountRelativePath,
-  pickDefaultHtmlFile,
   readElementByPath,
   toPreviewLayerId,
-  fromPreviewLayerId,
-  parseInlineStyleText,
-  extractComputedStylesFromElement,
-  extractCustomAttributesFromElement,
-  normalizeEditorMultilineText,
-  extractTextWithBreaks,
-  extractTextFromHtmlFragment,
   PreviewHistoryEntry,
-  addElementToTree,
-  createPresetIdFactory,
-  buildPresetElementV2,
-  buildStandardElement,
-  buildPreviewLayerTreeFromElement,
-  DeviceContextMenu,
   PreviewSelectionMode,
 } from "./app/helpers/appHelpers";
 
 const RECENT_PROJECTS_STORAGE_KEY = "nocodex_recent_projects_v1";
 const PDF_ANNOTATION_CACHE_KEY = "nocodex_pdf_annotation_cache_v1";
-
-const extractAssetSourceFromElement = (element: VirtualElement | null) => {
-  if (!element) return "";
-  if (typeof element.src === "string" && element.src.trim()) {
-    return element.src.trim();
-  }
-  const backgroundImage =
-    typeof element.styles?.backgroundImage === "string"
-      ? String(element.styles.backgroundImage)
-      : "";
-  const match = backgroundImage.match(/url\((['"]?)(.*?)\1\)/i);
-  return match?.[2] ? match[2] : "";
-};
-
 
 const App: React.FC = () => {
   // --- Redux Dispatch Setup ---
@@ -438,7 +400,6 @@ const App: React.FC = () => {
     appRootRef,
     deviceMode,
     interactionMode,
-    isCodePanelOpen,
     quickTextEdit,
   });
   const {
@@ -1187,160 +1148,29 @@ const App: React.FC = () => {
     [deviceMode],
   );
 
-  const handleUpdateStyle = useCallback(
-    (styles: Partial<React.CSSProperties>) => {
-      if (!selectedId) return;
-      const newRoot = updateElementInTree(root, selectedId, (el) => ({
-        ...el,
-        styles: { ...el.styles, ...styles },
-      }));
-      pushHistory(newRoot);
-    },
-    [root, selectedId, pushHistory],
-  );
-
-  const handleUpdateContent = useCallback(
-    (data: {
-      content?: string;
-      html?: string;
-      src?: string;
-      href?: string;
-    }) => {
-      if (!selectedId) return;
-      const normalizedData =
-        typeof data.html === "string" && typeof data.content !== "string"
-          ? {
-              ...data,
-              content: extractTextFromHtmlFragment(data.html),
-            }
-          : data;
-      const newRoot = updateElementInTree(root, selectedId, (el) => ({
-        ...el,
-        ...normalizedData,
-      }));
-      pushHistory(newRoot);
-    },
-    [root, selectedId, pushHistory],
-  );
-
-  const handleUpdateIdentity = useCallback(
-    (identity: { id: string; className: string }) => {
-      if (!selectedId) return;
-      const nextId = identity.id.trim() || selectedId;
-      const nextClassName = identity.className.trim();
-      const newRoot = updateElementInTree(root, selectedId, (el) => ({
-        ...el,
-        id: nextId,
-        className: nextClassName || undefined,
-      }));
-      pushHistory(newRoot);
-      if (nextId !== selectedId) {
-        setSelectedId(nextId);
-      }
-    },
-    [root, selectedId, pushHistory],
-  );
-
-  const handleUpdateAnimation = useCallback(
-    (animation: string) => {
-      if (!selectedId) return;
-      const nextAnimation =
-        typeof animation === "string" ? animation.trim() : "";
-      const newRoot = updateElementInTree(root, selectedId, (el) => ({
-        ...el,
-        animation: nextAnimation,
-        styles: {
-          ...el.styles,
-          animation: nextAnimation,
-        },
-      }));
-      pushHistory(newRoot);
-    },
-    [root, selectedId, pushHistory],
-  );
-
-  const handleMoveElement = useCallback(
-    (draggedId: string, targetId: string) => {
-      const draggedEl = findElementById(root, draggedId);
-      if (!draggedEl) return;
-      let newRoot = deleteElementFromTree(root, draggedId);
-      newRoot = addElementToTree(newRoot, targetId, draggedEl, "inside");
-      pushHistory(newRoot);
-    },
-    [root, pushHistory],
-  );
-
-  const handleMoveElementByPosition = useCallback(
-    (id: string, styles: Partial<React.CSSProperties>) => {
-      const target = findElementById(root, id);
-      if (!target) return;
-      let changed = false;
-      for (const [key, value] of Object.entries(styles)) {
-        if (
-          String((target.styles as any)?.[key] ?? "") !== String(value ?? "")
-        ) {
-          changed = true;
-          break;
-        }
-      }
-      if (!changed) return;
-      const newRoot = updateElementInTree(root, id, (el) => ({
-        ...el,
-        styles: { ...el.styles, ...styles },
-      }));
-      pushHistory(newRoot);
-    },
-    [root, pushHistory],
-  );
-
-  const handleResize = useCallback(
-    (id: string, width: string, height: string) => {
-      const newRoot = updateElementInTree(root, id, (el) => ({
-        ...el,
-        styles: { ...el.styles, width, height },
-      }));
-      pushHistory(newRoot);
-    },
-    [root, pushHistory],
-  );
-
-  const handleAddElement = useCallback(
-    (type: string, position: "inside" | "before" | "after" = "inside") => {
-      const idFor = createPresetIdFactory(type);
-      const newElement =
-        buildPresetElementV2(type, idFor) ??
-        buildStandardElement(type, idFor("element"));
-      const targetId = selectedId || root.id;
-      const newRoot = addElementToTree(root, targetId, newElement, position);
-      pushHistory(newRoot);
-      setSelectedId(newElement.id);
-      setIsRightPanelOpen(true);
-    },
-    [root, selectedId, pushHistory],
-  );
-  const handleSidebarAddElement = useCallback(
-    (type: string) => {
-      if (
-        interactionModeRef.current === "preview" &&
-        selectedPreviewHtmlRef.current
-      ) {
-        const frameRect = previewFrameRef.current?.getBoundingClientRect();
-        const clientX = frameRect
-          ? Math.round(frameRect.left + frameRect.width / 2)
-          : Math.round(window.innerWidth / 2);
-        const clientY = frameRect
-          ? Math.round(frameRect.top + frameRect.height / 2)
-          : Math.round(window.innerHeight / 2);
-        setSidebarToolMode("edit");
-        setInteractionMode("preview");
-        setPreviewMode("edit");
-        void applyPreviewDropCreateRef.current?.(type, clientX, clientY);
-        return;
-      }
-      handleAddElement(type, "inside");
-    },
-    [handleAddElement],
-  );
+  const {
+    handleMoveElement,
+    handleMoveElementByPosition,
+    handleResize,
+    handleSidebarAddElement,
+    handleUpdateAnimation,
+    handleUpdateContent,
+    handleUpdateIdentity,
+    handleUpdateStyle,
+  } = useCanvasEditingHandlers({
+    root,
+    selectedId,
+    pushHistory,
+    setSelectedId,
+    setIsRightPanelOpen,
+    interactionModeRef,
+    selectedPreviewHtmlRef,
+    previewFrameRef,
+    setSidebarToolMode,
+    setInteractionMode,
+    setPreviewMode,
+    applyPreviewDropCreateRef,
+  });
   const handleSidebarAddFontToPresentationCss = useCallback(
     (path: string) => {
       void handleAddFontToPresentationCss(path);
@@ -1570,11 +1400,6 @@ const App: React.FC = () => {
     },
     [],
   );
-  const selectedElement = selectedId ? findElementById(root, selectedId) : null;
-  const selectedPathIds = useMemo(
-    () => collectPathIdsToElement(root, selectedId),
-    [root, selectedId],
-  );
   const getStablePreviewElementId = useCallback(
     (
       path: number[] | null | undefined,
@@ -1592,162 +1417,45 @@ const App: React.FC = () => {
     },
     [],
   );
-  const previewLayerSelectedId = useMemo(() => {
-    if (
-      interactionMode !== "preview" ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      return null;
-    }
-    return toPreviewLayerId(previewSelectedPath);
-  }, [interactionMode, previewSelectedPath]);
-  const previewLayersRoot = useMemo<VirtualElement>(() => {
-    if (interactionMode !== "preview") return root;
-    const emptyPreviewRoot: VirtualElement = {
-      id: "preview-live-root",
-      type: "body",
-      name: "Body",
-      content: "",
-      html: "",
-      styles: {},
-      children: [],
-    };
-    const liveDocument =
-      previewFrameRef.current?.contentDocument ??
-      previewFrameRef.current?.contentWindow?.document ??
-      null;
-    const liveBody = liveDocument?.body ?? null;
-    if (liveBody) {
-      return {
-        id: "preview-live-root",
-        type: "body",
-        name: "Body",
-        content: "",
-        html: liveBody.innerHTML || "",
-        styles: {},
-        children: Array.from(liveBody.children).map((child, index) =>
-          buildPreviewLayerTreeFromElement(child, [index]),
-        ),
-      };
-    }
-    const activeHtmlPath = selectedPreviewHtmlRef.current;
-    const activeHtmlFile =
-      activeHtmlPath && files[activeHtmlPath] ? files[activeHtmlPath] : null;
-    const activeHtmlContent =
-      activeHtmlFile && typeof activeHtmlFile.content === "string"
-        ? activeHtmlFile.content
-        : "";
-    const fallbackHtml =
-      activeHtmlPath &&
-      typeof textFileCacheRef.current[activeHtmlPath] === "string"
-        ? textFileCacheRef.current[activeHtmlPath]
-        : "";
-    const sourceHtml =
-      activeHtmlContent && activeHtmlContent.trim().length > 0
-        ? activeHtmlContent
-        : fallbackHtml && fallbackHtml.trim().length > 0
-          ? fallbackHtml
-          : selectedPreviewDoc;
-    if (!sourceHtml || sourceHtml.trim().length === 0) return emptyPreviewRoot;
-    try {
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const body = parsed.body;
-      return {
-        id: "preview-live-root",
-        type: "body",
-        name: "Body",
-        content: "",
-        html: body?.innerHTML || "",
-        styles: {},
-        children: body
-          ? Array.from(body.children).map((child, index) =>
-              buildPreviewLayerTreeFromElement(child, [index]),
-            )
-          : [],
-      };
-    } catch {
-      return emptyPreviewRoot;
-    }
-  }, [files, interactionMode, previewRefreshNonce, root, selectedPreviewDoc]);
-  const selectPreviewElementAtPath = useCallback((path: number[]) => {
-    if (
-      interactionModeRef.current !== "preview" ||
-      !Array.isArray(path) ||
-      path.length === 0
-    ) {
-      return;
-    }
-    const frameDocument =
-      previewFrameRef.current?.contentDocument ??
-      previewFrameRef.current?.contentWindow?.document ??
-      null;
-    if (!frameDocument?.body) return;
-    const target = readElementByPath(frameDocument.body, path);
-    if (!target) return;
-    Array.from(
-      frameDocument.querySelectorAll<HTMLElement>(".__nx-preview-selected"),
-    ).forEach((el) => el.classList.remove("__nx-preview-selected"));
-    target.classList.add("__nx-preview-selected");
-    const inlineStyles = parseInlineStyleText(
-      target.getAttribute("style") || "",
-    );
-    const computedStyles = extractComputedStylesFromElement(target);
-    const matchedCssRules = collectMatchedCssRulesFromElement(target);
-    const nextElement: VirtualElement = {
-      id: getStablePreviewElementId(path, target.getAttribute("id")),
-      type: String(target.tagName || "div").toLowerCase(),
-      name: String(target.tagName || "div").toUpperCase(),
-      content: normalizeEditorMultilineText(extractTextWithBreaks(target)),
-      html: target instanceof HTMLElement ? target.innerHTML || "" : "",
-      ...(target.getAttribute("src")
-        ? { src: target.getAttribute("src") || "" }
-        : {}),
-      ...(target.getAttribute("href")
-        ? { href: target.getAttribute("href") || "" }
-        : {}),
-      ...(target.getAttribute("class")
-        ? { className: target.getAttribute("class") || "" }
-        : {}),
-      ...(extractCustomAttributesFromElement(target)
-        ? { attributes: extractCustomAttributesFromElement(target) || {} }
-        : {}),
-      styles: inlineStyles,
-      children: [],
-    };
-    setPreviewSelectedPath(path);
-    setPreviewSelectedElement(nextElement);
-    setPreviewSelectedComputedStyles(computedStyles);
-    setPreviewSelectedMatchedCssRules(matchedCssRules);
-    setSelectedId(null);
-    setIsCodePanelOpen(false);
-    setIsRightPanelOpen(true);
-  }, [getStablePreviewElementId]);
-  const handleSidebarSelectElement = useCallback(
-    (id: string) => {
-      const previewPath = fromPreviewLayerId(id);
-      if (previewPath) {
-        selectPreviewElementAtPath(previewPath);
-        return;
-      }
-      handleSelect(id);
-    },
-    [handleSelect, selectPreviewElementAtPath],
-  );
-  const inspectorElement = previewSelectedElement ?? selectedElement;
-  const selectedPreviewHtml = useMemo(() => {
-    if (!projectPath) return null;
-    if (previewSyncedFile && files[previewSyncedFile]?.type === "html") {
-      return previewSyncedFile;
-    }
-    if (activeFile && files[activeFile]?.type === "html") return activeFile;
-    return pickDefaultHtmlFile(files);
-  }, [activeFile, files, previewSyncedFile, projectPath]);
-  // Sync ref with reactive state for use in callbacks
-  useEffect(() => {
-    selectedPreviewHtmlRef.current = selectedPreviewHtml;
-  }, [selectedPreviewHtml]);
+  const {
+    handleSidebarSelectElement,
+    inspectorElement,
+    previewLayerSelectedId,
+    previewLayersRoot,
+    selectPreviewElementAtPath,
+    selectedElement,
+    selectedPathIds,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+  } = usePreviewSelectionState({
+    activeFile,
+    files,
+    getStablePreviewElementId,
+    handleSelect,
+    interactionMode,
+    isPreviewMountReady,
+    previewFrameRef,
+    previewMountBasePath,
+    previewRefreshNonce,
+    previewNavigationFile,
+    previewSelectedPath,
+    previewSelectedElement,
+    previewSyncedFile,
+    projectPath,
+    root,
+    selectedId,
+    selectedPreviewDoc,
+    selectedPreviewHtmlRef,
+    selectedPreviewPathSetter: setPreviewSelectedPath,
+    selectedPreviewElementSetter: setPreviewSelectedElement,
+    selectedPreviewComputedStylesSetter: setPreviewSelectedComputedStyles,
+    selectedPreviewMatchedCssRulesSetter: setPreviewSelectedMatchedCssRules,
+    setIsCodePanelOpen,
+    setIsRightPanelOpen,
+    setSelectedId,
+    textFileCacheRef,
+    filePathIndexRef,
+  });
   const {
     currentPreviewSlideId,
     filteredAnnotationsForCurrentSlide,
@@ -1802,45 +1510,6 @@ const App: React.FC = () => {
   }, [selectedPreviewHtml, tabletOrientation]);
   // ----------------------------------------------------
 
-  const selectedMountedPreviewHtml = useMemo(() => {
-    if (!projectPath) return null;
-    if (
-      previewNavigationFile &&
-      files[previewNavigationFile]?.type === "html"
-    ) {
-      return previewNavigationFile;
-    }
-    return selectedPreviewHtml;
-  }, [files, previewNavigationFile, projectPath, selectedPreviewHtml]);
-  const selectedPreviewSrc = useMemo(() => {
-    if (
-      !selectedMountedPreviewHtml ||
-      !isPreviewMountReady ||
-      !previewMountBasePath
-    ) {
-      return null;
-    }
-    const absolutePath = filePathIndexRef.current[selectedMountedPreviewHtml];
-    if (!absolutePath) return null;
-    const relativePath = toMountRelativePath(
-      previewMountBasePath,
-      absolutePath,
-    );
-    if (!relativePath) return null;
-    const nlPort = String((window as any).NL_PORT || "").trim();
-    const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
-    const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-    const withRefresh = `${mountPath}${mountPath.includes("?") ? "&" : "?"}nx_refresh=${previewRefreshNonce}`;
-    return previewServerOrigin
-      ? `${previewServerOrigin}${withRefresh}`
-      : withRefresh;
-  }, [
-    selectedMountedPreviewHtml,
-    isPreviewMountReady,
-    previewMountBasePath,
-    previewRefreshNonce,
-    projectPath,
-  ]);
   const isMountedPreview = Boolean(
     selectedPreviewSrc && interactionMode === "preview",
   );
@@ -1994,14 +1663,12 @@ const App: React.FC = () => {
     textFileCacheRef,
   });
   const {
-    applyPreviewDeleteSelected,
     applyPreviewTagUpdate,
     applyQuickTextWrapTag,
     handleReplacePreviewAsset,
   } = usePreviewElementActions({
     applyPreviewContentUpdate,
     binaryAssetUrlCacheRef,
-    extractAssetSourceFromElement,
     filePathIndexRef,
     filesRef,
     getLivePreviewSelectedElement,
@@ -2027,7 +1694,6 @@ const App: React.FC = () => {
     setPreviewSelectedPath,
     setSelectedId,
     setSidebarToolMode,
-    textFileCacheRef,
   });
   const {
     applyPreviewLocalCssPatchAtPath,
@@ -2406,26 +2072,277 @@ const App: React.FC = () => {
     [applyPreviewIdentityUpdate],
   );
 
-  const pendingSwitchFromLabel =
-    pendingPageSwitch?.fromPath &&
-    normalizePath(pendingPageSwitch.fromPath).split("/").filter(Boolean)
-      .length > 0
-      ? normalizePath(pendingPageSwitch.fromPath)
-          .split("/")
-          .filter(Boolean)
-          .slice(-1)[0]
-      : pendingPageSwitch?.fromPath || "current page";
-  const pendingSwitchNextLabel =
-    pendingPageSwitch?.nextPath &&
-    normalizePath(pendingPageSwitch.nextPath).split("/").filter(Boolean)
-      .length > 0
-      ? normalizePath(pendingPageSwitch.nextPath)
-          .split("/")
-          .filter(Boolean)
-          .slice(-1)[0]
-      : pendingPageSwitch?.nextPath || "next page";
-  const isPendingRefresh = pendingPageSwitch?.mode === "refresh";
-  const isPendingPreviewMode = pendingPageSwitch?.mode === "preview_mode";
+  const topLevelLayersProps = useTopLevelLayersViewModel({
+    theme,
+    pendingPageSwitch,
+    isPageSwitchPromptOpen,
+    isPageSwitchPromptBusy,
+    closePendingPageSwitchPrompt,
+    resolvePendingPageSwitchWithDiscard,
+    resolvePendingPageSwitchWithSave,
+    deviceCtxMenu,
+    mobileFrameStyle,
+    setMobileFrameStyle,
+    desktopResolution,
+    setDesktopResolution,
+    tabletModel,
+    tabletOrientation,
+    setTabletModel,
+    setDeviceCtxMenu,
+  });
+
+  const leftSidebarProps = useLeftSidebarViewModel({
+    theme,
+    isCodePanelOpen,
+    isFloatingPanels,
+    isLeftPanelOpen,
+    isPanelsSwapped,
+    isResizingLeftPanel,
+    leftPanelCollapsedWidth: LEFT_PANEL_COLLAPSED_WIDTH,
+    files,
+    activeFile,
+    drawElementTag,
+    interactionMode,
+    previewMode,
+    previewLayerSelectedId,
+    previewSelectedElement,
+    previewSyncedFile,
+    projectPath,
+    previewLayersRoot,
+    root,
+    selectedElement,
+    selectedFolderCloneSource,
+    selectedId,
+    sidebarInteractionMode,
+    handleCreateFileAtPath,
+    handleCreateFolderAtPath,
+    handleChooseFolderCloneSource,
+    handleDeletePath,
+    handleDuplicateFile,
+    handleLeftPanelResizeStart,
+    handleLeftPanelStretchToggle,
+    handleOpenConfigModal,
+    handleOpenFolder,
+    handleRenamePath,
+    handleSelectFile,
+    handleSidebarAddElement,
+    handleSidebarAddFontToPresentationCss,
+    handleSidebarInteractionModeChange,
+    handleSidebarLoadImage,
+    handleSidebarSelectElement,
+    handleUpdateAnimation,
+    handleUpdateStyle,
+    handlePreviewAnimationUpdateStable,
+    handlePreviewStyleUpdateStable,
+    openCodePanel,
+    refreshProjectFiles,
+    setDrawElementTag,
+    setIsLeftPanelOpen,
+  });
+
+  const mainStageProps = useMainStageViewModel({
+    isResizingLeftPanel,
+    isResizingRightPanel,
+    isFloatingPanels,
+    deviceMode,
+    isPanelsSwapped,
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    codePanelStageOffset,
+    consolePanelStageOffset,
+    isRightInspectorAttached,
+    shouldLockHorizontalScroll,
+    shouldLockVerticalScroll,
+    baseOverflowX,
+    baseStagePadding: BASE_STAGE_PADDING,
+    bothPanelsOpen,
+    rightOverlayInset,
+    floatingHorizontalInset,
+    tabletMetrics,
+    desktopResolution,
+    clampedTabletShiftX,
+    clampedCodeShiftX,
+    frameScale,
+    currentDevicePixelRatio,
+    dirtyFileCount: dirtyFiles.length,
+    frameZoom,
+    handlePreviewRefresh,
+    handleSidebarInteractionModeChange,
+    interactionMode,
+    openScreenshotGallery,
+    previewMode,
+    previewSelectionMode,
+    projectPath,
+    runRedo,
+    runUndo,
+    screenshotCaptureBusy,
+    setDeviceCtxMenu,
+    setDeviceMode,
+    setFrameZoom,
+    setPreviewModeWithSync,
+    setPreviewSelectionMode,
+    setTabletOrientation,
+    showScreenshotFeatures: SHOW_SCREENSHOT_FEATURES,
+    showToolbar: showDeviceFrameToolbar,
+    sidebarInteractionMode,
+    tabletOrientation,
+    theme,
+    toggleThemeWithTransition,
+    darkTabletReflectionOpacity,
+    mobileFrameStyle,
+    filteredAnnotationsForCurrentSlide,
+    focusedAnnotationForCurrentSlide,
+    handleMoveElement,
+    handleMoveElementByPosition,
+    handleOpenFolder,
+    handlePreviewFrameLoad,
+    handlePreviewResizeHandleMouseDown,
+    handlePreviewStageDragOver,
+    handlePreviewStageDrop,
+    handleResize,
+    handleSelect,
+    hasPreviewContent,
+    isPdfAnnotationPanelOpen,
+    isPopupAnnotation,
+    isToolboxDragging,
+    previewFrameRef,
+    previewRefreshNonce,
+    previewSelectedPath,
+    previewSelectionBox,
+    previewStageRef,
+    recentProjects,
+    root,
+    selectedId,
+    selectedPathIds,
+    selectedPreviewDoc,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+    shouldShowFrameWelcome,
+    tabletViewportScale,
+    scrollerRef,
+    clearStageSelection: () => {
+      setSelectedId(null);
+      setPreviewSelectedPath(null);
+      setPreviewSelectedElement(null);
+      setPreviewSelectedComputedStyles(null);
+    },
+  });
+
+  const rightInspectorProps = useRightInspectorViewModel({
+    theme,
+    isResizingRightPanel,
+    isCodePanelOpen,
+    isRightPanelOpen,
+    isRightInspectorAttached,
+    projectPath,
+    showEmbeddedPdfAnnotations,
+    hasPdfAnnotationsLoaded,
+    isPdfAnnotationPanelOpen,
+    isPdfAnnotationLoading,
+    currentPreviewSlideId,
+    showStyleInspectorSection,
+    setIsStyleInspectorSectionOpen,
+    inspectorElement,
+    availableFonts,
+    previewSelectedElement,
+    previewSelectionMode,
+    resolveInspectorAssetPreviewUrl,
+    previewSelectedMatchedCssRules,
+    previewSelectedComputedStyles,
+    togglePdfAnnotations: () => dispatch(setIsOpen(!isPdfAnnotationPanelOpen)),
+    handleOpenPdfAnnotationsPicker,
+    handleRefreshPdfAnnotationMapping,
+    handleJumpToPdfAnnotation,
+    handleImmediatePreviewStyle,
+    handlePreviewContentUpdateStable,
+    handleUpdateContent,
+    applyPreviewTagUpdate,
+    applyQuickTextWrapTag,
+    handlePreviewStyleUpdateStable,
+    handleUpdateStyle,
+    handlePreviewIdentityUpdateStable,
+    handleUpdateIdentity,
+    handleReplacePreviewAsset,
+    handlePreviewMatchedRulePropertyAdd,
+    setIsRightPanelOpen,
+    handleRightPanelResizeStart,
+  });
+
+  const screenshotGalleryProps = useScreenshotGalleryViewModel({
+    isFloatingPanels,
+    isPanelsSwapped,
+    isResizingRightPanel,
+    isDraggingRightPanel,
+    isCodePanelOpen,
+    isRightPanelOpen,
+    rightPanelFloatingPosition,
+    theme,
+    rightPanelMode,
+    projectPath,
+    screenshotCaptureBusy,
+    screenshotItems,
+    screenshotPreviewUrls,
+    isPdfExporting,
+    pdfExportLogs,
+    handleRightPanelDragStart,
+    closeScreenshotGallery,
+    setIsRightPanelOpen,
+    setRightPanelMode,
+    loadGalleryItems,
+    handleScreenshotCapture,
+    handleRevealScreenshotsFolder,
+    handleOpenScreenshotItem,
+    handleDeleteScreenshotItem,
+    handleExportEditablePdf,
+  });
+
+  const appOverlaysProps = useAppOverlaysViewModel({
+    theme,
+    isFloatingPanels,
+    isCodePanelOpen,
+    isRightPanelOpen,
+    rightPanelMode,
+    isCompactConsoleOpening,
+    previewConsoleErrorCount,
+    isConfigModalOpen,
+    configModalInitialTab,
+    isConfigModalSlidesOnly,
+    autoSaveEnabled,
+    panelSide,
+    projectPath,
+    selectedFolderCloneSource,
+    files,
+    configPathForModal,
+    portfolioPathForModal,
+    isDetachedEditorOpen,
+    activeDetachedEditorFilePath,
+    activeDetachedEditorContent,
+    activeDetachedEditorIsDirty,
+    detachedEditorIsTextEditable,
+    activeCodeContent,
+    activeCodeFilePath,
+    isPdfExporting,
+    pdfExportLogs,
+    saveCodeDraftsRef,
+    setIsCodePanelOpen,
+    setIsRightPanelOpen,
+    setRightPanelMode,
+    handleOpenDetachedConsole,
+    setIsConfigModalOpen,
+    handleSaveConfig,
+    setAutoSaveEnabled,
+    setPanelSide,
+    setSelectedFolderCloneSource,
+    closeCodePanel,
+    handleDetachedEditorSelectFile,
+    handleDetachedEditorChange,
+    saveCodeDraftAtPath,
+    loadFileContent,
+    setCodeDraftByPath,
+    setCodeDirtyPathSet,
+    clearPdfExportLogs,
+    handleCodeDraftChange,
+  });
   return (
     <div
       ref={appRootRef}
@@ -2443,791 +2360,24 @@ const App: React.FC = () => {
         : {}),
       }}
     >
-      {isPageSwitchPromptOpen && pendingPageSwitch && (
-        <div
-          className="fixed inset-0 z-[1400] flex items-center justify-center px-4"
-          style={{
-            background:
-              theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
-            backdropFilter: "blur(8px)",
-          }}
-        >
-          <div
-            className="w-full max-w-md rounded-2xl border shadow-2xl p-5"
-            style={{
-              background:
-                theme === "dark"
-                  ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.94) 100%)"
-                  : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%)",
-              borderColor:
-                theme === "dark"
-                  ? "rgba(148,163,184,0.32)"
-                  : "rgba(15,23,42,0.12)",
-              color: "var(--text-main)",
-            }}
-          >
-            <div
-              className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Unsaved Changes
-            </div>
-            <h3 className="text-base font-semibold leading-tight">
-              {isPendingRefresh
-                ? "Save changes before refresh?"
-                : isPendingPreviewMode
-                  ? "Save changes before switching mode?"
-                  : "Save changes before switching page?"}
-            </h3>
-            <p
-              className="text-xs mt-2 leading-relaxed"
-              style={{ color: "var(--text-muted)" }}
-            >
-              You have unsaved edits in{" "}
-              <span
-                className="font-semibold"
-                style={{ color: "var(--text-main)" }}
-              >
-                {pendingSwitchFromLabel}
-              </span>
-              .
-              {isPendingRefresh ? (
-                <> Refresh can overwrite your in-memory edits.</>
-              ) : isPendingPreviewMode ? (
-                <>
-                  {" "}
-                  Switching to Preview mode can overwrite your in-memory edits.
-                </>
-              ) : (
-                <>
-                  {" "}
-                  Switching to{" "}
-                  <span
-                    className="font-semibold"
-                    style={{ color: "var(--text-main)" }}
-                  >
-                    {pendingSwitchNextLabel}
-                  </span>{" "}
-                  can overwrite your in-memory edits.
-                </>
-              )}
-            </p>
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-black/5"
-                style={{
-                  borderColor: "var(--border-color)",
-                  color: "var(--text-main)",
-                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
-                }}
-                onClick={closePendingPageSwitchPrompt}
-                disabled={isPageSwitchPromptBusy}
-              >
-                Keep Editing
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-rose-500/10"
-                style={{
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(251,113,133,0.45)"
-                      : "rgba(225,29,72,0.35)",
-                  color: theme === "dark" ? "#fecdd3" : "#be123c",
-                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
-                }}
-                onClick={() => {
-                  void resolvePendingPageSwitchWithDiscard();
-                }}
-                disabled={isPageSwitchPromptBusy}
-              >
-                {isPendingRefresh ? "Discard & Refresh" : "Discard & Switch"}
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-cyan-500/15"
-                style={{
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(34,211,238,0.45)"
-                      : "rgba(8,145,178,0.35)",
-                  color: theme === "dark" ? "#a5f3fc" : "#0e7490",
-                  opacity: isPageSwitchPromptBusy ? 0.65 : 1,
-                }}
-                onClick={() => {
-                  void resolvePendingPageSwitchWithSave();
-                }}
-                disabled={isPageSwitchPromptBusy}
-              >
-                {isPageSwitchPromptBusy
-                  ? "Working..."
-                  : isPendingRefresh
-                    ? "Save & Refresh"
-                    : "Save & Switch"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Device Context Menu */}
-      {deviceCtxMenu && (
-        <DeviceContextMenu
-          type={deviceCtxMenu.type}
-          position={{ x: deviceCtxMenu.x, y: deviceCtxMenu.y }}
-          mobileFrameStyle={mobileFrameStyle}
-          setMobileFrameStyle={setMobileFrameStyle}
-          desktopResolution={desktopResolution}
-          setDesktopResolution={setDesktopResolution}
-          tabletModel={tabletModel}
-          tabletOrientation={tabletOrientation}
-          setTabletModel={setTabletModel}
-          onClose={() => setDeviceCtxMenu(null)}
-        />
-      )}
+      <AppTopLevelLayers {...topLevelLayersProps} />
 
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Left Sidebar */}
-        <LeftSidebarShell
-          activeFile={activeFile}
-          drawElementTag={drawElementTag}
-          files={files}
-          handleChooseFolderCloneSource={handleChooseFolderCloneSource}
-          handleCreateFileAtPath={handleCreateFileAtPath}
-          handleCreateFolderAtPath={handleCreateFolderAtPath}
-          handleDeletePath={handleDeletePath}
-          handleDuplicateFile={handleDuplicateFile}
-          handleLeftPanelResizeStart={handleLeftPanelResizeStart}
-          handleLeftPanelStretchToggle={handleLeftPanelStretchToggle}
-          handleOpenConfigModal={handleOpenConfigModal}
-          handleOpenFolder={handleOpenFolder}
-          handleRenamePath={handleRenamePath}
-          handleSelectFile={handleSelectFile}
-          handleSidebarAddElement={handleSidebarAddElement}
-          handleSidebarAddFontToPresentationCss={
-            handleSidebarAddFontToPresentationCss
-          }
-          handleSidebarInteractionModeChange={
-            handleSidebarInteractionModeChange
-          }
-          handleSidebarLoadImage={handleSidebarLoadImage}
-          handleSidebarSelectElement={handleSidebarSelectElement}
-          handleUpdateAnimation={handleUpdateAnimation}
-          handleUpdateStyle={handleUpdateStyle}
-          handlePreviewAnimationUpdateStable={
-            handlePreviewAnimationUpdateStable
-          }
-          handlePreviewStyleUpdateStable={handlePreviewStyleUpdateStable}
-          interactionMode={interactionMode}
-          isCodePanelOpen={isCodePanelOpen}
-          isFloatingPanels={isFloatingPanels}
-          isLeftPanelOpen={isLeftPanelOpen}
-          isPanelsSwapped={isPanelsSwapped}
-          isResizingLeftPanel={isResizingLeftPanel}
-          leftPanelCollapsedWidth={LEFT_PANEL_COLLAPSED_WIDTH}
-          openCodePanel={openCodePanel}
-          previewMode={previewMode}
-          previewLayerSelectedId={previewLayerSelectedId}
-          previewSelectedElement={previewSelectedElement}
-          previewSyncedFile={previewSyncedFile}
-          projectPath={projectPath}
-          refreshProjectFiles={refreshProjectFiles}
-          root={interactionMode === "preview" ? previewLayersRoot : root}
-          selectedElement={selectedElement}
-          selectedFolderCloneSource={selectedFolderCloneSource}
-          selectedId={
-            interactionMode === "preview" ? previewLayerSelectedId : selectedId
-          }
-          setDrawElementTag={setDrawElementTag}
-          setIsLeftPanelOpen={setIsLeftPanelOpen}
-          showConfigButton={isEdaProject(files)}
-          showMasterTools={SHOW_MASTER_TOOLS}
-          sidebarInteractionMode={sidebarInteractionMode}
-          theme={theme}
-        />
 
-        {/* --- Main Canvas Area ("The Stage") --- */}
-        {/* Non-mobile: 1 panel = push, both panels = overlay with scrollable content. Mobile: always overlay. */}
-        <div
-          className={`flex-1 flex flex-col relative ${isResizingLeftPanel || isResizingRightPanel ? "" : "transition-all duration-500"}`}
-          style={{
-            marginLeft:
-              !isFloatingPanels &&
-              deviceMode !== "mobile" &&
-              ((isPanelsSwapped && !isLeftPanelOpen && isRightPanelOpen) ||
-                (!isPanelsSwapped && isLeftPanelOpen && !isRightPanelOpen))
-                ? isPanelsSwapped
-                  ? "var(--right-panel-width)"
-                  : "var(--left-panel-width)"
-                : 0,
-            marginRight: codePanelStageOffset
-              ? `${codePanelStageOffset}px`
-              : consolePanelStageOffset
-                ? `${consolePanelStageOffset}px`
-                : !isFloatingPanels &&
-                    deviceMode !== "mobile" &&
-                    isRightInspectorAttached
-                  ? "var(--right-panel-width)"
-                  : !isFloatingPanels &&
-                      deviceMode !== "mobile" &&
-                      ((isPanelsSwapped &&
-                        isLeftPanelOpen &&
-                        !isRightPanelOpen) ||
-                        (!isPanelsSwapped &&
-                          !isLeftPanelOpen &&
-                          isRightPanelOpen))
-                    ? isPanelsSwapped
-                      ? "var(--left-panel-width)"
-                      : "var(--right-panel-width)"
-                    : 0,
-            // When both panels open, no margins - content will scroll
-          }}
-        >
-          {/* Background & Scroller */}
-          <div
-            ref={scrollerRef}
-            className="flex-1 relative no-scrollbar transition-all duration-300 pb-10"
-            style={{
-              overflowX: shouldLockHorizontalScroll ? "hidden" : baseOverflowX,
-              overflowY: shouldLockVerticalScroll ? "hidden" : "auto",
-            }}
-            onClick={() => {
-              setSelectedId(null);
-              setPreviewSelectedPath(null);
-              setPreviewSelectedElement(null);
-              setPreviewSelectedComputedStyles(null);
-            }}
-          >
-            {/* Dynamic Background */}
-            <div className="fixed inset-0 pointer-events-none z-0">
-              <div className="absolute inset-0 bg-[linear-gradient(var(--border-color)_1px,transparent_1px),linear-gradient(90deg,var(--border-color)_1px,transparent_1px)] bg-[size:32px_32px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)]"></div>
-              <div className="absolute top-[-18%] left-[18%] h-[380px] w-[380px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.12)_0%,rgba(99,102,241,0.05)_38%,transparent_72%)] opacity-80"></div>
-              <div className="absolute bottom-[-8%] right-[12%] h-[320px] w-[320px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.12)_0%,rgba(168,85,247,0.05)_36%,transparent_72%)] opacity-75"></div>
-            </div>
+        <LeftSidebarShell {...leftSidebarProps} />
 
-            {/* Content wrapper Ã¢â‚¬â€ adds padding when both panels overlay so scroll reveals content behind panels */}
-            <div
-              className="min-h-full relative flex flex-col p-10 outline-none bg-grid-pattern"
-              style={{
-                perspective: "1000px",
-                paddingLeft: `${BASE_STAGE_PADDING}px`,
-                paddingRight: `${BASE_STAGE_PADDING}px`,
-                width: "100%",
-                paddingBottom: `${BASE_STAGE_PADDING}px`,
-                minWidth: bothPanelsOpen
-                  ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
-                  : floatingHorizontalInset > 0
-                    ? `calc(100% + ${floatingHorizontalInset}px)`
-                    : "100%",
-              }}
-            >
-              {/* Safe Spacing for Toolbar */}
-              <div className="w-full shrink-0 h-4 pointer-events-none"></div>
-              {/* --- Device Frame Container --- */}
-              {/* --- Device Frame Wrapper (Layout Isolation) --- */}
-              <div
-                className="relative shrink-0 flex items-center justify-center transition-all duration-700 mx-auto mt-0"
-                style={{
-                  width:
-                    deviceMode === "mobile"
-                      ? "375px"
-                      : deviceMode === "tablet"
-                        ? `${tabletMetrics.frameWidth}px`
-                        : desktopResolution === "resizable"
-                          ? "80%"
-                          : "921.6px",
-                  height:
-                    deviceMode === "mobile"
-                      ? "812px"
-                      : deviceMode === "tablet"
-                        ? `${tabletMetrics.frameHeight}px`
-                        : desktopResolution === "resizable"
-                          ? "75vh"
-                          : "518.4px",
-                  transform:
-                    deviceMode === "tablet"
-                      ? `translateX(${clampedTabletShiftX}px) scale(${frameScale})`
-                      : `translateX(${clampedCodeShiftX}px) scale(${frameScale})`,
-                  transformOrigin: "top center",
-                }}
-              >
-                <DeviceFrameToolbar
-                  currentDevicePixelRatio={currentDevicePixelRatio}
-                  deviceMode={deviceMode}
-                  dirtyFileCount={dirtyFiles.length}
-                  frameZoom={frameZoom}
-                  handlePreviewRefresh={handlePreviewRefresh}
-                  handleSidebarInteractionModeChange={
-                    handleSidebarInteractionModeChange
-                  }
-                  interactionMode={interactionMode}
-                  openScreenshotGallery={openScreenshotGallery}
-                  previewMode={previewMode}
-                  previewSelectionMode={previewSelectionMode}
-                  projectPath={projectPath}
-                  runRedo={runRedo}
-                  runUndo={runUndo}
-                  screenshotCaptureBusy={screenshotCaptureBusy}
-                  setDeviceCtxMenu={setDeviceCtxMenu}
-                  setDeviceMode={setDeviceMode}
-                  setFrameZoom={setFrameZoom}
-                  setPreviewModeWithSync={setPreviewModeWithSync}
-                  setPreviewSelectionMode={setPreviewSelectionMode}
-                  setTabletOrientation={setTabletOrientation}
-                  showScreenshotFeatures={SHOW_SCREENSHOT_FEATURES}
-                  showToolbar={showDeviceFrameToolbar}
-                  sidebarInteractionMode={sidebarInteractionMode}
-                  tabletOrientation={tabletOrientation}
-                  theme={theme}
-                  toggleThemeWithTransition={toggleThemeWithTransition}
-                />
-                <DeviceFrameChrome
-                  darkTabletReflectionOpacity={darkTabletReflectionOpacity}
-                  deviceMode={deviceMode}
-                  mobileFrameStyle={mobileFrameStyle}
-                  theme={theme}
-                >
-                  <DeviceFrameScreen
-                    desktopResolution={desktopResolution}
-                    deviceMode={deviceMode}
-                    filteredAnnotationsForCurrentSlide={
-                      filteredAnnotationsForCurrentSlide
-                    }
-                    focusedAnnotationForCurrentSlide={
-                      focusedAnnotationForCurrentSlide
-                    }
-                    handleMoveElement={handleMoveElement}
-                    handleMoveElementByPosition={handleMoveElementByPosition}
-                    handleOpenFolder={handleOpenFolder}
-                    handlePreviewFrameLoad={handlePreviewFrameLoad}
-                    handlePreviewResizeHandleMouseDown={
-                      handlePreviewResizeHandleMouseDown
-                    }
-                    handlePreviewStageDragOver={handlePreviewStageDragOver}
-                    handlePreviewStageDrop={handlePreviewStageDrop}
-                    handleResize={handleResize}
-                    handleSelect={handleSelect}
-                    hasPreviewContent={hasPreviewContent}
-                    injectedStyles={INJECTED_STYLES}
-                    interactionMode={interactionMode}
-                    isPdfAnnotationPanelOpen={isPdfAnnotationPanelOpen}
-                    isPopupAnnotation={isPopupAnnotation}
-                    isToolboxDragging={isToolboxDragging}
-                    previewFrameRef={previewFrameRef}
-                    previewMode={previewMode}
-                    previewRefreshNonce={previewRefreshNonce}
-                    previewSelectedPath={previewSelectedPath}
-                    previewSelectionBox={previewSelectionBox}
-                    previewStageRef={previewStageRef}
-                    projectPath={projectPath}
-                    recentProjects={recentProjects}
-                    root={root}
-                    selectedId={selectedId}
-                    selectedPathIds={selectedPathIds}
-                    selectedPreviewDoc={selectedPreviewDoc}
-                    selectedPreviewHtml={selectedPreviewHtml}
-                    selectedPreviewSrc={selectedPreviewSrc}
-                    shouldShowFrameWelcome={shouldShowFrameWelcome}
-                    tabletMetrics={tabletMetrics}
-                    tabletViewportScale={tabletViewportScale}
-                  />
-                </DeviceFrameChrome>
-              </div>{" "}
-              {/* End of Device Frame Visual Wrapper */}
-            </div>
-            {/* end content wrapper */}
-          </div>
-          {/* end scroller */}
-        </div>
-        {/* end stage */}
+        <MainStageShell {...mainStageProps} />
 
         {isRightInspectorMode && (
-          <div
-            className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-700"} right-0 top-0 bottom-0 ${isCodePanelOpen || !isRightPanelOpen ? "pointer-events-none" : ""}`}
-            style={{
-              width: "var(--right-panel-width)",
-              overflow: "hidden",
-              transform: isRightPanelOpen
-                ? "translateX(0) scale(1)"
-                : "translateX(calc(100% + 0.75rem)) scale(0.985)",
-              opacity: isRightPanelOpen ? 1 : 0,
-              transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
-              transformOrigin: "right center",
-            }}
-          >
-            <div
-              className="h-full min-h-full relative flex flex-col overflow-hidden"
-              style={{
-                background:
-                  theme === "dark"
-                    ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
-                    : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
-                backdropFilter: "none",
-                borderTopLeftRadius: "28px",
-                borderBottomLeftRadius: "28px",
-              }}
-            >
-              <div
-                className="shrink-0 border-b px-3 py-2"
-                style={{
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(148,163,184,0.22)"
-                      : "rgba(15,23,42,0.08)",
-                  background:
-                    theme === "dark"
-                      ? "rgba(15,23,42,0.42)"
-                      : "rgba(255,255,255,0.78)",
-                }}
-              >
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    className="h-9 min-w-[44px] rounded-xl border px-2 flex items-center justify-center transition-colors text-[11px] font-semibold tracking-[0.14em]"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(15,23,42,0.12)",
-                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                      background: showStyleInspectorSection
-                        ? theme === "dark"
-                          ? "rgba(99,102,241,0.2)"
-                          : "rgba(99,102,241,0.14)"
-                        : "transparent",
-                    }}
-                    onClick={() =>
-                      setIsStyleInspectorSectionOpen((current) => !current)
-                    }
-                    title={
-                      showStyleInspectorSection
-                        ? "Hide styles section"
-                        : "Show styles section"
-                    }
-                  >
-                    CSS
-                  </button>
-                  <button
-                    type="button"
-                    className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(15,23,42,0.12)",
-                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                      background: showEmbeddedPdfAnnotations
-                        ? theme === "dark"
-                          ? "rgba(34,211,238,0.18)"
-                          : "rgba(14,165,233,0.14)"
-                        : "transparent",
-                    }}
-                    onClick={() => {
-                      if (hasPdfAnnotationsLoaded) {
-                        dispatch(setIsOpen(!isPdfAnnotationPanelOpen));
-                        return;
-                      }
-                      handleOpenPdfAnnotationsPicker();
-                    }}
-                    disabled={!projectPath || isPdfAnnotationLoading}
-                    title={
-                      projectPath
-                        ? hasPdfAnnotationsLoaded
-                          ? isPdfAnnotationPanelOpen
-                            ? "Hide PDF annotations"
-                            : "Show PDF annotations"
-                          : "Load annotated PDF"
-                        : "Open a presentation first"
-                    }
-                  >
-                    {isPdfAnnotationLoading ? (
-                      <RotateCw size={15} className="animate-spin" />
-                    ) : (
-                      <FileText size={15} />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(15,23,42,0.12)",
-                      color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                    }}
-                    onClick={handleRefreshPdfAnnotationMapping}
-                    disabled={!projectPath || isPdfAnnotationLoading}
-                    title="Upload annotated PDF"
-                  >
-                    <Upload size={15} />
-                  </button>
-                </div>
-              </div>
-
-              {showEmbeddedPdfAnnotations ? (
-                <>
-                  <div
-                    className="min-h-0 overflow-hidden"
-                    style={{
-                      flex: showStyleInspectorSection ? "0 0 48%" : "1 1 auto",
-                      background:
-                        theme === "dark"
-                          ? "rgba(2,6,23,0.18)"
-                          : "rgba(248,250,252,0.62)",
-                    }}
-                  >
-                    <PdfAnnotationsOverlay
-                      currentPreviewSlideId={currentPreviewSlideId ?? null}
-                      theme={theme as "light" | "dark"}
-                      onJumpToAnnotation={handleJumpToPdfAnnotation}
-                      embedded
-                    />
-                  </div>
-                  {showStyleInspectorSection ? (
-                    <div
-                      className="shrink-0 h-[8px]"
-                      style={{
-                        background:
-                          theme === "dark"
-                            ? "linear-gradient(90deg, rgba(34,211,238,0.1) 0%, rgba(56,189,248,0.42) 22%, rgba(14,165,233,0.2) 50%, rgba(34,211,238,0.42) 78%, rgba(34,211,238,0.1) 100%)"
-                            : "linear-gradient(90deg, rgba(125,211,252,0.18) 0%, rgba(14,165,233,0.55) 22%, rgba(6,182,212,0.22) 50%, rgba(14,165,233,0.55) 78%, rgba(125,211,252,0.18) 100%)",
-                        boxShadow:
-                          theme === "dark"
-                            ? "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(255,255,255,0.03)"
-                            : "inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(14,165,233,0.08)",
-                      }}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-
-              {showStyleInspectorSection ? (
-                <div
-                  className="min-h-0 flex-1 overflow-hidden px-2 pt-2 pb-2"
-                  style={{
-                    borderTop: showEmbeddedPdfAnnotations
-                      ? "none"
-                      : theme === "dark"
-                        ? "1px solid rgba(148,163,184,0.12)"
-                        : "1px solid rgba(15,23,42,0.05)",
-                    background:
-                      theme === "dark"
-                        ? "rgba(2,6,23,0.3)"
-                        : "rgba(255,255,255,0.72)",
-                  }}
-                >
-                  <div
-                    className="h-full overflow-hidden rounded-[20px]"
-                    style={{
-                      background:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.3)"
-                          : "rgba(255,255,255,0.8)",
-                    }}
-                  >
-                    <StyleInspectorPanel
-                      element={inspectorElement}
-                      availableFonts={availableFonts}
-                      onImmediateChange={handleImmediatePreviewStyle} // <--- ADD THIS
-                      onUpdateContent={
-                        previewSelectedElement
-                          ? handlePreviewContentUpdateStable
-                          : handleUpdateContent
-                      }
-                      onToggleTextTag={
-                        previewSelectedElement
-                          ? (tag) => {
-                              void applyPreviewTagUpdate(
-                                previewSelectedElement.type === tag
-                                  ? "span"
-                                  : tag,
-                              );
-                            }
-                          : undefined
-                      }
-                      onWrapTextTag={
-                        previewSelectedElement
-                          ? (tag) => {
-                              void applyQuickTextWrapTag(tag);
-                            }
-                          : undefined
-                      }
-                      selectionMode={
-                        previewSelectedElement ? previewSelectionMode : "default"
-                      }
-                      resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
-                      onUpdateStyle={
-                        previewSelectedElement
-                          ? handlePreviewStyleUpdateStable
-                          : handleUpdateStyle
-                      }
-                      onUpdateIdentity={
-                        previewSelectedElement
-                          ? handlePreviewIdentityUpdateStable
-                          : handleUpdateIdentity
-                      }
-                      onReplaceAsset={
-                        previewSelectedElement
-                          ? () => {
-                              void handleReplacePreviewAsset();
-                            }
-                          : undefined
-                      }
-                      onAddMatchedRuleProperty={
-                        previewSelectedElement
-                          ? handlePreviewMatchedRulePropertyAdd
-                          : undefined
-                      }
-                      matchedCssRules={
-                        previewSelectedElement ? previewSelectedMatchedCssRules : []
-                      }
-                      computedStyles={
-                        previewSelectedElement ? previewSelectedComputedStyles : null
-                      }
-                    />
-                  </div>
-                </div>
-              ) : !showEmbeddedPdfAnnotations ? (
-                <div
-                  className="min-h-0 flex-1 flex items-center justify-center px-6 text-center"
-                  style={{
-                    color: theme === "dark" ? "#94a3b8" : "#64748b",
-                  }}
-                >
-                  <div className="text-[12px] tracking-[0.16em] uppercase">
-                    Enable CSS or PDF to inspect this slide
-                  </div>
-                </div>
-              ) : null}
-
-              <div
-                className="pointer-events-none absolute inset-0"
-                style={{
-                  boxShadow:
-                    theme === "dark"
-                      ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
-                      : "inset 0 0 0 1px rgba(255,255,255,0.45)",
-                }}
-              />
-              {isRightInspectorAttached ? (
-                <button
-                  type="button"
-                  onClick={() => setIsRightPanelOpen(false)}
-                  className="absolute top-3 left-3 z-20 h-8 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
-                  style={{
-                    borderColor:
-                      theme === "dark"
-                        ? "rgba(148,163,184,0.28)"
-                        : "rgba(15,23,42,0.12)",
-                    color: theme === "dark" ? "#a5f3fc" : "#0e7490",
-                    background:
-                      theme === "dark"
-                        ? "rgba(15,23,42,0.88)"
-                        : "rgba(255,255,255,0.92)",
-                    boxShadow:
-                      theme === "dark"
-                        ? "0 8px 18px rgba(2,6,23,0.24)"
-                        : "0 8px 18px rgba(15,23,42,0.08)",
-                  }}
-                  title="Collapse right panel"
-                >
-                  <PanelRightClose size={14} />
-                  <span>Hide</span>
-                </button>
-              ) : null}
-            </div>
-            <div
-              onMouseDown={handleRightPanelResizeStart}
-              className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
-              title="Resize panel"
-            />
-          </div>
+          <RightInspectorShell {...rightInspectorProps} />
         )}
 
         {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES && (
-          <ScreenshotGalleryPanel
-            isFloatingPanels={isFloatingPanels}
-            isPanelsSwapped={isPanelsSwapped}
-            isResizingRightPanel={isResizingRightPanel}
-            isDraggingRightPanel={isDraggingRightPanel}
-            isCodePanelOpen={isCodePanelOpen}
-            isRightPanelOpen={isRightPanelOpen}
-            rightPanelFloatingPosition={rightPanelFloatingPosition}
-            theme={theme}
-            rightPanelMode={rightPanelMode}
-            screenshotCaptureBusy={screenshotCaptureBusy}
-            screenshotItems={screenshotItems}
-            screenshotPreviewUrls={screenshotPreviewUrls}
-            isPdfExporting={isPdfExporting}
-            pdfExportLogs={pdfExportLogs}
-            projectPath={projectPath}
-            onRightPanelDragStart={handleRightPanelDragStart}
-            onCloseGallery={closeScreenshotGallery}
-            onCollapsePanel={() => {
-              setIsRightPanelOpen(false);
-              setRightPanelMode("inspector");
-            }}
-            onRefreshGallery={() => void loadGalleryItems()}
-            onCaptureScreenshot={() => void handleScreenshotCapture()}
-            onRevealScreenshotsFolder={() => void handleRevealScreenshotsFolder()}
-            onOpenScreenshotItem={(item) => void handleOpenScreenshotItem(item)}
-            onDeleteScreenshotItem={(item) =>
-              void handleDeleteScreenshotItem(item)
-            }
-            onExportEditablePdf={() => void handleExportEditablePdf()}
-          />
+          <ScreenshotGalleryPanel {...screenshotGalleryProps} />
         )}
       </div>
 
-      <AppOverlays
-        theme={theme}
-        isFloatingPanels={isFloatingPanels}
-        isCodePanelOpen={isCodePanelOpen}
-        setIsCodePanelOpen={setIsCodePanelOpen}
-        isRightPanelOpen={isRightPanelOpen}
-        setIsRightPanelOpen={setIsRightPanelOpen}
-        rightPanelMode={rightPanelMode}
-        setRightPanelMode={setRightPanelMode}
-        isCompactConsoleOpening={isCompactConsoleOpening}
-        previewConsoleErrorCount={previewConsoleErrorCount}
-        handleOpenDetachedConsole={handleOpenDetachedConsole}
-        isConfigModalOpen={isConfigModalOpen}
-        setIsConfigModalOpen={setIsConfigModalOpen}
-        configModalInitialTab={configModalInitialTab}
-        isConfigModalSlidesOnly={isConfigModalSlidesOnly}
-        files={files}
-        configPathForModal={configPathForModal}
-        portfolioPathForModal={portfolioPathForModal}
-        handleSaveConfig={handleSaveConfig}
-        autoSaveEnabled={autoSaveEnabled}
-        setAutoSaveEnabled={setAutoSaveEnabled}
-        panelSide={panelSide}
-        setPanelSide={setPanelSide}
-        projectPath={projectPath}
-        selectedFolderCloneSource={selectedFolderCloneSource}
-        setSelectedFolderCloneSource={setSelectedFolderCloneSource}
-        isDetachedEditorOpen={isDetachedEditorOpen}
-        closeCodePanel={closeCodePanel}
-        activeDetachedEditorFilePath={activeDetachedEditorFilePath}
-        activeDetachedEditorContent={activeDetachedEditorContent}
-        activeDetachedEditorIsDirty={activeDetachedEditorIsDirty}
-        handleDetachedEditorSelectFile={handleDetachedEditorSelectFile}
-        handleDetachedEditorChange={handleDetachedEditorChange}
-        detachedEditorIsTextEditable={detachedEditorIsTextEditable}
-        saveCodeDraftAtPath={saveCodeDraftAtPath}
-        loadFileContent={loadFileContent}
-        setCodeDraftByPath={setCodeDraftByPath}
-        setCodeDirtyPathSet={setCodeDirtyPathSet}
-        isPdfExporting={isPdfExporting}
-        pdfExportLogs={pdfExportLogs}
-        clearPdfExportLogs={clearPdfExportLogs}
-        activeCodeContent={activeCodeContent}
-        handleCodeDraftChange={handleCodeDraftChange}
-        activeCodeFilePath={activeCodeFilePath}
-        saveCodeDraftsRef={saveCodeDraftsRef}
-      />
+      <AppOverlays {...appOverlaysProps} />
     </div>
   );
 };

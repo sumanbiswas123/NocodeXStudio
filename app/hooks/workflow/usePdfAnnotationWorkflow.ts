@@ -9,17 +9,17 @@ import {
   setIsOpen,
   setRecords,
   setSourcePath,
-} from "../../src/store/annotationSlice";
+} from "../../../src/store/annotationSlice";
 import {
   evaluateAnnotationTypeClassifier,
   PdfAnnotationUiRecord,
-} from "../helpers/pdfAnnotationHelpers";
+} from "../../helpers/pdfAnnotationHelpers";
 import {
   runPdfAnnotationMapping as runPdfAnnotationMappingHelper,
   selectPdfAndRunMapping,
-} from "../runtime/pdfAnnotationActions";
-import { normalizePath } from "../helpers/appHelpers";
-import type { FileMap, VirtualElement } from "../../types";
+} from "../../runtime/pdfAnnotationActions";
+import { normalizePath } from "../../helpers/appHelpers";
+import type { FileMap, VirtualElement } from "../../../types";
 
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 type PreviewToolMode = "edit" | "inspect" | "draw" | "move";

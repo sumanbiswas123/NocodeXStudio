@@ -1,8 +1,8 @@
 import { useCallback, useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import type { FileMap } from "../../types";
-import { resolvePreviewAssetUrl as resolvePreviewAssetUrlHelper } from "../helpers/mediaWorkspaceHelpers";
+import type { FileMap } from "../../../types";
+import { resolvePreviewAssetUrl as resolvePreviewAssetUrlHelper } from "../../helpers/mediaWorkspaceHelpers";
 import {
   getParentPath,
   isTextFileType,
@@ -10,15 +10,15 @@ import {
   normalizePath,
   normalizeProjectRelative,
   pickDefaultHtmlFile,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 import {
   ensureDirectoryForFile,
   ensureDirectoryTree,
   indexProjectForOpen,
   patchMtVeevaCheck,
   refreshProjectFileIndex,
-} from "../runtime/projectFilesystem";
-import { initializeProjectOpenRuntime } from "../runtime/projectOpenRuntime";
+} from "../../runtime/projectFilesystem";
+import { initializeProjectOpenRuntime } from "../../runtime/projectOpenRuntime";
 
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 type PreviewToolMode = "edit" | "inspect" | "draw" | "move";

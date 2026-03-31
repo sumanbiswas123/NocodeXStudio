@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
 import * as Neutralino from "@neutralinojs/lib";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { FileMap } from "../../types";
+import type { FileMap } from "../../../types";
 import {
   MAX_PREVIEW_HISTORY,
   PreviewHistoryEntry,
   createPreviewDocument,
   readElementByPath,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type UsePreviewHistoryFlowOptions = {
   autoSaveEnabled: boolean;

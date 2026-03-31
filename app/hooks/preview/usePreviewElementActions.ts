@@ -2,15 +2,15 @@ import { useCallback } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import type { FileMap, VirtualElement } from "../../types";
+import type { FileMap, VirtualElement } from "../../../types";
 import {
   ensureDirectoryForFile,
-} from "../runtime/projectFilesystem";
+} from "../../runtime/projectFilesystem";
 import {
   getParentPath,
   normalizePath,
   readElementByPath,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type PersistPreviewHtmlContentFn = (
   path: string,
@@ -60,15 +60,12 @@ type UsePreviewElementActionsOptions = {
   setSidebarToolMode: Dispatch<
     SetStateAction<"edit" | "inspect" | "draw" | "move">
   >;
-  textFileCacheRef: MutableRefObject<Record<string, string>>;
   binaryAssetUrlCacheRef: MutableRefObject<Record<string, string>>;
-  extractAssetSourceFromElement: (element: VirtualElement | null) => string;
 };
 
 export const usePreviewElementActions = ({
   applyPreviewContentUpdate,
   binaryAssetUrlCacheRef,
-  extractAssetSourceFromElement,
   filePathIndexRef,
   filesRef,
   getLivePreviewSelectedElement,
@@ -94,7 +91,6 @@ export const usePreviewElementActions = ({
   setPreviewSelectedPath,
   setSelectedId,
   setSidebarToolMode,
-  textFileCacheRef,
 }: UsePreviewElementActionsOptions) => {
   const handleReplacePreviewAsset = useCallback(async () => {
     if (

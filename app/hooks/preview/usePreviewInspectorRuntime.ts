@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef } from "react";
 import * as Neutralino from "@neutralinojs/lib";
-import { FileMap, ProjectFile, VirtualElement } from "../../types";
+import { FileMap, ProjectFile, VirtualElement } from "../../../types";
 import {
   CdpInspectSelectedResponse,
   PreviewMatchedCssRule,
   derivePreviewMatchedCssRulesFromCdp,
   extractAssetUrlFromCssValue,
   toReactComputedStylesFromCdp,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 import {
   PREVIEW_MOUNT_PATH,
   getParentPath,
@@ -19,7 +19,7 @@ import {
   resolveProjectRelativePath,
   toFileUrl,
   toMountRelativePath,
-} from "../helpers/appHelpers";
+} from "../../helpers/appHelpers";
 
 type UsePreviewInspectorRuntimeOptions = {
   applyPreviewStyleUpdateAtPath: (

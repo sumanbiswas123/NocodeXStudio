@@ -5,108 +5,124 @@ import type { FileMap, VirtualElement } from "../../types";
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 
 type LeftSidebarShellProps = {
-  activeFile: string | null;
-  drawElementTag: string;
-  files: FileMap;
-  handleCreateFileAtPath: (parentPath: string) => void;
-  handleCreateFolderAtPath: (parentPath: string) => void;
-  handleChooseFolderCloneSource: () => void;
-  handleDeletePath: (path: string, kind: "file" | "folder") => void;
-  handleDuplicateFile: (path: string) => void;
-  handleLeftPanelResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void;
-  handleLeftPanelStretchToggle: () => void;
-  handleOpenConfigModal: () => void;
-  handleOpenFolder: (path?: string | null) => Promise<void>;
-  handleRenamePath: (path: string) => void;
-  handleSelectFile: (path: string) => void;
-  handleSidebarAddElement: (type: string) => void;
-  handleSidebarAddFontToPresentationCss: (path: string) => void;
-  handleSidebarInteractionModeChange: (
-    mode: InteractionMode,
-  ) => void;
-  handleSidebarLoadImage: (path: string) => void;
-  handleSidebarSelectElement: (id: string) => void;
-  handleUpdateAnimation: (animation: string) => void;
-  handleUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
-  handlePreviewAnimationUpdateStable: (animation: string) => void;
-  handlePreviewStyleUpdateStable: (
-    styles: Partial<React.CSSProperties>,
-  ) => void;
-  interactionMode: InteractionMode;
-  isCodePanelOpen: boolean;
-  isFloatingPanels: boolean;
-  isLeftPanelOpen: boolean;
-  isPanelsSwapped: boolean;
-  isResizingLeftPanel: boolean;
-  leftPanelCollapsedWidth: number;
-  openCodePanel: () => void;
-  previewMode: "edit" | "preview";
-  previewLayerSelectedId: string | null;
-  previewSelectedElement: VirtualElement | null;
-  previewSyncedFile: string | null;
-  projectPath: string | null;
-  refreshProjectFiles: () => void;
-  root: VirtualElement;
-  selectedElement: VirtualElement | null;
-  selectedFolderCloneSource: string | null;
-  selectedId: string | null;
-  setDrawElementTag: React.Dispatch<React.SetStateAction<string>>;
-  setIsLeftPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  showConfigButton: boolean;
-  showMasterTools: boolean;
-  sidebarInteractionMode: InteractionMode;
-  theme: "dark" | "light";
+  shellState: {
+    isCodePanelOpen: boolean;
+    isFloatingPanels: boolean;
+    isLeftPanelOpen: boolean;
+    isPanelsSwapped: boolean;
+    isResizingLeftPanel: boolean;
+    leftPanelCollapsedWidth: number;
+    showConfigButton: boolean;
+    showMasterTools: boolean;
+    theme: "dark" | "light";
+  };
+  sidebarState: {
+    activeFile: string | null;
+    drawElementTag: string;
+    files: FileMap;
+    interactionMode: InteractionMode;
+    previewMode: "edit" | "preview";
+    previewLayerSelectedId: string | null;
+    previewSelectedElement: VirtualElement | null;
+    previewSyncedFile: string | null;
+    projectPath: string | null;
+    root: VirtualElement;
+    selectedElement: VirtualElement | null;
+    selectedFolderCloneSource: string | null;
+    selectedId: string | null;
+    sidebarInteractionMode: InteractionMode;
+  };
+  actions: {
+    handleCreateFileAtPath: (parentPath: string) => void;
+    handleCreateFolderAtPath: (parentPath: string) => void;
+    handleChooseFolderCloneSource: () => void;
+    handleDeletePath: (path: string, kind: "file" | "folder") => void;
+    handleDuplicateFile: (path: string) => void;
+    handleLeftPanelResizeStart: (
+      event: React.MouseEvent<HTMLDivElement>,
+    ) => void;
+    handleLeftPanelStretchToggle: () => void;
+    handleOpenConfigModal: () => void;
+    handleOpenFolder: (path?: string | null) => Promise<void>;
+    handleRenamePath: (path: string) => void;
+    handleSelectFile: (path: string) => void;
+    handleSidebarAddElement: (type: string) => void;
+    handleSidebarAddFontToPresentationCss: (path: string) => void;
+    handleSidebarInteractionModeChange: (mode: InteractionMode) => void;
+    handleSidebarLoadImage: (path: string) => void;
+    handleSidebarSelectElement: (id: string) => void;
+    handleUpdateAnimation: (animation: string) => void;
+    handleUpdateStyle: (styles: Partial<React.CSSProperties>) => void;
+    handlePreviewAnimationUpdateStable: (animation: string) => void;
+    handlePreviewStyleUpdateStable: (
+      styles: Partial<React.CSSProperties>,
+    ) => void;
+    openCodePanel: () => void;
+    refreshProjectFiles: () => void;
+    setDrawElementTag: React.Dispatch<React.SetStateAction<string>>;
+    setIsLeftPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  };
 };
 
 const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
-  activeFile,
-  drawElementTag,
-  files,
-  handleCreateFileAtPath,
-  handleCreateFolderAtPath,
-  handleChooseFolderCloneSource,
-  handleDeletePath,
-  handleDuplicateFile,
-  handleLeftPanelResizeStart,
-  handleLeftPanelStretchToggle,
-  handleOpenConfigModal,
-  handleOpenFolder,
-  handleRenamePath,
-  handleSelectFile,
-  handleSidebarAddElement,
-  handleSidebarAddFontToPresentationCss,
-  handleSidebarInteractionModeChange,
-  handleSidebarLoadImage,
-  handleSidebarSelectElement,
-  handleUpdateAnimation,
-  handleUpdateStyle,
-  handlePreviewAnimationUpdateStable,
-  handlePreviewStyleUpdateStable,
-  interactionMode,
-  isCodePanelOpen,
-  isFloatingPanels,
-  isLeftPanelOpen,
-  isPanelsSwapped,
-  isResizingLeftPanel,
-  leftPanelCollapsedWidth,
-  openCodePanel,
-  previewMode,
-  previewLayerSelectedId,
-  previewSelectedElement,
-  previewSyncedFile,
-  projectPath,
-  refreshProjectFiles,
-  root,
-  selectedElement,
-  selectedFolderCloneSource,
-  selectedId,
-  setDrawElementTag,
-  setIsLeftPanelOpen,
-  showConfigButton,
-  showMasterTools,
-  sidebarInteractionMode,
-  theme,
+  shellState,
+  sidebarState,
+  actions,
 }) => {
+  const {
+    isCodePanelOpen,
+    isFloatingPanels,
+    isLeftPanelOpen,
+    isPanelsSwapped,
+    isResizingLeftPanel,
+    leftPanelCollapsedWidth,
+    showConfigButton,
+    showMasterTools,
+    theme,
+  } = shellState;
+  const {
+    activeFile,
+    drawElementTag,
+    files,
+    interactionMode,
+    previewMode,
+    previewLayerSelectedId,
+    previewSelectedElement,
+    previewSyncedFile,
+    projectPath,
+    root,
+    selectedElement,
+    selectedFolderCloneSource,
+    selectedId,
+    sidebarInteractionMode,
+  } = sidebarState;
+  const {
+    handleCreateFileAtPath,
+    handleCreateFolderAtPath,
+    handleChooseFolderCloneSource,
+    handleDeletePath,
+    handleDuplicateFile,
+    handleLeftPanelResizeStart,
+    handleLeftPanelStretchToggle,
+    handleOpenConfigModal,
+    handleOpenFolder,
+    handleRenamePath,
+    handleSelectFile,
+    handleSidebarAddElement,
+    handleSidebarAddFontToPresentationCss,
+    handleSidebarInteractionModeChange,
+    handleSidebarLoadImage,
+    handleSidebarSelectElement,
+    handleUpdateAnimation,
+    handleUpdateStyle,
+    handlePreviewAnimationUpdateStable,
+    handlePreviewStyleUpdateStable,
+    openCodePanel,
+    refreshProjectFiles,
+    setDrawElementTag,
+    setIsLeftPanelOpen,
+  } = actions;
+
   return (
     <div
       className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-700"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0"} ${isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}

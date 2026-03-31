@@ -1,29 +1,28 @@
 import { useEffect } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { PreviewConsoleLevel } from "../helpers/appHelpers";
+import type { PreviewConsoleLevel } from "../../helpers/appHelpers";
 import {
   extractComputedStylesFromElement,
   extractCustomAttributesFromElement,
   extractTextFromHtmlFragment,
   extractTextWithBreaks,
   normalizeEditorMultilineText,
-  normalizePath,
   normalizePreviewPath,
   normalizeProjectRelative,
   parseInlineStyleText,
   readElementByPath,
   resolvePreviewNavigationPath,
-} from "../helpers/appHelpers";
-import type { FileMap, VirtualElement } from "../../types";
+} from "../../helpers/appHelpers";
+import type { FileMap, VirtualElement } from "../../../types";
 import type {
   PreviewMatchedCssDeclaration,
   PreviewMatchedCssRule,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 import {
   collectMatchedCssRulesFromElement,
   normalizePresentationStylePatch,
-} from "../helpers/previewCssHelpers";
+} from "../../helpers/previewCssHelpers";
 
 type PreviewMessagePayload = {
   type?: string;
