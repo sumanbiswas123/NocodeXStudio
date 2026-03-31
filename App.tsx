@@ -36,14 +36,19 @@ import { usePreviewGeometry } from "./app/hooks/preview/usePreviewGeometry";
 import { usePreviewCreation } from "./app/hooks/preview/usePreviewCreation";
 import { usePreviewCssMutation } from "./app/hooks/preview/usePreviewCssMutation";
 import { usePreviewDocumentLoader } from "./app/hooks/preview/usePreviewDocumentLoader";
+import { usePreviewIdentityUpdate } from "./app/hooks/preview/usePreviewIdentityUpdate";
+import { usePreviewNavigationHelpers } from "./app/hooks/preview/usePreviewNavigationHelpers";
 import { usePreviewInspectorRuntime } from "./app/hooks/preview/usePreviewInspectorRuntime";
 import { usePreviewFrameMessages } from "./app/hooks/preview/usePreviewFrameMessages";
 import { usePreviewFrameBridgeState } from "./app/hooks/preview/usePreviewFrameBridgeState";
 import { usePreviewConsole } from "./app/hooks/preview/usePreviewConsole";
+import { usePreviewResourceCache } from "./app/hooks/preview/usePreviewResourceCache";
+import { usePreviewRuntimeState } from "./app/hooks/preview/usePreviewRuntimeState";
 import { useConfigModalFlow } from "./app/hooks/workflow/useConfigModalFlow";
 import { usePreviewHistoryFlow } from "./app/hooks/preview/usePreviewHistoryFlow";
 import { usePdfAnnotationWorkflow } from "./app/hooks/workflow/usePdfAnnotationWorkflow";
 import { usePageSwitchFlow } from "./app/hooks/workflow/usePageSwitchFlow";
+import { usePresentationFontRegistry } from "./app/hooks/workflow/usePresentationFontRegistry";
 import { useProjectFileActions } from "./app/hooks/workflow/useProjectFileActions";
 import { usePanelLayoutState } from "./app/hooks/layout/usePanelLayoutState";
 import { useStageLayoutState } from "./app/hooks/layout/useStageLayoutState";
@@ -56,13 +61,13 @@ import { useRightInspectorViewModel } from "./app/hooks/viewModels/useRightInspe
 import { useScreenshotGalleryViewModel } from "./app/hooks/viewModels/useScreenshotGalleryViewModel";
 import { useAppOverlaysViewModel } from "./app/hooks/viewModels/useAppOverlaysViewModel";
 import { useCanvasEditingHandlers } from "./app/hooks/canvas/useCanvasEditingHandlers";
+import { useCanvasHistoryCoordinator } from "./app/hooks/canvas/useCanvasHistoryCoordinator";
 import { usePreviewSelectionState } from "./app/hooks/preview/usePreviewSelectionState";
 import {
   PreviewMatchedCssRule,
   PreviewMatchedRuleMutation,
 } from "./app/helpers/previewCssHelpers";
 import {
-  normalizePath,
   THEME_STORAGE_KEY,
   PREVIEW_AUTOSAVE_STORAGE_KEY,
   PANEL_SIDE_STORAGE_KEY,
@@ -71,25 +76,8 @@ import {
   MAX_PREVIEW_CONSOLE_ENTRIES,
   MAX_PREVIEW_DOC_CACHE_ENTRIES,
   MAX_PREVIEW_DOC_CACHE_CHARS,
-  SHARED_FONT_VIRTUAL_DIR,
-  PRESENTATION_CSS_VIRTUAL_PATH,
-  FONT_CACHE_VERSION,
   DEFAULT_EDITOR_FONTS,
-  FontCachePayload,
   MaybeViewTransitionDocument,
-  dedupeFontFamilies,
-  buildEditorFontOptions,
-  parsePresentationCssFontFamilies,
-  deriveFontFamilyFromFontFileName,
-  fontFormatFromFileName,
-  inferFileType,
-  relativePathBetweenVirtualFiles,
-  mimeFromType,
-  toByteArray,
-  normalizeProjectRelative,
-  findFilePathCaseInsensitive,
-  readElementByPath,
-  toPreviewLayerId,
   PreviewHistoryEntry,
   PreviewSelectionMode,
 } from "./app/helpers/appHelpers";
@@ -412,103 +400,27 @@ const App: React.FC = () => {
     maxEntries: MAX_PREVIEW_CONSOLE_ENTRIES,
     theme,
   });
-
-  const revokeBinaryAssetUrls = useCallback(() => {
-    const cache = binaryAssetUrlCacheRef.current;
-    for (const url of Object.values(cache)) {
-      if (typeof url === "string" && url.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {
-          // Ignore revoke failures for stale object URLs.
-        }
-      }
-    }
-    binaryAssetUrlCacheRef.current = {};
-  }, []);
-
-  const invalidatePreviewDocCache = useCallback((path: string) => {
-    if (!path) return;
-    delete previewDocCacheRef.current[path];
-    previewDocCacheOrderRef.current = previewDocCacheOrderRef.current.filter(
-      (item) => item !== path,
-    );
-  }, []);
-
-  const invalidatePreviewDocsForDependency = useCallback(
-    (dependencyPath: string) => {
-      const normalizedDependency = normalizeProjectRelative(
-        dependencyPath || "",
-      ).toLowerCase();
-      if (!normalizedDependency) return;
-      Object.entries(previewDependencyIndexRef.current).forEach(
-        ([previewPath, dependencies]) => {
-          if (
-            dependencies.some(
-              (dependency) =>
-                normalizeProjectRelative(dependency || "").toLowerCase() ===
-                normalizedDependency,
-            )
-          ) {
-            invalidatePreviewDocCache(previewPath);
-          }
-        },
-      );
-    },
-    [invalidatePreviewDocCache],
-  );
-
-  const cachePreviewDoc = useCallback((path: string, doc: string) => {
-    if (!path) return;
-    previewDocCacheRef.current[path] = doc;
-    const nextOrder = previewDocCacheOrderRef.current.filter(
-      (item) => item !== path,
-    );
-    nextOrder.push(path);
-
-    let totalChars = nextOrder.reduce(
-      (sum, key) => sum + (previewDocCacheRef.current[key]?.length || 0),
-      0,
-    );
-    while (
-      nextOrder.length > MAX_PREVIEW_DOC_CACHE_ENTRIES ||
-      totalChars > MAX_PREVIEW_DOC_CACHE_CHARS
-    ) {
-      const evicted = nextOrder.shift();
-      if (!evicted) break;
-      totalChars -= previewDocCacheRef.current[evicted]?.length || 0;
-      delete previewDocCacheRef.current[evicted];
-    }
-
-    previewDocCacheOrderRef.current = nextOrder;
-  }, []);
-
-  useEffect(() => {
-    const next: FileMap = { ...files };
-    for (const [path, content] of Object.entries(
-      textFileCacheRef.current,
-    ) as Array<[string, string]>) {
-      const existing = next[path];
-      if (
-        existing &&
-        (typeof existing.content !== "string" || existing.content.length === 0)
-      ) {
-        next[path] = { ...existing, content };
-      }
-    }
-    for (const [path, content] of Object.entries(
-      binaryAssetUrlCacheRef.current,
-    ) as Array<[string, string]>) {
-      const existing = next[path];
-      if (
-        existing &&
-        (typeof existing.content !== "string" || existing.content.length === 0)
-      ) {
-        next[path] = { ...existing, content };
-      }
-    }
-    filesRef.current = next;
-  }, [files]);
+  const {
+    cachePreviewDoc,
+    invalidatePreviewDocCache,
+    invalidatePreviewDocsForDependency,
+    loadFileContent,
+    revokeBinaryAssetUrls,
+  } = usePreviewResourceCache({
+    binaryAssetUrlCacheRef,
+    filePathIndexRef,
+    files,
+    filesRef,
+    loadingFilePromisesRef,
+    loadingFilesRef,
+    maxPreviewDocCacheChars: MAX_PREVIEW_DOC_CACHE_CHARS,
+    maxPreviewDocCacheEntries: MAX_PREVIEW_DOC_CACHE_ENTRIES,
+    previewDependencyIndexRef,
+    previewDocCacheOrderRef,
+    previewDocCacheRef,
+    setFiles,
+    textFileCacheRef,
+  });
   useEffect(() => {
     return () => {
       revokeBinaryAssetUrls();
@@ -535,340 +447,25 @@ const App: React.FC = () => {
   useEffect(() => {
     dirtyFilesRef.current = dirtyFiles;
   }, [dirtyFiles]);
-  const setActiveFileStable = useCallback((nextPath: string | null) => {
-    activeFileRef.current = nextPath;
-    setActiveFile((prev) => (prev === nextPath ? prev : nextPath));
-  }, []);
-
-  const persistLoadedContentToState = useCallback(
-    (path: string, content: string) => {
-      setFiles((prev) => {
-        const existing = prev[path];
-        if (!existing) return prev;
-        if (
-          typeof existing.content === "string" &&
-          existing.content.length > 0 &&
-          existing.content === content
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [path]: {
-            ...existing,
-            content,
-          },
-        };
-      });
-    },
-    [],
-  );
-
-  const loadFileContent = useCallback(
-    async (
-      relativePath: string,
-      options?: {
-        persistToState?: boolean;
-      },
-    ) => {
-      const persistToState = options?.persistToState ?? true;
-      const target = filesRef.current[relativePath];
-      if (!target) return;
-
-      if (typeof target.content === "string" && target.content.length > 0) {
-        if (target.type === "image" || target.type === "font") {
-          binaryAssetUrlCacheRef.current[relativePath] = target.content;
-          return target.content;
-        }
-        textFileCacheRef.current[relativePath] = target.content;
-        if (persistToState) {
-          persistLoadedContentToState(relativePath, target.content);
-        }
-        return target.content;
-      }
-
-      const cachedText = textFileCacheRef.current[relativePath];
-      if (typeof cachedText === "string" && cachedText.length > 0) {
-        if (persistToState) {
-          persistLoadedContentToState(relativePath, cachedText);
-        }
-        return cachedText;
-      }
-
-      const cachedBinary = binaryAssetUrlCacheRef.current[relativePath];
-      if (
-        (target.type === "image" || target.type === "font") &&
-        typeof cachedBinary === "string" &&
-        cachedBinary.length > 0
-      ) {
-        return cachedBinary;
-      }
-
-      const existingPending = loadingFilePromisesRef.current[relativePath];
-      if (existingPending) {
-        if (
-          !persistToState ||
-          target.type === "image" ||
-          target.type === "font"
-        ) {
-          return existingPending;
-        }
-        return existingPending.then((content) => {
-          if (typeof content === "string" && content.length > 0) {
-            persistLoadedContentToState(relativePath, content);
-          }
-          return content;
-        });
-      }
-
-      const absolutePath = filePathIndexRef.current[relativePath];
-      if (!absolutePath) return;
-
-      const pending = (async (): Promise<string | undefined> => {
-        loadingFilesRef.current.add(relativePath);
-        try {
-          let content = "";
-          if (target.type === "image" || target.type === "font") {
-            const binaryData = await (
-              Neutralino as any
-            ).filesystem.readBinaryFile(absolutePath);
-            const bytes = toByteArray(binaryData);
-            if (bytes.length === 0) return;
-            const mime = mimeFromType(target.type, target.name);
-            const sourceBuffer = bytes.buffer;
-            const binaryBuffer: ArrayBuffer =
-              sourceBuffer instanceof ArrayBuffer
-                ? sourceBuffer.slice(
-                    bytes.byteOffset,
-                    bytes.byteOffset + bytes.byteLength,
-                  )
-                : (() => {
-                    const copy = new Uint8Array(bytes.byteLength);
-                    copy.set(bytes);
-                    return copy.buffer;
-                  })();
-            const blob = new Blob([binaryBuffer], { type: mime });
-            const previousUrl = binaryAssetUrlCacheRef.current[relativePath];
-            if (previousUrl && previousUrl.startsWith("blob:")) {
-              try {
-                URL.revokeObjectURL(previousUrl);
-              } catch {
-                // Ignore stale blob revocation errors.
-              }
-            }
-            content = URL.createObjectURL(blob);
-            binaryAssetUrlCacheRef.current[relativePath] = content;
-          } else {
-            const loaded = await (Neutralino as any).filesystem.readFile(
-              absolutePath,
-            );
-            content =
-              typeof loaded === "string" ? loaded : String(loaded || "");
-            if (content.length > 0) {
-              textFileCacheRef.current[relativePath] = content;
-            }
-          }
-
-          const existingRefEntry = filesRef.current[relativePath];
-          if (existingRefEntry) {
-            filesRef.current = {
-              ...filesRef.current,
-              [relativePath]: {
-                ...existingRefEntry,
-                content,
-              },
-            };
-          }
-
-          if (persistToState && content.length > 0) {
-            persistLoadedContentToState(relativePath, content);
-          }
-
-          return content;
-        } catch (error) {
-          console.warn(
-            `Failed loading file content for ${relativePath}:`,
-            error,
-          );
-        } finally {
-          loadingFilesRef.current.delete(relativePath);
-          delete loadingFilePromisesRef.current[relativePath];
-        }
-      })();
-
-      loadingFilePromisesRef.current[relativePath] = pending;
-      return pending;
-    },
-    [persistLoadedContentToState],
-  );
-  const persistProjectFontCache = useCallback(
-    async (fontFamilies: string[]) => {
-      const cacheVirtualPath = fontCachePathRef.current;
-      if (!cacheVirtualPath) return;
-      const cacheAbsolutePath = filePathIndexRef.current[cacheVirtualPath];
-      if (!cacheAbsolutePath) return;
-      const payload: FontCachePayload = {
-        version: FONT_CACHE_VERSION,
-        source: "presentation.css",
-        generatedAt: new Date().toISOString(),
-        fonts: dedupeFontFamilies(fontFamilies),
-      };
-      const serialized = JSON.stringify(payload, null, 2);
-      try {
-        await (Neutralino as any).filesystem.writeFile(
-          cacheAbsolutePath,
-          serialized,
-        );
-      } catch (error) {
-        console.warn("Failed to write font cache file:", error);
-        return;
-      }
-      setFiles((prev) => {
-        const existing = prev[cacheVirtualPath];
-        const name = cacheVirtualPath.includes("/")
-          ? cacheVirtualPath.slice(cacheVirtualPath.lastIndexOf("/") + 1)
-          : cacheVirtualPath;
-        if (existing) {
-          return {
-            ...prev,
-            [cacheVirtualPath]: {
-              ...existing,
-              content: serialized,
-            },
-          };
-        }
-        return {
-          ...prev,
-          [cacheVirtualPath]: {
-            path: cacheVirtualPath,
-            name,
-            type: inferFileType(name),
-            content: serialized,
-          },
-        };
-      });
-    },
-    [],
-  );
-  const handleAddFontToPresentationCss = useCallback(
-    async (rawFontPath: string) => {
-      const fontPath = normalizeProjectRelative(rawFontPath);
-      const file = filesRef.current[fontPath];
-      if (!file || file.type !== "font") return;
-      if (!fontPath.toLowerCase().startsWith(`${SHARED_FONT_VIRTUAL_DIR}/`)) {
-        window.alert(
-          `Font must be inside "${SHARED_FONT_VIRTUAL_DIR}" to register.`,
-        );
-        return;
-      }
-
-      const presentationPath =
-        presentationCssPathRef.current ??
-        findFilePathCaseInsensitive(
-          filesRef.current,
-          PRESENTATION_CSS_VIRTUAL_PATH,
-        );
-      if (!presentationPath) {
-        window.alert(
-          `presentation.css not found at "${PRESENTATION_CSS_VIRTUAL_PATH}".`,
-        );
-        return;
-      }
-      presentationCssPathRef.current = presentationPath;
-      const presentationAbsolutePath =
-        filePathIndexRef.current[presentationPath];
-      if (!presentationAbsolutePath) {
-        window.alert("Unable to resolve presentation.css absolute path.");
-        return;
-      }
-
-      let currentCss = "";
-      try {
-        const rawCss = await (Neutralino as any).filesystem.readFile(
-          presentationAbsolutePath,
-        );
-        currentCss = typeof rawCss === "string" ? rawCss : String(rawCss || "");
-      } catch (error) {
-        console.warn("Failed reading presentation.css:", error);
-        window.alert("Unable to read presentation.css.");
-        return;
-      }
-
-      const family = deriveFontFamilyFromFontFileName(file.name);
-      const existingFamilies = parsePresentationCssFontFamilies(currentCss);
-      const alreadyRegistered = existingFamilies.some(
-        (name) => name.toLowerCase() === family.toLowerCase(),
-      );
-      if (alreadyRegistered) {
-        setAvailableFonts(buildEditorFontOptions(existingFamilies));
-        await persistProjectFontCache(existingFamilies);
-        return;
-      }
-
-      const relativeFontPath = relativePathBetweenVirtualFiles(
-        presentationPath,
-        fontPath,
-      );
-      const fontFormat = fontFormatFromFileName(file.name);
-      const fontFaceBlock =
-        `@font-face {\n` +
-        `  font-family: '${family}';\n` +
-        `  src: url('${relativeFontPath}') format('${fontFormat}');\n` +
-        `  font-weight: normal;\n` +
-        `  font-style: normal;\n` +
-        `  font-display: swap;\n` +
-        `}`;
-      const nextCss = `${currentCss.trimEnd()}\n\n${fontFaceBlock}\n`;
-
-      try {
-        await (Neutralino as any).filesystem.writeFile(
-          presentationAbsolutePath,
-          nextCss,
-        );
-      } catch (error) {
-        console.warn("Failed writing presentation.css:", error);
-        window.alert("Unable to update presentation.css.");
-        return;
-      }
-
-      setFiles((prev) => {
-        const existing = prev[presentationPath];
-        if (!existing) return prev;
-        return {
-          ...prev,
-          [presentationPath]: {
-            ...existing,
-            content: nextCss,
-          },
-        };
-      });
-      const nextProjectFamilies = parsePresentationCssFontFamilies(nextCss);
-      setAvailableFonts(buildEditorFontOptions(nextProjectFamilies));
-      await persistProjectFontCache(nextProjectFamilies);
-    },
-    [persistProjectFontCache],
-  );
-  const shouldProcessPreviewPageSignal = useCallback((path: string) => {
-    if (!path) return false;
-
-    // GUARD: Ignore common system/bridge files that cause sync loops
-    const lower = path.toLowerCase();
-    if (
-      lower.includes("shared/index.html") ||
-      lower.includes("__bridge.html") ||
-      lower.includes("vibe-bridge.html")
-    ) {
-      return false;
-    }
-
-    const now = Date.now();
-    const last = lastPreviewPageSignalRef.current;
-    if (last && last.path === path && now - last.at < 700) {
-      return false;
-    }
-    lastPreviewPageSignalRef.current = { path, at: now };
-    return true;
-  }, []);
+  const {
+    getStablePreviewElementId,
+    resolveAdjacentSlidePath,
+    setActiveFileStable,
+    shouldProcessPreviewPageSignal,
+  } = usePreviewNavigationHelpers({
+    activeFileRef,
+    filesRef,
+    lastPreviewPageSignalRef,
+    setActiveFile,
+  });
+  const { handleSidebarAddFontToPresentationCss } = usePresentationFontRegistry({
+    filePathIndexRef,
+    filesRef,
+    fontCachePathRef,
+    presentationCssPathRef,
+    setAvailableFonts,
+    setFiles,
+  });
   useEffect(() => {
     console.log("Both panels open?", bothPanelsOpen, {
       isLeftPanelOpen,
@@ -958,43 +555,17 @@ const App: React.FC = () => {
     [],
   );
 
-  // --- History Management ---
-  const pushHistory = useCallback((newState: VirtualElement) => {
-    setHistory((curr) => ({
-      past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
-      present: newState,
-      future: [],
-    }));
-    setRoot(newState);
-  }, []);
-
-  const handleUndo = useCallback(() => {
-    setHistory((curr) => {
-      if (curr.past.length === 0) return curr;
-      const previous = curr.past[curr.past.length - 1];
-      const newPast = curr.past.slice(0, -1);
-      setRoot(previous);
-      return {
-        past: newPast,
-        present: previous,
-        future: [curr.present, ...curr.future],
-      };
-    });
-  }, []);
-
-  const handleRedo = useCallback(() => {
-    setHistory((curr) => {
-      if (curr.future.length === 0) return curr;
-      const next = curr.future[0];
-      const newFuture = curr.future.slice(1);
-      setRoot(next);
-      return {
-        past: [...curr.past.slice(-(MAX_CANVAS_HISTORY - 1)), curr.present],
-        present: next,
-        future: newFuture,
-      };
-    });
-  }, []);
+  const {
+    commitPreviewRefresh,
+    handleRedo,
+    handleUndo,
+    pushHistory,
+  } = useCanvasHistoryCoordinator({
+    maxCanvasHistory: MAX_CANVAS_HISTORY,
+    setHistory,
+    setRoot,
+    setPreviewRefreshNonce,
+  });
   const {
     discardUnsavedChangesForFile,
     flushPendingPreviewSaves,
@@ -1031,9 +602,6 @@ const App: React.FC = () => {
     setSelectedPreviewDoc,
     textFileCacheRef,
   });
-  const commitPreviewRefresh = useCallback(() => {
-    setPreviewRefreshNonce((prev) => prev + 1);
-  }, []);
   const {
     closePendingPageSwitchPrompt,
     handleSelectFile,
@@ -1171,12 +739,6 @@ const App: React.FC = () => {
     setPreviewMode,
     applyPreviewDropCreateRef,
   });
-  const handleSidebarAddFontToPresentationCss = useCallback(
-    (path: string) => {
-      void handleAddFontToPresentationCss(path);
-    },
-    [handleAddFontToPresentationCss],
-  );
   const handlePreviewRefresh = useCallback(() => {
     requestPreviewRefreshWithUnsavedGuard();
   }, [requestPreviewRefreshWithUnsavedGuard]);
@@ -1360,63 +922,6 @@ const App: React.FC = () => {
     setPreviewSelectedComputedStyles,
     setPreviewNavigationFile,
   });
-  const resolveAdjacentSlidePath = useCallback(
-    (fromPath: string, dir: "next" | "prev"): string | null => {
-      const normalizedFrom = normalizeProjectRelative(String(fromPath || ""));
-      const fromMatch = normalizePath(normalizedFrom).match(
-        /^(.*_)([0-9]{3,})\/index\.html$/i,
-      );
-      if (!fromMatch) return null;
-      const familyPrefix = fromMatch[1].toLowerCase();
-      const currentNorm = normalizedFrom.toLowerCase();
-      const slides = Object.keys(filesRef.current)
-        .filter((path) => filesRef.current[path]?.type === "html")
-        .map((path) => {
-          const match = normalizePath(path).match(
-            /^(.*_)([0-9]{3,})\/index\.html$/i,
-          );
-          if (!match || match[1].toLowerCase() !== familyPrefix) {
-            return null;
-          }
-          return {
-            path,
-            normalized: normalizeProjectRelative(path).toLowerCase(),
-            num: Number.parseInt(match[2], 10),
-          };
-        })
-        .filter(
-          (entry): entry is { path: string; normalized: string; num: number } =>
-            Boolean(entry),
-        )
-        .sort((a, b) =>
-          a.num !== b.num ? a.num - b.num : a.path.localeCompare(b.path),
-        );
-      if (slides.length === 0) return null;
-      const index = slides.findIndex((item) => item.normalized === currentNorm);
-      if (index < 0) return null;
-      const nextIndex = dir === "next" ? index + 1 : index - 1;
-      if (nextIndex < 0 || nextIndex >= slides.length) return null;
-      return slides[nextIndex].path;
-    },
-    [],
-  );
-  const getStablePreviewElementId = useCallback(
-    (
-      path: number[] | null | undefined,
-      explicitId?: string | null,
-      fallbackId?: string | null,
-    ) => {
-      const normalizedExplicitId = String(explicitId || "").trim();
-      if (normalizedExplicitId) return normalizedExplicitId;
-      const normalizedFallbackId = String(fallbackId || "").trim();
-      if (normalizedFallbackId) return normalizedFallbackId;
-      if (Array.isArray(path) && path.length > 0) {
-        return `preview-${toPreviewLayerId(path)}`;
-      }
-      return "preview-detached";
-    },
-    [],
-  );
   const {
     handleSidebarSelectElement,
     inspectorElement,
@@ -1455,6 +960,27 @@ const App: React.FC = () => {
     setSelectedId,
     textFileCacheRef,
     filePathIndexRef,
+  });
+  const {
+    hasPreviewContent,
+    isMountedPreview,
+    shouldPrepareEditPreviewDoc,
+    shouldShowFrameWelcome,
+  } = usePreviewRuntimeState({
+    activeFile,
+    dirtyPathKeysByFile,
+    interactionMode,
+    loadFileContent,
+    previewFrameRef,
+    previewSelectedHtmlRef: selectedPreviewHtmlRef,
+    previewSelectedPathSetter: setPreviewSelectedPath,
+    previewSelectedElementSetter: setPreviewSelectedElement,
+    previewSelectedComputedStylesSetter: setPreviewSelectedComputedStyles,
+    selectedPreviewDoc,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+    setPreviewNavigationFile,
+    projectPath,
   });
   const {
     currentPreviewSlideId,
@@ -1510,28 +1036,6 @@ const App: React.FC = () => {
   }, [selectedPreviewHtml, tabletOrientation]);
   // ----------------------------------------------------
 
-  const isMountedPreview = Boolean(
-    selectedPreviewSrc && interactionMode === "preview",
-  );
-  useEffect(() => {
-    if (isMountedPreview) return;
-    setPreviewNavigationFile((prev) =>
-      prev === selectedPreviewHtml ? prev : selectedPreviewHtml,
-    );
-  }, [isMountedPreview, selectedPreviewHtml]);
-  const shouldPrepareEditPreviewDoc = Boolean(
-    selectedPreviewHtml && !isMountedPreview,
-  );
-  const hasPreviewContent = Boolean(
-    projectPath && (selectedPreviewSrc || selectedPreviewDoc),
-  );
-  const shouldShowFrameWelcome = !projectPath;
-  useEffect(() => {
-    selectedPreviewHtmlRef.current = selectedPreviewHtml;
-    setPreviewSelectedPath(null);
-    setPreviewSelectedElement(null);
-    setPreviewSelectedComputedStyles(null);
-  }, [selectedPreviewHtml]);
   const {
     extractMountRelativePath,
     getLivePreviewSelectedElement,
@@ -1887,34 +1391,6 @@ const App: React.FC = () => {
     setSelectedPreviewDoc,
     shouldPrepareEditPreviewDoc,
   });
-  useEffect(() => {
-    if (!activeFile) return;
-    void loadFileContent(activeFile);
-  }, [activeFile, loadFileContent]);
-  useEffect(() => {
-    if (!selectedPreviewHtml) return;
-    const keys = dirtyPathKeysByFile[selectedPreviewHtml] || [];
-    if (keys.length === 0) return;
-    const timer = window.setTimeout(() => {
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      if (!frameDocument?.body) return;
-      for (const key of keys) {
-        const path = key
-          .split(".")
-          .map((segment) => Number(segment))
-          .filter((segment) => Number.isFinite(segment))
-          .map((segment) => Math.max(0, Math.trunc(segment)));
-        const element = readElementByPath(frameDocument.body, path);
-        if (element instanceof HTMLElement) {
-          element.classList.add("__nx-preview-dirty");
-        }
-      }
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [dirtyPathKeysByFile, selectedPreviewDoc, selectedPreviewHtml]);
   const {
     activeCodeContent,
     activeCodeFilePath,
@@ -1997,80 +1473,15 @@ const App: React.FC = () => {
     tabletOrientation,
     theme,
   });
-  const applyPreviewIdentityUpdate = useCallback(
-    async (identity: { id: string; className: string }) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, previewSelectedPath);
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-      if (!target && !liveTarget) return;
-
-      const nextId = identity.id.trim();
-      const nextClassName = identity.className.trim();
-
-      if (target) {
-        if (nextId) target.setAttribute("id", nextId);
-        else target.removeAttribute("id");
-        if (nextClassName) target.setAttribute("class", nextClassName);
-        else target.removeAttribute("class");
-      }
-      if (liveTarget) {
-        if (nextId) liveTarget.setAttribute("id", nextId);
-        else liveTarget.removeAttribute("id");
-        if (nextClassName) liveTarget.setAttribute("class", nextClassName);
-        else liveTarget.removeAttribute("class");
-      }
-
-      if (target) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath: previewSelectedPath,
-        });
-      }
-
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              id: nextId || prev.id,
-              className: nextClassName || undefined,
-            }
-          : prev,
-      );
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
-  const handlePreviewIdentityUpdateStable = useCallback(
-    (identity: { id: string; className: string }) => {
-      void applyPreviewIdentityUpdate(identity);
-    },
-    [applyPreviewIdentityUpdate],
-  );
+  const { handlePreviewIdentityUpdateStable } = usePreviewIdentityUpdate({
+    getLivePreviewSelectedElement,
+    loadFileContent,
+    filesRef,
+    persistPreviewHtmlContent,
+    previewSelectedPath,
+    selectedPreviewHtml,
+    setPreviewSelectedElement,
+  });
 
   const topLevelLayersProps = useTopLevelLayersViewModel({
     theme,

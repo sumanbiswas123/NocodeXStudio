@@ -32,7 +32,10 @@ type UsePreviewInspectorRuntimeOptions = {
   filesRef: React.MutableRefObject<FileMap>;
   handleReplacePreviewAsset: () => Promise<boolean>;
   interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
-  loadFileContent: (path: string) => Promise<string | null>;
+  loadFileContent: (
+    path: string,
+    options?: { persistToState?: boolean },
+  ) => Promise<string | Blob | null | undefined>;
   persistPreviewHtmlContent: (
     updatedPath: string,
     serialized: string,
