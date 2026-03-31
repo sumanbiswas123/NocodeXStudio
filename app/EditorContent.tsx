@@ -1,6 +1,5 @@
 import React from "react";
 import EditorCanvas from "../components/EditorCanvas";
-import VibeErrorBoundary from "../components/VibeErrorBoundary";
 import { VirtualElement } from "../types";
 
 export type EditorContentProps = {
@@ -16,8 +15,6 @@ export type EditorContentProps = {
   handleResize: (id: string, width: string, height: string) => void;
   interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
   INJECTED_STYLES: string;
-  vibeUpdateKey: number;
-  onVibeError: (msg: string) => void;
 };
 
 const resolvePreviewImagePath = (path: string) => path;
@@ -33,8 +30,6 @@ const EditorContent = React.memo<EditorContentProps>(
     handleResize,
     interactionMode,
     INJECTED_STYLES,
-    vibeUpdateKey,
-    onVibeError,
   }) => (
     <>
       <style dangerouslySetInnerHTML={{ __html: INJECTED_STYLES }} />
@@ -43,26 +38,19 @@ const EditorContent = React.memo<EditorContentProps>(
           __html: `* { outline: none; } ${selectedId ? `[data-id="${selectedId}"] { outline: 2px solid #6366f1 !important; z-index: 10; cursor: default; }` : ""}`,
         }}
       />
-      <VibeErrorBoundary
-        key={String(vibeUpdateKey)}
-        onErrorCatched={(error) => {
-          onVibeError(error.message);
-        }}
-      >
-        <div className="w-full h-full overflow-auto custom-scrollbar bg-white">
-          <EditorCanvas
-            element={root}
-            selectedId={selectedId}
-            selectedPathIds={selectedPathIds}
-            onSelect={handleSelect}
-            resolveImage={resolvePreviewImagePath}
-            onMoveElement={handleMoveElement}
-            onMoveByPosition={handleMoveElementByPosition}
-            onResize={handleResize}
-            interactionMode={interactionMode}
-          />
-        </div>
-      </VibeErrorBoundary>
+      <div className="w-full h-full overflow-auto custom-scrollbar bg-white">
+        <EditorCanvas
+          element={root}
+          selectedId={selectedId}
+          selectedPathIds={selectedPathIds}
+          onSelect={handleSelect}
+          resolveImage={resolvePreviewImagePath}
+          onMoveElement={handleMoveElement}
+          onMoveByPosition={handleMoveElementByPosition}
+          onResize={handleResize}
+          interactionMode={interactionMode}
+        />
+      </div>
     </>
   ),
 );

@@ -443,11 +443,37 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   matchedCssRules = [],
   onImmediateChange,
 }) => {
+  const panelRootRef = useRef<HTMLDivElement | null>(null);
   const styleRowIdRef = useRef(0);
   const stylesRef = useRef<StyleRow[]>([]);
   const styleDraftsRef = useRef<
     Record<string, { key: string; value: string; previousKey?: string }>
   >({});
+  const activeInlineFieldRef = useRef<{
+    rowId: string;
+    field: "key" | "value";
+  } | null>(null);
+  const inlineSelectionRef = useRef<{
+    rowId: string;
+    field: "key" | "value";
+    start: number | null;
+    end: number | null;
+  } | null>(null);
+  const editingMatchedDeclarationRef =
+    useRef<EditingMatchedDeclaration | null>(null);
+  const activeMatchedFieldRef = useRef<{
+    ruleKey: string;
+    originalProperty: string;
+    field: "key" | "value";
+  } | null>(null);
+  const matchedSelectionRef = useRef<{
+    ruleKey: string;
+    originalProperty: string;
+    field: "key" | "value";
+    start: number | null;
+    end: number | null;
+  } | null>(null);
+  const matchedBlurTimerRef = useRef<number | null>(null);
   const [styles, setStyles] = useState<StyleRow[]>([]);
   const [newPropName, setNewPropName] = useState("");
   const [newPropValue, setNewPropValue] = useState("");
@@ -541,8 +567,38 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }, [styles]);
 
   useEffect(() => {
+    editingMatchedDeclarationRef.current = editingMatchedDeclaration;
+  }, [editingMatchedDeclaration]);
+
+  useEffect(() => {
+    const activeInlineField = activeInlineFieldRef.current;
+    if (!activeInlineField || !panelRootRef.current) return;
+    const selector = `input[data-style-row-id="${activeInlineField.rowId}"][data-style-field="${activeInlineField.field}"]`;
+    const target = panelRootRef.current.querySelector<HTMLInputElement>(selector);
+    if (!target) return;
+    if (document.activeElement !== target) {
+      target.focus();
+    }
+    const selection = inlineSelectionRef.current;
+    if (
+      selection &&
+      selection.rowId === activeInlineField.rowId &&
+      selection.field === activeInlineField.field
+    ) {
+      try {
+        target.setSelectionRange(selection.start, selection.end);
+      } catch {
+        // Ignore selection restore failures on recycled inputs.
+      }
+    }
+  }, [styles]);
+
+  useEffect(() => {
     return () => {
       styleDraftsRef.current = {};
+      if (matchedBlurTimerRef.current !== null) {
+        window.clearTimeout(matchedBlurTimerRef.current);
+      }
     };
   }, []);
 
@@ -711,23 +767,19 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     ruleKey: string,
     occurrenceIndex: number,
   ) => {
-    if (
-      !editingMatchedDeclaration ||
-      editingMatchedDeclaration.ruleKey !== ruleKey
-    ) {
+    const currentEditing = editingMatchedDeclarationRef.current;
+    if (!currentEditing || currentEditing.ruleKey !== ruleKey) {
       return;
     }
     if (!onAddMatchedRuleProperty) {
       setEditingMatchedDeclaration(null);
+      activeMatchedFieldRef.current = null;
       return;
     }
-    if (
-      !editingMatchedDeclaration.property.trim() ||
-      !editingMatchedDeclaration.value.trim()
-    ) {
+    if (!currentEditing.property.trim() || !currentEditing.value.trim()) {
       const clearedDraftKey = buildMatchedDeclarationDraftKey(
         rule,
-        editingMatchedDeclaration.originalProperty,
+        currentEditing.originalProperty,
       );
       setMatchedDeclarationDrafts((current) => {
         if (!current[clearedDraftKey]) return current;
@@ -740,15 +792,16 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           selector: rule.selector,
           source: rule.source,
           occurrenceIndex,
-          originalProperty: editingMatchedDeclaration.originalProperty,
-          isActive: editingMatchedDeclaration.isActive,
+          originalProperty: currentEditing.originalProperty,
+          isActive: currentEditing.isActive,
         },
         {
-          [toReactName(editingMatchedDeclaration.originalProperty)]: "",
+          [toReactName(currentEditing.originalProperty)]: "",
         },
       );
       setEditingMatchedDeclaration(null);
       setActiveSuggestionField(null);
+      activeMatchedFieldRef.current = null;
       return;
     }
     onAddMatchedRuleProperty(
@@ -756,16 +809,16 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         selector: rule.selector,
         source: rule.source,
         occurrenceIndex,
-        originalProperty: editingMatchedDeclaration.originalProperty,
-        isActive: editingMatchedDeclaration.isActive,
+        originalProperty: currentEditing.originalProperty,
+        isActive: currentEditing.isActive,
       },
       {
-        [toReactName(editingMatchedDeclaration.property.trim())]:
-          editingMatchedDeclaration.value.trim(),
+        [toReactName(currentEditing.property.trim())]: currentEditing.value.trim(),
       },
     );
     setEditingMatchedDeclaration(null);
     setActiveSuggestionField(null);
+    activeMatchedFieldRef.current = null;
   };
 
   const pushMatchedDeclarationDraft = (
@@ -1028,6 +1081,40 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     [filteredMatchedRules],
   );
 
+  useEffect(() => {
+    const activeMatchedField = activeMatchedFieldRef.current;
+    if (!activeMatchedField || !panelRootRef.current || !editingMatchedDeclaration) {
+      return;
+    }
+    const target = Array.from(
+      panelRootRef.current.querySelectorAll<HTMLInputElement>(
+        'input[data-matched-field]',
+      ),
+    ).find(
+      (input) =>
+        input.dataset.ruleKey === activeMatchedField.ruleKey &&
+        input.dataset.originalProperty === activeMatchedField.originalProperty &&
+        input.dataset.matchedField === activeMatchedField.field,
+    );
+    if (!target) return;
+    if (document.activeElement !== target) {
+      target.focus();
+    }
+    const selection = matchedSelectionRef.current;
+    if (
+      selection &&
+      selection.ruleKey === activeMatchedField.ruleKey &&
+      selection.originalProperty === activeMatchedField.originalProperty &&
+      selection.field === activeMatchedField.field
+    ) {
+      try {
+        target.setSelectionRange(selection.start, selection.end);
+      } catch {
+        // Ignore selection restore failures on recycled inputs.
+      }
+    }
+  }, [editingMatchedDeclaration, orderedMatchedRules]);
+
   const matchedDeclarationActivity = useMemo(() => {
     type Winner = {
       important: boolean;
@@ -1173,6 +1260,117 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     const nextStyles = [...styles];
     nextStyles[index] = { ...nextStyles[index], key, value };
     setStyles(nextStyles);
+  };
+
+  const handleInlineFieldFocus = (
+    rowId: string,
+    field: "key" | "value",
+    event?: React.FocusEvent<HTMLInputElement>,
+  ) => {
+    activeInlineFieldRef.current = { rowId, field };
+    inlineSelectionRef.current = {
+      rowId,
+      field,
+      start: event?.currentTarget.selectionStart ?? null,
+      end: event?.currentTarget.selectionEnd ?? null,
+    };
+  };
+
+  const handleInlineFieldBlur = (
+    rowId: string,
+    field: "key" | "value",
+  ) => {
+    const activeInlineField = activeInlineFieldRef.current;
+    if (
+      activeInlineField &&
+      activeInlineField.rowId === rowId &&
+      activeInlineField.field === field
+    ) {
+      activeInlineFieldRef.current = null;
+    }
+  };
+
+  const captureInlineSelection = (
+    rowId: string,
+    field: "key" | "value",
+    event: React.SyntheticEvent<HTMLInputElement>,
+  ) => {
+    inlineSelectionRef.current = {
+      rowId,
+      field,
+      start: event.currentTarget.selectionStart ?? null,
+      end: event.currentTarget.selectionEnd ?? null,
+    };
+  };
+
+  const handleMatchedFieldFocus = (
+    ruleKey: string,
+    originalProperty: string,
+    field: "key" | "value",
+    event?: React.FocusEvent<HTMLInputElement>,
+  ) => {
+    if (matchedBlurTimerRef.current !== null) {
+      window.clearTimeout(matchedBlurTimerRef.current);
+      matchedBlurTimerRef.current = null;
+    }
+    activeMatchedFieldRef.current = { ruleKey, originalProperty, field };
+    matchedSelectionRef.current = {
+      ruleKey,
+      originalProperty,
+      field,
+      start: event?.currentTarget.selectionStart ?? null,
+      end: event?.currentTarget.selectionEnd ?? null,
+    };
+  };
+
+  const captureMatchedSelection = (
+    ruleKey: string,
+    originalProperty: string,
+    field: "key" | "value",
+    event: React.SyntheticEvent<HTMLInputElement>,
+  ) => {
+    matchedSelectionRef.current = {
+      ruleKey,
+      originalProperty,
+      field,
+      start: event.currentTarget.selectionStart ?? null,
+      end: event.currentTarget.selectionEnd ?? null,
+    };
+  };
+
+  const scheduleMatchedFieldBlurCommit = (
+    rule: AnnotatedMatchedRule,
+    ruleKey: string,
+    occurrenceIndex: number,
+    originalProperty: string,
+    field: "key" | "value",
+  ) => {
+    if (matchedBlurTimerRef.current !== null) {
+      window.clearTimeout(matchedBlurTimerRef.current);
+    }
+    matchedBlurTimerRef.current = window.setTimeout(() => {
+      matchedBlurTimerRef.current = null;
+      const root = panelRootRef.current;
+      const activeElement = document.activeElement;
+      if (root && activeElement instanceof HTMLElement && root.contains(activeElement)) {
+        if (
+          activeElement.dataset.ruleKey === ruleKey &&
+          activeElement.dataset.originalProperty === originalProperty
+        ) {
+          return;
+        }
+      }
+      const activeMatchedField = activeMatchedFieldRef.current;
+      if (
+        activeMatchedField &&
+        activeMatchedField.ruleKey === ruleKey &&
+        activeMatchedField.originalProperty === originalProperty &&
+        activeMatchedField.field === field
+      ) {
+        activeMatchedFieldRef.current = null;
+      }
+      commitMatchedDeclarationEdit(rule, ruleKey, occurrenceIndex);
+    }, 0);
   };
 
   const deleteStyle = (index: number) => {
@@ -1343,6 +1541,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       ...editingMatchedDeclaration,
       value: next.value,
     };
+    matchedSelectionRef.current = {
+      ruleKey: editingMatchedDeclaration.ruleKey,
+      originalProperty: editingMatchedDeclaration.originalProperty,
+      field: "value",
+      start: next.selectionStart,
+      end: next.selectionEnd,
+    };
     setEditingMatchedDeclaration(nextDraft);
     pushMatchedDeclarationDraft(rule, occurrenceIndex, nextDraft);
     window.requestAnimationFrame(() => {
@@ -1422,6 +1627,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
   return (
       <div
+        ref={panelRootRef}
         className="flex h-full flex-col overflow-hidden"
       style={{
         background: "var(--bg-glass)",
@@ -1687,11 +1893,21 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 >
                   <div className="relative w-[84px] shrink-0">
                     <input
+                      data-style-row-id={style.id}
+                      data-style-field="key"
                       value={style.key}
-                      onChange={(event) =>
-                        handleStyleChange(index, "key", event.target.value)
+                      onChange={(event) => {
+                        captureInlineSelection(style.id, "key", event);
+                        handleStyleChange(index, "key", event.target.value);
+                      }}
+                      onFocus={(event) => {
+                        handleInlineFieldFocus(style.id, "key", event);
+                        showKeySuggestions(index);
+                      }}
+                      onBlur={() => handleInlineFieldBlur(style.id, "key")}
+                      onSelect={(event) =>
+                        captureInlineSelection(style.id, "key", event)
                       }
-                      onFocus={() => showKeySuggestions(index)}
                       onClick={(event) => event.stopPropagation()}
                       className="w-full border-0 bg-transparent p-0 outline-none"
                       style={{
@@ -1751,15 +1967,23 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     ) : null}
 
                     <input
+                      data-style-row-id={style.id}
+                      data-style-field="value"
                       value={style.value}
-                      onChange={(event) =>
-                        handleStyleChange(index, "value", event.target.value)
-                      }
+                      onChange={(event) => {
+                        captureInlineSelection(style.id, "value", event);
+                        handleStyleChange(index, "value", event.target.value);
+                      }}
                       onKeyDown={(event) =>
                         handleInlineStyleValueStep(event, index, style)
                       }
-                      onFocus={() =>
-                        showValueSuggestions(index, style.key, style.value)
+                      onFocus={(event) => {
+                        handleInlineFieldFocus(style.id, "value", event);
+                        showValueSuggestions(index, style.key, style.value);
+                      }}
+                      onBlur={() => handleInlineFieldBlur(style.id, "value")}
+                      onSelect={(event) =>
+                        captureInlineSelection(style.id, "value", event)
                       }
                       onClick={(event) => event.stopPropagation()}
                       className="w-full min-w-0 truncate border-0 bg-transparent p-0 outline-none"
@@ -1964,15 +2188,32 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         />
                         <div className="relative w-[84px] shrink-0">
                           <input
+                            data-rule-key={ruleKey}
+                            data-original-property={
+                              editingMatchedDeclaration.originalProperty
+                            }
+                            data-matched-field="key"
                             value={editingMatchedDeclaration.property}
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              captureMatchedSelection(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "key",
+                                event,
+                              );
                               setEditingMatchedDeclaration((current) =>
                                 current
                                   ? { ...current, property: event.target.value }
                                   : current,
-                              )
-                            }
-                            onFocus={() => {
+                              );
+                            }}
+                            onFocus={(event) => {
+                              handleMatchedFieldFocus(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "key",
+                                event,
+                              );
                               setFilteredSuggestions(
                                 filterAndSortProperties("", 20),
                               );
@@ -1981,6 +2222,23 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 type: "key",
                               });
                             }}
+                            onBlur={() =>
+                              scheduleMatchedFieldBlurCommit(
+                                rule,
+                                ruleKey,
+                                occurrenceIndex,
+                                editingMatchedDeclaration.originalProperty,
+                                "key",
+                              )
+                            }
+                            onSelect={(event) =>
+                              captureMatchedSelection(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "key",
+                                event,
+                              )
+                            }
                             className="w-full border-0 bg-transparent p-0 outline-none"
                             style={{ color: "var(--accent-primary)" }}
                             autoFocus={
@@ -2007,8 +2265,19 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         <span style={{ color: "var(--text-muted)" }}>:</span>
                         <div className="relative min-w-0 flex-1">
                           <input
+                            data-rule-key={ruleKey}
+                            data-original-property={
+                              editingMatchedDeclaration.originalProperty
+                            }
+                            data-matched-field="value"
                             value={editingMatchedDeclaration.value}
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              captureMatchedSelection(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "value",
+                                event,
+                              );
                               setEditingMatchedDeclaration((current) => {
                                 if (!current) return current;
                                 const next = {
@@ -2021,9 +2290,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                   next,
                                 );
                                 return next;
-                              })
-                            }
-                            onFocus={() => {
+                              });
+                            }}
+                            onFocus={(event) => {
+                              handleMatchedFieldFocus(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "value",
+                                event,
+                              );
                               const options = getValueOptions(
                                 editingMatchedDeclaration.property,
                                 editingMatchedDeclaration.value,
@@ -2039,10 +2314,20 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               );
                             }}
                             onBlur={() =>
-                              commitMatchedDeclarationEdit(
+                              scheduleMatchedFieldBlurCommit(
                                 rule,
                                 ruleKey,
                                 occurrenceIndex,
+                                editingMatchedDeclaration.originalProperty,
+                                "value",
+                              )
+                            }
+                            onSelect={(event) =>
+                              captureMatchedSelection(
+                                ruleKey,
+                                editingMatchedDeclaration.originalProperty,
+                                "value",
+                                event,
                               )
                             }
                             onKeyDown={(event) => {
@@ -2063,6 +2348,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 );
                               }
                               if (event.key === "Escape") {
+                                if (matchedBlurTimerRef.current !== null) {
+                                  window.clearTimeout(matchedBlurTimerRef.current);
+                                  matchedBlurTimerRef.current = null;
+                                }
+                                activeMatchedFieldRef.current = null;
                                 setEditingMatchedDeclaration(null);
                                 setActiveSuggestionField(null);
                               }

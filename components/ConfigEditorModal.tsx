@@ -13,15 +13,10 @@ interface ConfigEditorModalProps {
   portfolioContent: string | null;
   onSave: (newConfigContent: string, newPortfolioContent: string) => void;
   theme: "light" | "dark";
-  aiBackend: "local" | "colab";
-  onAiBackendChange: (val: "local" | "colab") => void;
-  colabUrl: string;
-  onColabUrlChange: (val: string) => void;
   autoSaveEnabled: boolean;
   onAutoSaveChange: (val: boolean) => void;
   panelSide: "default" | "swapped";
   onPanelSideChange: (val: "default" | "swapped") => void;
-  showAiOptions?: boolean;
   hasProjectConfig?: boolean;
   selectedSlideCloneSource?: string | null;
   onSelectSlideCloneSource?: (slideId: string) => void;
@@ -40,7 +35,6 @@ type TabKey =
   | "references"
   | "slides"
   | "configRaw"
-  | "ai"
   | "general";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -48,7 +42,6 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "references", label: "References" },
   { key: "slides", label: "Slides" },
   { key: "configRaw", label: "Config.js" },
-  { key: "ai", label: "AI" },
 ];
 
 const REFERENCE_TEXT_LIST_KEYS = ["referencesAll", "footnotesAll", "abbreviationAll"] as const;
@@ -205,15 +198,10 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   portfolioContent,
   onSave,
   theme,
-  aiBackend,
-  onAiBackendChange,
-  colabUrl,
-  onColabUrlChange,
   autoSaveEnabled,
   onAutoSaveChange,
   panelSide,
   onPanelSideChange,
-  showAiOptions = true,
   hasProjectConfig = true,
   selectedSlideCloneSource = null,
   onSelectSlideCloneSource,
@@ -611,7 +599,6 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   };
 
   const visibleTabs = TABS.filter((tab) => {
-    if (tab.key === "ai") return showAiOptions;
     if (slidesOnlyMode) return tab.key === "slides";
     if (!hasProjectConfig) return tab.key === "general";
     return true;
@@ -872,52 +859,6 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                   </p>
                 </div>
               </div>
-            </div>
-          ) : null}
-
-          {activeTab === "ai" ? (
-            <div className="space-y-4 animate-fadeIn">
-              <div className="rounded-xl border p-4" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
-                <div className="text-sm font-semibold mb-2">AI Backend</div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${aiBackend === "local" ? "bg-indigo-600 text-white border-indigo-600" : ""}`}
-                    style={{ borderColor: aiBackend === "local" ? undefined : borderCol, color: aiBackend === "local" ? undefined : textMain }}
-                    onClick={() => onAiBackendChange("local")}
-                  >
-                    Local (CPU)
-                  </button>
-                  <button
-                    type="button"
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${aiBackend === "colab" ? "bg-indigo-600 text-white border-indigo-600" : ""}`}
-                    style={{ borderColor: aiBackend === "colab" ? undefined : borderCol, color: aiBackend === "colab" ? undefined : textMain }}
-                    onClick={() => onAiBackendChange("colab")}
-                  >
-                    Colab URL
-                  </button>
-                </div>
-                <p className="text-[11px] mt-2" style={{ color: textMuted }}>
-                  Local will auto-download the model and run on your CPU. Colab uses a remote URL.
-                </p>
-              </div>
-
-              <div className="rounded-xl border p-4" style={{ borderColor: borderCol, backgroundColor: inputBg }}>
-                <label className="text-xs font-semibold">Colab URL</label>
-                <input
-                  type="text"
-                  value={colabUrl}
-                  onChange={(e) => onColabUrlChange(e.target.value)}
-                  disabled={aiBackend !== "colab"}
-                  placeholder="https://xxxx.ngrok-free.app"
-                  className="w-full mt-2 px-3 py-2 rounded-lg border text-sm outline-none"
-                  style={{ backgroundColor: "transparent", borderColor: borderCol, color: textMain, opacity: aiBackend === "colab" ? 1 : 0.6 }}
-                />
-                <p className="text-[11px] mt-2" style={{ color: textMuted }}>
-                  Only needed if you want to use a remote Colab backend.
-                </p>
-              </div>
-
             </div>
           ) : null}
 

@@ -1,6 +1,16 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
 
-type CodeLanguage = "html" | "css" | "js" | "json" | "svg" | "text" | "ts" | "tsx" | "jsx" | "md";
+export type CodeLanguage =
+  | "html"
+  | "css"
+  | "js"
+  | "json"
+  | "svg"
+  | "text"
+  | "ts"
+  | "tsx"
+  | "jsx"
+  | "md";
 
 interface ColorCodeEditorProps {
   value: string;

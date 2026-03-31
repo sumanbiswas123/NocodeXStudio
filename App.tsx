@@ -6,63 +6,39 @@ import React, {
   useLayoutEffect,
   useMemo,
 } from "react";
-import html2canvas from "html2canvas";
 import { flushSync } from "react-dom";
 import Sidebar from "./components/Sidebar";
-import PropertiesPanel from "./components/PropertiesPanel";
 import StyleInspectorPanel from "./components/StyleInspectorPanel";
-import Terminal from "./components/Terminal";
-import ColorCodeEditor from "./components/ColorCodeEditor";
-import DetachedCodeEditorWindow from "./components/DetachedCodeEditorWindow";
-import CommandPalette from "./components/CommandPalette";
-import ConfigEditorModal from "./components/ConfigEditorModal";
 import { INITIAL_ROOT, INJECTED_STYLES } from "./constants";
 import {
   VirtualElement,
-  ElementType,
   FileMap,
   HistoryState,
   ProjectFile,
 } from "./types";
 import * as Neutralino from "@neutralinojs/lib";
 import {
-  PanelLeftClose,
-  PanelLeft,
   PanelRightClose,
-  PanelRight,
-  Maximize2,
-  Minimize2,
   Tablet,
   RotateCw,
-  FolderOpen,
   Globe,
   Wifi,
   Sun,
   Moon,
   FileText,
   Upload,
-  Save,
   Undo2,
   Redo2,
-  Settings2,
-  Code2,
-  Sparkles,
   Copy,
   Trash2,
   MoveUp,
   MoveDown,
   Shrink,
   Expand,
-  StickyNote,
   Camera,
-  FileDown,
   MousePointer2,
   Move,
 } from "lucide-react";
-
-import VibeAssistant from "./components/VibeAssistant";
-import { AIPipeline } from "./utils/ai/AIPipeline";
-
 import EditorContent from "./app/EditorContent";
 import { Provider } from "react-redux";
 import { store } from "./src/store";
@@ -75,21 +51,73 @@ import {
   setIsOpen,
   setIsLoading,
   setFocusedAnnotation,
-  setViewMode,
-  setTypeOverrides,
   setClassifierMetrics,
-  addProcessingLog,
-  clearProcessingLogs,
-  resetState,
 } from "./src/store/annotationSlice";
 import { useDispatch, useSelector } from "react-redux";
 import { RootState } from "./src/store";
 import {
-  buildMappedPdfAnnotations,
   evaluateAnnotationTypeClassifier,
-  PdfAnnotationRecord,
   PdfAnnotationUiRecord,
 } from "./app/pdfAnnotationHelpers";
+import {
+  appendPdfAnnotationLog as appendPdfAnnotationLogHelper,
+  runPdfAnnotationMapping as runPdfAnnotationMappingHelper,
+  selectPdfAndRunMapping,
+} from "./app/pdfAnnotationActions";
+import {
+  ensureDirectoryForFile,
+  ensureDirectoryTree,
+  indexProjectForOpen,
+  patchMtVeevaCheck,
+  refreshProjectFileIndex,
+} from "./app/projectFilesystem";
+import { resolvePreviewAssetUrl as resolvePreviewAssetUrlHelper } from "./app/mediaWorkspaceHelpers";
+import { initializeProjectOpenRuntime } from "./app/projectOpenRuntime";
+import AppOverlays from "./app/AppOverlays";
+import {
+  clearPreviewModeSync,
+  handlePreviewFrameLoad as handlePreviewFrameLoadHelper,
+  injectMountedPreviewBridge as injectMountedPreviewBridgeHelper,
+  postPreviewFrameMessage,
+  postPreviewModeToFrame as postPreviewModeToFrameHelper,
+  schedulePreviewModeSync,
+} from "./app/previewFrameBridge";
+import {
+  applyPreviewInlineEdit as applyPreviewInlineEditHelper,
+  applyPreviewInlineEditDraft as applyPreviewInlineEditDraftHelper,
+  persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
+  syncPreviewSelectionSnapshotFromLiveElement as syncPreviewSelectionSnapshotFromLiveElementHelper,
+} from "./app/previewSelectionHelpers";
+import {
+  applyPreviewContentUpdate as applyPreviewContentUpdateHelper,
+  applyPreviewStyleUpdateAtPath as applyPreviewStyleUpdateAtPathHelper,
+  queuePreviewStyleUpdate as queuePreviewStyleUpdateHelper,
+} from "./app/previewUpdateHelpers";
+import ScreenshotGalleryPanel from "./app/ScreenshotGalleryPanel";
+import {
+  renderDetachedConsoleWindow as renderDetachedConsoleWindowHelper,
+} from "./app/detachedConsoleWindow";
+import { useScreenshotGallery } from "./app/useScreenshotGallery";
+import {
+  applyPatchToDeclarationEntries,
+  annotateMatchedCssRuleActivity,
+  collectLiveMatchedCssRuleRefsFromElement,
+  collectMatchedCssRulesFromElement,
+  cssRuleSourcesMatch,
+  CdpInspectSelectedResponse,
+  derivePreviewMatchedCssRulesFromCdp,
+  extractAssetUrlFromCssValue,
+  findCssRuleRange,
+  getCssSourceBasename,
+  getStyleSheetSourceLabel,
+  normalizePresentationCssValue,
+  normalizePresentationStylePatch,
+  normalizeSelectorSignature,
+  PreviewMatchedCssDeclaration,
+  PreviewMatchedCssRule,
+  PreviewMatchedRuleMutation,
+  toReactComputedStylesFromCdp,
+} from "./app/previewCssHelpers";
 import {
   isEdaProject,
   findElementById,
@@ -97,19 +125,12 @@ import {
   updateElementInTree,
   deleteElementFromTree,
   normalizePath,
-  PREVIEW_LAYER_ID_PREFIX,
   PREVIEW_MOUNT_PATH,
-  SHARED_MOUNT_PATH,
-  SHARED_MOUNT_PATH_IN_PREVIEW,
   joinPath,
   getParentPath,
-  IGNORED_FOLDERS,
   THEME_STORAGE_KEY,
   PREVIEW_AUTOSAVE_STORAGE_KEY,
-  AI_BACKEND_STORAGE_KEY,
-  COLAB_URL_STORAGE_KEY,
   PANEL_SIDE_STORAGE_KEY,
-  SHOW_AI_FEATURES,
   SHOW_SCREENSHOT_FEATURES,
   SHOW_MASTER_TOOLS,
   MAX_CANVAS_HISTORY,
@@ -119,7 +140,6 @@ import {
   MAX_PREVIEW_DOC_CACHE_CHARS,
   SHARED_FONT_VIRTUAL_DIR,
   PRESENTATION_CSS_VIRTUAL_PATH,
-  FONT_CACHE_VIRTUAL_PATH,
   FONT_CACHE_VERSION,
   CONFIG_JSON_PATH,
   PORTFOLIO_CONFIG_PATH,
@@ -135,66 +155,48 @@ import {
   getConfigPathCandidates,
   scoreConfigContent,
   DEFAULT_EDITOR_FONTS,
-  PREVIEW_DRAW_ALLOWED_TAGS,
   normalizePreviewDrawTag,
   FontCachePayload,
   MaybeViewTransitionDocument,
-  sanitizeFontFamilyName,
   dedupeFontFamilies,
   buildEditorFontOptions,
   parsePresentationCssFontFamilies,
-  parseFontCacheFamilies,
   deriveFontFamilyFromFontFileName,
   fontFormatFromFileName,
-  relativePathBetweenVirtualFiles,
-  collectSharedFontFamiliesFromFileMap,
   inferFileType,
+  relativePathBetweenVirtualFiles,
   isTextFileType,
   isSvgPath,
   isCodeEditableFile,
   toFileUrl,
   mimeFromType,
   toByteArray,
-  isExternalUrl,
   normalizeProjectRelative,
   resolveProjectRelativePath,
   findFilePathCaseInsensitive,
   resolvePreviewNavigationPath,
-  isPathWithinBase,
   toMountRelativePath,
   rewriteInlineAssetRefs,
-  buildPreviewRuntimeScript,
   createPreviewDocument,
   pickDefaultHtmlFile,
   MOUNTED_PREVIEW_BRIDGE_SCRIPT,
   toCssPropertyName,
   parseNumericCssValue,
-  CSS_GENERIC_FONT_FAMILIES,
-  normalizeFontFamilyCssValue,
   readElementByPath,
   normalizePreviewPath,
   toPreviewLayerId,
   fromPreviewLayerId,
   parseInlineStyleText,
   extractComputedStylesFromElement,
-  RESERVED_ATTRIBUTE_NAMES,
   extractCustomAttributesFromElement,
   normalizeEditorMultilineText,
   extractTextWithBreaks,
   extractTextFromHtmlFragment,
-  hasRichInlineTextStructure,
-  collectTextNodeGroupsByBreak,
-  chooseTextSplitPoint,
-  distributeTextAcrossNodes,
-  applyMultilineTextToElement,
   PreviewHistoryEntry,
   addElementToTree,
-  TOOLBOX_DRAG_MIME,
   hasToolboxDragType,
   getToolboxDragPayload,
   createPresetIdFactory,
-  createVirtualNode,
-  buildPresetElement,
   buildPresetElementV2,
   buildStandardElement,
   materializeVirtualElement,
@@ -206,1044 +208,9 @@ import {
   PreviewSyncSource,
   PendingPageSwitch,
 } from "./app/appHelpers";
-import { resourceScanner } from "./utils/ai/ResourceScanner";
-const escapeConsoleHtml = (value: string): string =>
-  String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 
 const RECENT_PROJECTS_STORAGE_KEY = "nocodex_recent_projects_v1";
 const PDF_ANNOTATION_CACHE_KEY = "nocodex_pdf_annotation_cache_v1";
-const DEFAULT_COLAB_URL = "https://upset-hands-hope.loca.lt";
-const SCREENSHOT_INDEX_FILE = "shared/screenshots/index.json";
-const SCREENSHOT_DIR = "shared/screenshots";
-const PDF_EXPORT_DIR = "shared/pdf_exports";
-
-type ScreenshotMetadata = {
-  id: string;
-  createdAt: string;
-  projectPath: string;
-  slidePath: string | null;
-  slideId: string | null;
-  popupId: string | null;
-  popupSelector: string | null;
-  deviceMode: "desktop" | "mobile" | "tablet";
-  tabletModel: "ipad" | "ipad-pro";
-  tabletOrientation: "landscape" | "portrait";
-  frameZoom: number;
-  viewportWidth: number;
-  viewportHeight: number;
-  previewMode: "edit" | "preview";
-  interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
-  imagePath: string;
-  imageFileName: string;
-};
-
-type PreviewMatchedCssDeclaration = {
-  property: string;
-  value: string;
-  important?: boolean;
-  active?: boolean;
-};
-
-type PreviewMatchedCssRule = {
-  selector: string;
-  source: string;
-  declarations: PreviewMatchedCssDeclaration[];
-};
-
-type PreviewMatchedRuleMutation = {
-  selector: string;
-  source: string;
-  occurrenceIndex?: number;
-  originalProperty?: string;
-  isActive?: boolean;
-};
-
-type CssSpecificity = [number, number, number];
-
-type CdpComputedStyleEntry = {
-  name?: string;
-  value?: string;
-};
-
-type CdpComputedStyleForNodeResult = {
-  computedStyle?: CdpComputedStyleEntry[];
-};
-
-type CdpSpecificity = {
-  a?: number;
-  b?: number;
-  c?: number;
-};
-
-type CdpSelector = {
-  text?: string;
-  specificity?: CdpSpecificity;
-};
-
-type CdpSelectorList = {
-  text?: string;
-  selectors?: CdpSelector[];
-};
-
-type CdpCssProperty = {
-  name?: string;
-  value?: string;
-  important?: boolean;
-  disabled?: boolean;
-};
-
-type CdpRuleStyle = {
-  styleSheetId?: string;
-  cssProperties?: CdpCssProperty[];
-};
-
-type CdpRule = {
-  origin?: string;
-  styleSheetId?: string;
-  selectorList?: CdpSelectorList;
-  style?: CdpRuleStyle;
-};
-
-type CdpRuleMatch = {
-  rule?: CdpRule;
-  matchingSelectors?: number[];
-};
-
-type CdpMatchedStylesForNodeResult = {
-  matchedCSSRules?: CdpRuleMatch[];
-};
-
-const toReactName = (key: string) =>
-  key.trim().replace(/-([a-z])/g, (_match, char: string) =>
-    char.toUpperCase(),
-  );
-
-type CdpInspectSelectedResponse = {
-  ok?: boolean;
-  matchedStyles?: CdpMatchedStylesForNodeResult;
-  computedStyles?: CdpComputedStyleForNodeResult;
-};
-
-const normalizeMatchedCssProperty = (property: string) =>
-  String(property || "").trim().toLowerCase();
-
-const splitSelectorList = (selectorText: string): string[] => {
-  const parts: string[] = [];
-  let current = "";
-  let depth = 0;
-  let quote: "'" | '"' | null = null;
-
-  for (let index = 0; index < selectorText.length; index += 1) {
-    const char = selectorText[index];
-    if (quote) {
-      current += char;
-      if (char === quote && selectorText[index - 1] !== "\\") {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      current += char;
-      continue;
-    }
-    if (char === "(" || char === "[") {
-      depth += 1;
-      current += char;
-      continue;
-    }
-    if ((char === ")" || char === "]") && depth > 0) {
-      depth -= 1;
-      current += char;
-      continue;
-    }
-    if (char === "," && depth === 0) {
-      if (current.trim()) parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-
-  if (current.trim()) parts.push(current.trim());
-  return parts;
-};
-
-const compareSpecificity = (
-  left: CssSpecificity,
-  right: CssSpecificity,
-): number => {
-  if (left[0] !== right[0]) return left[0] - right[0];
-  if (left[1] !== right[1]) return left[1] - right[1];
-  return left[2] - right[2];
-};
-
-const maxSpecificity = (
-  left: CssSpecificity,
-  right: CssSpecificity,
-): CssSpecificity => (compareSpecificity(left, right) >= 0 ? left : right);
-
-const addSpecificity = (
-  base: CssSpecificity,
-  extra: CssSpecificity,
-): CssSpecificity => [base[0] + extra[0], base[1] + extra[1], base[2] + extra[2]];
-
-const calculateSelectorSpecificity = (selectorText: string): CssSpecificity => {
-  let working = String(selectorText || "");
-  let specificity: CssSpecificity = [0, 0, 0];
-
-  const functionalPseudoPattern =
-    /:(is|not|has|where)\(([^()]*|\((?:[^()]*|\([^()]*\))*\))*\)/gi;
-  working = working.replace(functionalPseudoPattern, (match, fnName, args) => {
-    if (String(fnName).toLowerCase() === "where") return " ";
-    const best = splitSelectorList(String(args || "")).reduce<CssSpecificity>(
-      (current, part) =>
-        maxSpecificity(current, calculateSelectorSpecificity(part)),
-      [0, 0, 0],
-    );
-    specificity = addSpecificity(specificity, best);
-    return " ";
-  });
-
-  const idMatches = working.match(/#[\w-]+/g) || [];
-  specificity[0] += idMatches.length;
-  working = working.replace(/#[\w-]+/g, " ");
-
-  const classMatches = working.match(/\.[\w-]+/g) || [];
-  specificity[1] += classMatches.length;
-  working = working.replace(/\.[\w-]+/g, " ");
-
-  const attributeMatches = working.match(/\[[^\]]+\]/g) || [];
-  specificity[1] += attributeMatches.length;
-  working = working.replace(/\[[^\]]+\]/g, " ");
-
-  const pseudoElementMatches = working.match(/::[\w-]+/g) || [];
-  specificity[2] += pseudoElementMatches.length;
-  working = working.replace(/::[\w-]+/g, " ");
-
-  const pseudoClassMatches =
-    working.match(/:(?!:)[\w-]+(?:\([^)]*\))?/g) || [];
-  specificity[1] += pseudoClassMatches.length;
-  working = working.replace(/:(?!:)[\w-]+(?:\([^)]*\))?/g, " ");
-
-  const elementMatches =
-    (working.match(/(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g) as string[] | null) ||
-    [];
-  elementMatches.forEach((match) => {
-    const token = match.trim();
-    if (token && token !== "*") {
-      specificity[2] += 1;
-    }
-  });
-
-  return specificity;
-};
-
-const getMatchedSelectorSpecificity = (
-  element: Element,
-  selectorText: string,
-): CssSpecificity =>
-  splitSelectorList(selectorText).reduce<CssSpecificity>((best, selector) => {
-    if (!selector) return best;
-    try {
-      if (!element.matches(selector)) return best;
-      return maxSpecificity(best, calculateSelectorSpecificity(selector));
-    } catch {
-      return best;
-    }
-  }, [0, 0, 0]);
-
-const annotateMatchedCssRuleActivity = (
-  element: Element,
-  rules: PreviewMatchedCssRule[],
-): PreviewMatchedCssRule[] => {
-  const normalizedRules = rules.map((rule) => ({
-    ...rule,
-    declarations: dedupeExactRuleDeclarations(rule.declarations),
-  }));
-  type Winner = {
-    important: boolean;
-    specificity: CssSpecificity;
-    ruleIndex: number;
-    declarationIndex: number;
-    inline: boolean;
-  };
-
-  const winnerByProperty = new Map<string, Winner>();
-
-  normalizedRules.forEach((rule, ruleIndex) => {
-    const specificity = getMatchedSelectorSpecificity(element, rule.selector);
-    rule.declarations.forEach((declaration, declarationIndex) => {
-      const property = normalizeMatchedCssProperty(declaration.property);
-      if (!property) return;
-      const candidate: Winner = {
-        important: Boolean(declaration.important),
-        specificity,
-        ruleIndex,
-        declarationIndex,
-        inline: false,
-      };
-      const current = winnerByProperty.get(property);
-      if (!current) {
-        winnerByProperty.set(property, candidate);
-        return;
-      }
-      if (current.important !== candidate.important) {
-        if (candidate.important) {
-          winnerByProperty.set(property, candidate);
-        }
-        return;
-      }
-      const specificityDiff = compareSpecificity(
-        candidate.specificity,
-        current.specificity,
-      );
-      if (specificityDiff > 0) {
-        winnerByProperty.set(property, candidate);
-        return;
-      }
-      if (specificityDiff < 0) return;
-      if (candidate.ruleIndex > current.ruleIndex) {
-        winnerByProperty.set(property, candidate);
-        return;
-      }
-      if (
-        candidate.ruleIndex === current.ruleIndex &&
-        candidate.declarationIndex > current.declarationIndex
-      ) {
-        winnerByProperty.set(property, candidate);
-      }
-    });
-  });
-
-  if (element instanceof HTMLElement) {
-    const inlineStyle = element.style;
-    Array.from(inlineStyle).forEach((property) => {
-      const normalized = normalizeMatchedCssProperty(property);
-      if (!normalized) return;
-      winnerByProperty.set(normalized, {
-        important: inlineStyle.getPropertyPriority(property) === "important",
-        specificity: [Infinity, Infinity, Infinity],
-        ruleIndex: Number.MAX_SAFE_INTEGER,
-        declarationIndex: Number.MAX_SAFE_INTEGER,
-        inline: true,
-      });
-    });
-  }
-
-  return normalizedRules.map((rule, ruleIndex) => ({
-    ...rule,
-    declarations: rule.declarations.map((declaration, declarationIndex) => {
-      const winner = winnerByProperty.get(
-        normalizeMatchedCssProperty(declaration.property),
-      );
-      return {
-        ...declaration,
-        active:
-          Boolean(winner) &&
-          !winner?.inline &&
-          winner.ruleIndex === ruleIndex &&
-          winner.declarationIndex === declarationIndex,
-      };
-    }),
-  }));
-};
-
-const collectMatchedCssRulesFromElement = (
-  element: Element | null,
-): PreviewMatchedCssRule[] => {
-  if (
-    !element ||
-    !(element instanceof Element) ||
-    typeof element.matches !== "function"
-  ) {
-    return [];
-  }
-
-  const getSourceLabel = (sheet: CSSStyleSheet) => {
-    if (sheet.href) {
-      const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
-      const parts = cleanHref.split("/");
-      return parts[parts.length - 1] || cleanHref || "stylesheet";
-    }
-    const ownerNode = sheet.ownerNode;
-    if (ownerNode instanceof Element) {
-      return (
-        ownerNode.getAttribute("data-source") ||
-        ownerNode.getAttribute("data-href") ||
-        "inline stylesheet"
-      );
-    }
-    return "inline stylesheet";
-  };
-
-  const results: PreviewMatchedCssRule[] = [];
-
-  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
-    if (!rules) return;
-    Array.from(rules).forEach((rule) => {
-      try {
-        const candidateRule = rule as CSSRule & {
-          selectorText?: string;
-          style?: CSSStyleDeclaration;
-          cssRules?: CSSRuleList;
-        };
-        if (rule.type === 1 && candidateRule.selectorText) {
-          const selector = String(candidateRule.selectorText || "").trim();
-          if (!selector) return;
-          try {
-            if (!element.matches(selector)) return;
-          } catch {
-            return;
-          }
-          const declarations: PreviewMatchedCssDeclaration[] = [];
-          Array.from(candidateRule.style || []).forEach((property) => {
-            const value = candidateRule.style?.getPropertyValue(property);
-            if (!property || !value) return;
-            declarations.push({
-              property,
-              value,
-              important:
-                candidateRule.style?.getPropertyPriority(property) ===
-                "important",
-            });
-          });
-          if (declarations.length) {
-            results.push({ selector, source, declarations });
-          }
-          return;
-        }
-
-        if (candidateRule.cssRules) {
-          visitRules(candidateRule.cssRules, source);
-        }
-      } catch {
-        // Ignore inaccessible or unsupported rules.
-      }
-    });
-  };
-
-  const doc = element.ownerDocument;
-  if (!doc) return [];
-
-  Array.from(doc.styleSheets).forEach((sheet) => {
-    try {
-      visitRules(
-        (sheet as CSSStyleSheet).cssRules,
-        getSourceLabel(sheet as CSSStyleSheet),
-      );
-    } catch {
-      // Ignore inaccessible stylesheet rules.
-    }
-  });
-
-  return annotateMatchedCssRuleActivity(
-    element,
-    filterRedundantMatchedCssRules(results),
-  );
-};
-
-const getCssSourceBasename = (value: string) => {
-  const normalized = String(value || "")
-    .replace(/\\/g, "/")
-    .split("?")[0]
-    .split("#")[0];
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || normalized;
-};
-
-const normalizeSelectorSignature = (value: string) =>
-  String(value || "")
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const normalizeCdpSpecificity = (
-  specificity: CdpSpecificity | undefined,
-): CssSpecificity => [
-  Number(specificity?.a || 0),
-  Number(specificity?.b || 0),
-  Number(specificity?.c || 0),
-];
-
-const toReactComputedStylesFromCdp = (
-  payload: CdpComputedStyleForNodeResult | undefined,
-): React.CSSProperties | null => {
-  const entries = Array.isArray(payload?.computedStyle)
-    ? payload.computedStyle
-    : [];
-  if (entries.length === 0) return null;
-  const out: Record<string, string> = {};
-  entries.forEach((entry) => {
-    if (!entry?.name || typeof entry.value !== "string") return;
-    out[toReactName(entry.name)] = entry.value;
-  });
-  return out as React.CSSProperties;
-};
-
-const derivePreviewMatchedCssRulesFromCdp = (
-  payload: CdpMatchedStylesForNodeResult | undefined,
-  fallbackRules: PreviewMatchedCssRule[],
-  inlineStyles?: React.CSSProperties | null,
-): PreviewMatchedCssRule[] => {
-  const matches = Array.isArray(payload?.matchedCSSRules)
-    ? payload.matchedCSSRules
-    : [];
-  if (matches.length === 0) return [];
-
-  const unusedFallbackIndexes = new Set(
-    fallbackRules.map((_rule, index) => index),
-  );
-
-  type DerivedRule = PreviewMatchedCssRule & {
-    derivedSpecificity: CssSpecificity;
-    sourceOrder: number;
-  };
-
-  const derivedRules: DerivedRule[] = matches
-    .map((match, matchIndex) => {
-      const rule = match?.rule;
-      const selectorText = String(rule?.selectorList?.text || "").trim();
-      if (!selectorText) return null;
-
-      const declarations = Array.isArray(rule?.style?.cssProperties)
-        ? rule.style.cssProperties
-            .filter(
-              (property) =>
-                property &&
-                !property.disabled &&
-                typeof property.name === "string" &&
-                property.name.trim().length > 0 &&
-                typeof property.value === "string" &&
-                property.value.trim().length > 0,
-            )
-            .map((property) => ({
-              property: String(property.name || "").trim(),
-              value: String(property.value || "").trim(),
-              important: Boolean(property.important),
-            }))
-        : [];
-      if (declarations.length === 0) return null;
-
-      const selectors = Array.isArray(rule?.selectorList?.selectors)
-        ? rule.selectorList.selectors
-        : [];
-      const matchingSelectors =
-        Array.isArray(match?.matchingSelectors) && match.matchingSelectors.length > 0
-          ? match.matchingSelectors
-          : selectors.map((_selector, index) => index);
-
-      const derivedSpecificity = matchingSelectors.reduce<CssSpecificity>(
-        (best, selectorIndex) => {
-          const selector = selectors[selectorIndex];
-          const selectorTextPart = String(selector?.text || "").trim();
-          const nextSpecificity =
-            selector?.specificity &&
-            (selector.specificity.a !== undefined ||
-              selector.specificity.b !== undefined ||
-              selector.specificity.c !== undefined)
-              ? normalizeCdpSpecificity(selector.specificity)
-              : selectorTextPart
-                ? calculateSelectorSpecificity(selectorTextPart)
-                : best;
-          return maxSpecificity(best, nextSpecificity);
-        },
-        [0, 0, 0],
-      );
-
-      let source = rule?.styleSheetId || rule?.origin || "stylesheet";
-      const matchingFallbackIndex = fallbackRules.findIndex(
-        (fallbackRule, fallbackIndex) =>
-          unusedFallbackIndexes.has(fallbackIndex) &&
-          normalizeSelectorSignature(fallbackRule.selector) ===
-            normalizeSelectorSignature(selectorText),
-      );
-      if (matchingFallbackIndex >= 0) {
-        source = fallbackRules[matchingFallbackIndex].source;
-        unusedFallbackIndexes.delete(matchingFallbackIndex);
-      } else {
-        source = getCssSourceBasename(source) || source;
-      }
-
-      return {
-        selector: selectorText,
-        source,
-        declarations,
-        derivedSpecificity,
-        sourceOrder: matchIndex,
-      };
-    })
-    .filter(Boolean) as DerivedRule[];
-
-  type Winner = {
-    important: boolean;
-    specificity: CssSpecificity;
-    sourceOrder: number;
-    declarationIndex: number;
-    inline: boolean;
-  };
-
-  const winnerByProperty = new Map<string, Winner>();
-  const applyWinnerCandidate = (property: string, candidate: Winner) => {
-    const current = winnerByProperty.get(property);
-    if (!current) {
-      winnerByProperty.set(property, candidate);
-      return;
-    }
-    if (current.important !== candidate.important) {
-      if (candidate.important) {
-        winnerByProperty.set(property, candidate);
-      }
-      return;
-    }
-    const specificityDiff = compareSpecificity(
-      candidate.specificity,
-      current.specificity,
-    );
-    if (specificityDiff > 0) {
-      winnerByProperty.set(property, candidate);
-      return;
-    }
-    if (specificityDiff < 0) return;
-    if (candidate.sourceOrder > current.sourceOrder) {
-      winnerByProperty.set(property, candidate);
-      return;
-    }
-    if (
-      candidate.sourceOrder === current.sourceOrder &&
-      candidate.declarationIndex > current.declarationIndex
-    ) {
-      winnerByProperty.set(property, candidate);
-    }
-  };
-
-  derivedRules.forEach((rule) => {
-    rule.declarations.forEach((declaration, declarationIndex) => {
-      const property = normalizeMatchedCssProperty(declaration.property);
-      if (!property) return;
-      applyWinnerCandidate(property, {
-        important: Boolean(declaration.important),
-        specificity: rule.derivedSpecificity,
-        sourceOrder: rule.sourceOrder,
-        declarationIndex,
-        inline: false,
-      });
-    });
-  });
-
-  Object.keys(inlineStyles || {}).forEach((property) => {
-    const cssProperty = normalizeMatchedCssProperty(toCssPropertyName(property));
-    if (!cssProperty) return;
-    applyWinnerCandidate(cssProperty, {
-      important: false,
-      specificity: [Infinity, Infinity, Infinity],
-      sourceOrder: Number.MAX_SAFE_INTEGER,
-      declarationIndex: Number.MAX_SAFE_INTEGER,
-      inline: true,
-    });
-  });
-
-  return derivedRules.map((rule) => ({
-    selector: rule.selector,
-    source: rule.source,
-    declarations: rule.declarations.map((declaration, declarationIndex) => {
-      const winner = winnerByProperty.get(
-        normalizeMatchedCssProperty(declaration.property),
-      );
-      return {
-        ...declaration,
-        active:
-          Boolean(winner) &&
-          !winner?.inline &&
-          winner.sourceOrder === rule.sourceOrder &&
-          winner.declarationIndex === declarationIndex,
-      };
-    }),
-  }));
-};
-
-const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
-  if (sheet.href) {
-    const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
-    const parts = cleanHref.split("/");
-    return parts[parts.length - 1] || cleanHref || "stylesheet";
-  }
-  const ownerNode = sheet.ownerNode;
-  if (ownerNode instanceof Element) {
-    return (
-      ownerNode.getAttribute("data-source") ||
-      ownerNode.getAttribute("data-href") ||
-      "inline stylesheet"
-    );
-  }
-  return "inline stylesheet";
-};
-
-const isTemporaryMatchedRuleSource = (source: string) => {
-  const normalized = String(source || "").trim().toLowerCase();
-  return (
-    normalized === "inline stylesheet" ||
-    /^style-sheet-\d+-\d+$/.test(normalized)
-  );
-};
-
-const buildMatchedRuleDeclarationSignature = (
-  declarations: PreviewMatchedCssDeclaration[],
-) =>
-  declarations
-    .map((declaration) => ({
-      property: normalizeMatchedCssProperty(declaration.property),
-      value: String(declaration.value || "").trim(),
-      important: Boolean(declaration.important),
-    }))
-    .sort((left, right) => left.property.localeCompare(right.property))
-    .map(
-      (declaration) =>
-        `${declaration.property}:${declaration.value}:${declaration.important ? "important" : ""}`,
-    )
-    .join("|");
-
-const filterRedundantMatchedCssRules = (
-  rules: PreviewMatchedCssRule[],
-): PreviewMatchedCssRule[] => {
-  const canonicalKeys = new Set(
-    rules
-      .filter((rule) => !isTemporaryMatchedRuleSource(rule.source))
-      .map(
-        (rule) =>
-          `${rule.selector}::${buildMatchedRuleDeclarationSignature(rule.declarations)}`,
-      ),
-  );
-
-  return rules.filter((rule) => {
-    if (!isTemporaryMatchedRuleSource(rule.source)) return true;
-    const key = `${rule.selector}::${buildMatchedRuleDeclarationSignature(rule.declarations)}`;
-    return !canonicalKeys.has(key);
-  });
-};
-
-type LiveMatchedCssRuleRef = PreviewMatchedCssRule & {
-  styleRule: CSSStyleRule;
-};
-
-const collectLiveMatchedCssRuleRefsFromElement = (
-  element: Element | null,
-): LiveMatchedCssRuleRef[] => {
-  if (
-    !element ||
-    !(element instanceof Element) ||
-    typeof element.matches !== "function"
-  ) {
-    return [];
-  }
-
-  const results: LiveMatchedCssRuleRef[] = [];
-  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
-    if (!rules) return;
-    Array.from(rules).forEach((rule) => {
-      try {
-        if (rule instanceof CSSStyleRule) {
-          const selector = String(rule.selectorText || "").trim();
-          if (!selector) return;
-          try {
-            if (!element.matches(selector)) return;
-          } catch {
-            return;
-          }
-          const declarations: PreviewMatchedCssDeclaration[] = [];
-          Array.from(rule.style || []).forEach((property) => {
-            const value = rule.style?.getPropertyValue(property);
-            if (!property || !value) return;
-            declarations.push({
-              property,
-              value,
-              important: rule.style?.getPropertyPriority(property) === "important",
-            });
-          });
-          if (declarations.length > 0) {
-            results.push({
-              selector,
-              source,
-              declarations,
-              styleRule: rule,
-            });
-          }
-          return;
-        }
-        const nestedRule = rule as CSSRule & { cssRules?: CSSRuleList };
-        if (nestedRule.cssRules) {
-          visitRules(nestedRule.cssRules, source);
-        }
-      } catch {
-        // Ignore inaccessible or unsupported rules.
-      }
-    });
-  };
-
-  const doc = element.ownerDocument;
-  if (!doc) return [];
-
-  Array.from(doc.styleSheets).forEach((sheet) => {
-    try {
-      visitRules(
-        (sheet as CSSStyleSheet).cssRules,
-        getStyleSheetSourceLabel(sheet as CSSStyleSheet),
-      );
-    } catch {
-      // Ignore inaccessible stylesheet rules.
-    }
-  });
-
-  return results;
-};
-
-const cssRuleSourcesMatch = (left: string, right: string) => {
-  const normalizedLeft = normalizeProjectRelative(String(left || "")).toLowerCase();
-  const normalizedRight = normalizeProjectRelative(String(right || "")).toLowerCase();
-  if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
-    return true;
-  }
-  const baseLeft = getCssSourceBasename(left).toLowerCase();
-  const baseRight = getCssSourceBasename(right).toLowerCase();
-  return Boolean(baseLeft && baseRight && baseLeft === baseRight);
-};
-
-const extractAssetUrlFromCssValue = (raw: string) => {
-  const text = String(raw || "").trim();
-  if (!text) return "";
-  const match = text.match(/url\((['"]?)(.*?)\1\)/i);
-  if (!match?.[2]) return "";
-  return match[2].trim();
-};
-
-const normalizePresentationCssValue = (
-  cssProperty: string,
-  rawValue: unknown,
-) => {
-  const valueRaw =
-    rawValue === undefined || rawValue === null ? "" : String(rawValue);
-  const normalizedFontValue =
-    cssProperty === "font-family"
-      ? normalizeFontFamilyCssValue(valueRaw)
-      : valueRaw;
-  return normalizedFontValue.replace(
-    /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
-    (_match, amount) => `${amount}rem`,
-  );
-};
-
-const normalizePresentationStylePatch = (
-  styles: Record<string, unknown>,
-): Record<string, string> =>
-  Object.fromEntries(
-    Object.entries(styles).map(([key, value]) => {
-      const cssProperty = toCssPropertyName(key);
-      return [key, normalizePresentationCssValue(cssProperty, value)];
-    }),
-  );
-
-const dedupeExactRuleDeclarations = (
-  declarations: PreviewMatchedCssDeclaration[],
-): PreviewMatchedCssDeclaration[] => {
-  const seen = new Set<string>();
-  return declarations.filter((declaration) => {
-    const key = [
-      normalizeMatchedCssProperty(declaration.property),
-      String(declaration.value || "").trim(),
-      declaration.important ? "important" : "",
-    ].join("::");
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-};
-
-const applyPatchToDeclarationEntries = (
-  declarations: PreviewMatchedCssDeclaration[],
-  rule: PreviewMatchedRuleMutation,
-  styles: Partial<React.CSSProperties>,
-): PreviewMatchedCssDeclaration[] => {
-  const nextDeclarations = [...declarations];
-  const normalizedNextKeys = new Set<string>();
-  const originalCssProperty = rule.originalProperty
-    ? toCssPropertyName(rule.originalProperty)
-    : "";
-
-  Object.entries(styles).forEach(([key, rawValue]) => {
-    const cssProperty = toCssPropertyName(key);
-    const value = normalizePresentationCssValue(cssProperty, rawValue);
-    normalizedNextKeys.add(cssProperty.toLowerCase());
-    const existingIndex = nextDeclarations.findIndex(
-      (entry) => entry.property.toLowerCase() === cssProperty.toLowerCase(),
-    );
-    if (!value) {
-      if (existingIndex >= 0) nextDeclarations.splice(existingIndex, 1);
-      return;
-    }
-    if (existingIndex >= 0) {
-      nextDeclarations[existingIndex] = {
-        ...nextDeclarations[existingIndex],
-        property: cssProperty,
-        value,
-      };
-      return;
-    }
-    nextDeclarations.push({
-      property: cssProperty,
-      value,
-    });
-  });
-
-  if (
-    originalCssProperty &&
-    !normalizedNextKeys.has(originalCssProperty.toLowerCase())
-  ) {
-    const originalIndex = nextDeclarations.findIndex(
-      (entry) =>
-        entry.property.toLowerCase() === originalCssProperty.toLowerCase(),
-    );
-    if (originalIndex >= 0) {
-      nextDeclarations.splice(originalIndex, 1);
-    }
-  }
-
-  return nextDeclarations;
-};
-
-const findMatchingCssBrace = (source: string, openIndex: number) => {
-  let depth = 0;
-  let inString: '"' | "'" | null = null;
-  let inComment = false;
-  for (let index = openIndex; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-    if (inComment) {
-      if (char === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === inString) inString = null;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      inString = char;
-      continue;
-    }
-    if (char === "{") {
-      depth += 1;
-      continue;
-    }
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-};
-
-const findCssRuleRange = (
-  source: string,
-  selector: string,
-  occurrenceIndex = 0,
-) => {
-  const normalizedSelector = normalizeSelectorSignature(selector);
-  let currentOccurrence = 0;
-  let segmentStart = 0;
-  let inString: '"' | "'" | null = null;
-  let inComment = false;
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-    if (inComment) {
-      if (char === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (char === "\\") {
-        index += 1;
-        continue;
-      }
-      if (char === inString) inString = null;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      inString = char;
-      continue;
-    }
-    if (char === ";") {
-      segmentStart = index + 1;
-      continue;
-    }
-    if (char === "}") {
-      segmentStart = index + 1;
-      continue;
-    }
-    if (char !== "{") continue;
-
-    const rawHeader = source.slice(segmentStart, index);
-    const headerText = rawHeader.trim();
-    if (
-      headerText &&
-      !headerText.startsWith("@") &&
-      normalizeSelectorSignature(headerText) === normalizedSelector
-    ) {
-      if (currentOccurrence === occurrenceIndex) {
-        const closeIndex = findMatchingCssBrace(source, index);
-        if (closeIndex < 0) return null;
-        const leadingWhitespace = rawHeader.match(/^\s*/)?.[0] || "";
-        return {
-          start: segmentStart,
-          end: closeIndex + 1,
-          selectorText: headerText,
-          indent: leadingWhitespace,
-          body: source.slice(index + 1, closeIndex),
-        };
-      }
-      currentOccurrence += 1;
-    }
-
-    segmentStart = index + 1;
-  }
-
-  return null;
-};
-const ANNOTATION_INTENT_OPTIONS = [
-  "stylingChange",
-  "textualChange",
-  "textInImage",
-  "notFound",
-  "referenceChange",
-  "assetChange",
-  "flowChange",
-  "piChange",
-  "siChange",
-];
 
 const extractAssetSourceFromElement = (element: VirtualElement | null) => {
   if (!element) return "";
@@ -1258,25 +225,17 @@ const extractAssetSourceFromElement = (element: VirtualElement | null) => {
   return match?.[2] ? match[2] : "";
 };
 
-const ALLOW_POPUP_OPEN_FROM_PDF = false;
-
-const resolvePreviewImagePath = (path: string) => path;
 
 const App: React.FC = () => {
   // --- Redux Dispatch Setup ---
   const dispatch = useDispatch();
   const {
     records: pdfAnnotationRecords,
-    fileName: pdfAnnotationFileName,
-    sourcePath: pdfAnnotationSourcePath,
     error: pdfAnnotationError,
     isOpen: isPdfAnnotationPanelOpen,
     isLoading: isPdfAnnotationLoading,
     focusedAnnotation: focusedPdfAnnotation,
-    viewMode: pdfAnnotationViewMode,
     typeFilter: pdfAnnotationTypeFilter,
-    typeOverrides: pdfAnnotationTypeOverrides,
-    classifierMetrics: pdfAnnotationClassifierMetrics,
     processingLogs: pdfAnnotationProcessingLogs,
   } = useSelector((state: RootState) => state.annotations);
 
@@ -1304,7 +263,7 @@ const App: React.FC = () => {
     string | null
   >(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryState>({
+  const [, setHistory] = useState<HistoryState>({
     past: [],
     present: INITIAL_ROOT,
     future: [],
@@ -1361,7 +320,6 @@ const App: React.FC = () => {
   const [availableFonts, setAvailableFonts] =
     useState<string[]>(DEFAULT_EDITOR_FONTS);
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
-  const [showTerminal, setShowTerminal] = useState(false);
   const [isCompactConsoleOpening, setIsCompactConsoleOpening] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
   const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
@@ -1406,22 +364,6 @@ const App: React.FC = () => {
     }
   });
   const isPanelsSwapped = panelSide === "swapped";
-  const [aiBackend, setAiBackend] = useState<"local" | "colab">(() => {
-    try {
-      const saved = localStorage.getItem(AI_BACKEND_STORAGE_KEY);
-      return (saved as "local" | "colab") || "local";
-    } catch {
-      return "local";
-    }
-  });
-  const [colabUrl, setColabUrl] = useState<string>(() => {
-    try {
-      return localStorage.getItem(COLAB_URL_STORAGE_KEY) || DEFAULT_COLAB_URL;
-    } catch {
-      return DEFAULT_COLAB_URL;
-    }
-  });
-  const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
   const [dirtyFiles, setDirtyFiles] = useState<string[]>([]);
   const [dirtyPathKeysByFile, setDirtyPathKeysByFile] = useState<
     Record<string, string[]>
@@ -1448,34 +390,11 @@ const App: React.FC = () => {
     y: number;
   } | null>(null);
 
-  const [isVibeAssistantOpen, setIsVibeAssistantOpen] = useState(false);
-  const [vibeErrorContext, setVibeErrorContext] = useState<
-    string | undefined
-  >();
-
-  // Use a ref to track if a vibe update was just applied to handle errors
-  const lastVibeUpdateRef = useRef<number>(0);
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(false);
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<"inspector" | "gallery">(
     "inspector",
   );
-  const [isScreenshotGalleryOpen, setIsScreenshotGalleryOpen] = useState(false);
-  const [screenshotItems, setScreenshotItems] = useState<ScreenshotMetadata[]>(
-    [],
-  );
-  const [screenshotPreviewUrls, setScreenshotPreviewUrls] = useState<
-    Record<string, string>
-  >({});
-  const [screenshotCaptureBusy, setScreenshotCaptureBusy] = useState(false);
-  const [screenshotSessionRestore, setScreenshotSessionRestore] = useState<{
-    leftOpen: boolean;
-    rightOpen: boolean;
-    rightMode: "inspector" | "gallery";
-  } | null>(null);
-  const [pdfExportLogs, setPdfExportLogs] = useState<string[]>([]);
-  const [isPdfExporting, setIsPdfExporting] = useState(false);
-  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isToolboxDragging, setIsToolboxDragging] = useState(false);
   const toolboxDragTypeRef = useRef("");
   const [pendingPageSwitch, setPendingPageSwitch] =
@@ -1560,12 +479,6 @@ const App: React.FC = () => {
     useState<React.CSSProperties | null>(null);
   const [previewSelectedMatchedCssRules, setPreviewSelectedMatchedCssRules] =
     useState<PreviewMatchedCssRule[]>([]);
-  const [propertiesPanelRequestedTab, setPropertiesPanelRequestedTab] =
-    useState<"content" | "style" | "advanced" | null>(null);
-  const [
-    propertiesPanelRequestedTabNonce,
-    setPropertiesPanelRequestedTabNonce,
-  ] = useState(0);
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
   const previewFocusedPdfElementRef = useRef<HTMLElement | null>(null);
@@ -1671,7 +584,6 @@ const App: React.FC = () => {
   const zenRestoreRef = useRef<{
     isLeftPanelOpen: boolean;
     isRightPanelOpen: boolean;
-    showTerminal: boolean;
     isCodePanelOpen: boolean;
     interactionMode: "edit" | "preview" | "inspect" | "draw" | "move";
   } | null>(null);
@@ -1705,16 +617,9 @@ const App: React.FC = () => {
     selector: string | null;
     popupId: string | null;
   } | null>(null);
-  const codePanelRestoreRef = useRef<{
-    isLeftPanelOpen: boolean;
-    isRightPanelOpen: boolean;
-    showTerminal: boolean;
-  } | null>(null);
   const previewConsoleSeqRef = useRef(0);
   const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
   const previewConsoleFlushTimerRef = useRef<number | null>(null);
-  const saveMenuRef = useRef<HTMLDivElement | null>(null);
-  const bottomPanelRef = useRef<HTMLDivElement | null>(null);
   const detachedConsoleWindowRef = useRef<Window | null>(null);
   const isRefreshingFilesRef = useRef(false);
   const saveCodeDraftsRef = useRef<(() => Promise<void>) | null>(null);
@@ -1763,14 +668,6 @@ const App: React.FC = () => {
   const RIGHT_PANEL_MIN_WIDTH = 264;
   const RIGHT_PANEL_MAX_WIDTH = 640;
   const CODE_PANEL_WIDTH = 620;
-
-  const requestPropertiesPanelTab = useCallback(
-    (tab: "content" | "style" | "advanced") => {
-      setPropertiesPanelRequestedTab(tab);
-      setPropertiesPanelRequestedTabNonce((prev) => prev + 1);
-    },
-    [],
-  );
 
   const getDefaultRightPanelPosition = useCallback((width: number) => {
     const viewportWidth =
@@ -2477,16 +1374,6 @@ const App: React.FC = () => {
       // Ignore storage errors.
     }
   }, [recentProjects]);
-  useEffect(() => {
-    const onClickOutside = (event: MouseEvent) => {
-      if (!saveMenuRef.current) return;
-      if (!saveMenuRef.current.contains(event.target as Node)) {
-        setIsSaveMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
   useEffect(
     () => () => {
       if (autoSaveTimerRef.current !== null) {
@@ -3438,13 +2325,11 @@ const App: React.FC = () => {
         zenRestoreRef.current = {
           isLeftPanelOpen,
           isRightPanelOpen,
-          showTerminal,
           isCodePanelOpen,
           interactionMode,
         };
         setIsLeftPanelOpen(false);
         setIsRightPanelOpen(false);
-        setShowTerminal(false);
         setIsCodePanelOpen(false);
         setInteractionMode("preview");
         return true;
@@ -3454,7 +2339,6 @@ const App: React.FC = () => {
       if (restore) {
         setIsLeftPanelOpen(restore.isLeftPanelOpen);
         setIsRightPanelOpen(restore.isRightPanelOpen);
-        setShowTerminal(restore.showTerminal);
         setIsCodePanelOpen(restore.isCodePanelOpen);
         setInteractionMode(restore.interactionMode);
       }
@@ -3466,7 +2350,6 @@ const App: React.FC = () => {
     isLeftPanelOpen,
     isRightPanelOpen,
     isCodePanelOpen,
-    showTerminal,
   ]); // --- Keyboard Shortcuts ---
   useEffect(() => {
     if (isCodePanelOpen) {
@@ -3565,15 +2448,6 @@ const App: React.FC = () => {
           setPreviewMode("edit");
           return;
         }
-        if (key === "k") {
-          e.preventDefault();
-          setIsCommandPaletteOpen((prev) => !prev);
-          return;
-        }
-        if (e.code === "Backquote") {
-          e.preventDefault();
-          setShowTerminal((prev) => !prev);
-        }
         // Let native editor undo/redo work inside inputs/contentEditable.
         return;
       }
@@ -3616,11 +2490,6 @@ const App: React.FC = () => {
 
       if (!hasModifier) return;
 
-      if (key === "k") {
-        e.preventDefault();
-        setIsCommandPaletteOpen((prev) => !prev);
-        return;
-      }
       if (key === "f") {
         e.preventDefault();
         setIsLeftPanelOpen(true);
@@ -3652,11 +2521,6 @@ const App: React.FC = () => {
         setSidebarToolMode("edit");
         setInteractionMode("preview");
         setPreviewMode("edit");
-        return;
-      }
-      if (key === "`") {
-        e.preventDefault();
-        setShowTerminal((prev) => !prev);
         return;
       }
       if (key === "j") {
@@ -3758,17 +2622,6 @@ const App: React.FC = () => {
     [root, selectedId, pushHistory],
   );
 
-  const handleUpdateAttributes = useCallback(
-    (attributes: Record<string, string>) => {
-      if (!selectedId) return;
-      const newRoot = updateElementInTree(root, selectedId, (el) => ({
-        ...el,
-        attributes,
-      }));
-      pushHistory(newRoot);
-    },
-    [root, selectedId, pushHistory],
-  );
   const handleUpdateIdentity = useCallback(
     (identity: { id: string; className: string }) => {
       if (!selectedId) return;
@@ -3861,17 +2714,9 @@ const App: React.FC = () => {
       pushHistory(newRoot);
       setSelectedId(newElement.id);
       setIsRightPanelOpen(true);
-      requestPropertiesPanelTab("content");
     },
-    [root, selectedId, pushHistory, requestPropertiesPanelTab],
+    [root, selectedId, pushHistory],
   );
-
-  const handleDeleteElement = useCallback(() => {
-    if (!selectedId || selectedId === "root") return;
-    const newRoot = deleteElementFromTree(root, selectedId);
-    pushHistory(newRoot);
-    setSelectedId(null);
-  }, [root, selectedId, pushHistory]);
   const handleSidebarAddElement = useCallback(
     (type: string) => {
       if (
@@ -3906,199 +2751,23 @@ const App: React.FC = () => {
   }, [requestPreviewRefreshWithUnsavedGuard]);
   const appendPdfAnnotationLog = useCallback(
     (message: string, level: "info" | "warn" | "error" = "info") => {
-      dispatch(
-        addProcessingLog({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          timestamp: new Date().toISOString(),
-          message,
-          level,
-        }),
-      );
+      appendPdfAnnotationLogHelper(dispatch, message, level);
     },
     [dispatch],
   );
   const runPdfAnnotationMapping = useCallback(
     async (pdfPath: string, useCache: boolean) => {
-      if (!projectPath || isPdfAnnotationLoading) return;
-      const normalizedPdfPath = normalizePath(pdfPath);
-      const normalizedProject = normalizePath(projectPath);
-      dispatch(clearProcessingLogs());
-      appendPdfAnnotationLog("Starting PDF annotation mapping.");
-      if (useCache) {
-        appendPdfAnnotationLog("Checking local cache for previous results.");
-        const cache = readPdfAnnotationCache();
-        const cachedEntry =
-          cache?.projects?.[normalizedProject]?.entries?.[normalizedPdfPath];
-        if (cachedEntry) {
-          const cachedRecords = cachedEntry.records || [];
-          dispatch(setRecords(cachedRecords));
-          const metrics = evaluateAnnotationTypeClassifier(cachedRecords).micro;
-          dispatch(setClassifierMetrics(metrics as any));
-          dispatch(setFileName(cachedEntry.fileName || ""));
-          dispatch(setSourcePath(normalizedPdfPath));
-          dispatch(setError(null));
-          dispatch(setIsOpen(true));
-          dispatch(setFocusedAnnotation(null));
-          appendPdfAnnotationLog(
-            `Cache hit. Loaded ${cachedRecords.length} annotations.`,
-          );
-          return;
-        }
-        appendPdfAnnotationLog("Cache miss. Running full extraction.");
-      }
-
-      dispatch(setIsLoading(true));
-      dispatch(setError(null));
-      dispatch(setIsOpen(true));
-      dispatch(setFocusedAnnotation(null));
-      dispatch(setRecords([]));
-      try {
-        appendPdfAnnotationLog("Reading PDF file into memory.");
-        const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
-          normalizedPdfPath,
-        );
-        const pdfData = toByteArray(binaryData);
-        appendPdfAnnotationLog("Preparing PDF data for extraction.");
-        let preExtractedAnnotations: PdfAnnotationRecord[] | null = null;
-        try {
-          appendPdfAnnotationLog("Running background extractor script.");
-          const appRoot = normalizePath(String((window as any).NL_PATH || ""));
-          const workerScriptPath = appRoot
-            ? `${appRoot}/scripts/pdf_annotation_worker.mjs`
-            : "";
-          const workerOutputPath = projectPath
-            ? `${normalizePath(projectPath)}/.nx_tmp_pdf_annotations_${Date.now()}.json`
-            : "";
-          if (workerScriptPath && workerOutputPath) {
-            let nodeExecutable = "node";
-            if (appRoot) {
-              const bundledNode = normalizePath(`${appRoot}/node/node.exe`);
-              try {
-                await (Neutralino as any).filesystem.getStats(bundledNode);
-                nodeExecutable = `"${bundledNode}"`;
-              } catch {
-                nodeExecutable = "node";
-              }
-            }
-            appendPdfAnnotationLog(
-              `PDF worker paths: node=${nodeExecutable}, script=${workerScriptPath}`,
-            );
-            console.log("[PDF Worker] node:", nodeExecutable);
-            console.log("[PDF Worker] script:", workerScriptPath);
-            console.log("[PDF Worker] output:", workerOutputPath);
-            const command = `${nodeExecutable} "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
-            const execResult = await (Neutralino as any).os.execCommand(
-              command,
-            );
-            console.log("[PDF Worker] execResult:", execResult);
-            if ((execResult?.exitCode ?? 1) === 0) {
-              appendPdfAnnotationLog("Parsing extractor output.");
-              const workerRaw = await (Neutralino as any).filesystem.readFile(
-                workerOutputPath,
-              );
-              const parsed = JSON.parse(String(workerRaw || "{}"));
-              if (Array.isArray(parsed?.annotations)) {
-                preExtractedAnnotations = parsed.annotations;
-                appendPdfAnnotationLog(
-                  `Extractor produced ${preExtractedAnnotations.length} annotations.`,
-                );
-              }
-            }
-            try {
-              await (Neutralino as any).filesystem.removeFile(workerOutputPath);
-            } catch {}
-          }
-        } catch (workerError) {
-          console.warn("Background PDF extraction failed:", workerError);
-          appendPdfAnnotationLog(
-            "Background extractor failed. No annotations returned.",
-            "warn",
-          );
-        }
-        if (!preExtractedAnnotations || preExtractedAnnotations.length === 0) {
-          appendPdfAnnotationLog(
-            "Background extractor returned no annotations. Falling back to in-app worker.",
-            "warn",
-          );
-          preExtractedAnnotations = null;
-        }
-        appendPdfAnnotationLog("Mapping annotations to project files.");
-        const details = await buildMappedPdfAnnotations({
-          pdfData,
-          files,
-          absolutePathIndex: filePathIndexRef.current,
-          preExtractedAnnotations,
-          readBinaryFile: async (absolutePath: string) => {
-            const nextBinary = await (
-              Neutralino as any
-            ).filesystem.readBinaryFile(normalizePath(absolutePath));
-            const bytes = toByteArray(nextBinary);
-            const copy = new Uint8Array(bytes.byteLength);
-            copy.set(bytes);
-            return copy.buffer;
-          },
-        });
-        const fileName =
-          normalizePath(normalizedPdfPath)
-            .split("/")
-            .filter(Boolean)
-            .slice(-1)[0] || normalizedPdfPath;
-        dispatch(setRecords(details));
-        appendPdfAnnotationLog("Scoring annotation types.");
-        const metrics = evaluateAnnotationTypeClassifier(details).micro;
-        dispatch(setClassifierMetrics(metrics as any));
-        dispatch(setFileName(fileName));
-        dispatch(setSourcePath(normalizedPdfPath));
-        appendPdfAnnotationLog(
-          `Mapping complete. ${details.length} annotations ready.`,
-        );
-        appendPdfAnnotationLog("Caching results locally.");
-        writePdfAnnotationCache(
-          normalizedProject,
-          normalizedPdfPath,
-          fileName,
-          details,
-        );
-        appendPdfAnnotationLog("Results cached for faster reloads.");
-
-        // --- DEBUG EXPORT: Save mapping JSON to project root ---
-        try {
-          const debugOutputPath = `${normalizePath(projectPath)}/pdf_mapping_debug.json`;
-          await (Neutralino as any).filesystem.writeFile(
-            debugOutputPath,
-            JSON.stringify(details, null, 2),
-          );
-          console.log(
-            `[NX-DEBUG] Mapping JSON exported to: ${debugOutputPath}`,
-          );
-        } catch (exportError) {
-          console.warn(
-            "[NX-DEBUG] Failed to export mapping JSON:",
-            exportError,
-          );
-          appendPdfAnnotationLog("Debug export failed (non-blocking).", "warn");
-        }
-      } catch (error) {
-        console.error("Failed to analyze annotated PDF:", error);
-        dispatch(setRecords([]));
-        dispatch(setClassifierMetrics(null));
-        dispatch(
-          setError(
-            error instanceof Error
-              ? error.message
-              : "Could not analyze this PDF inside the app.",
-          ),
-        );
-        appendPdfAnnotationLog(
-          error instanceof Error
-            ? `Error: ${error.message}`
-            : "Error: Could not analyze this PDF inside the app.",
-          "error",
-        );
-      } finally {
-        dispatch(setIsLoading(false));
-        appendPdfAnnotationLog("Processing finished.");
-      }
+      await runPdfAnnotationMappingHelper({
+        projectPath,
+        isPdfAnnotationLoading,
+        pdfPath,
+        useCache,
+        files,
+        absolutePathIndex: filePathIndexRef.current,
+        dispatch,
+        readPdfAnnotationCache,
+        writePdfAnnotationCache,
+      });
     },
     [
       files,
@@ -4111,36 +2780,14 @@ const App: React.FC = () => {
     ],
   );
   const handleOpenPdfAnnotationsPicker = useCallback(async () => {
-    if (!projectPath || isPdfAnnotationLoading) return;
-    if (pdfAnnotationRecords.length > 0) {
-      dispatch(setIsOpen(true));
-      return;
-    }
-
-    try {
-      const selections = await (Neutralino as any).os.showOpenDialog(
-        "Select annotated PDF",
-        {
-          multiSelections: false,
-          filters: [{ name: "PDF", extensions: ["pdf"] }],
-        },
-      );
-      const pdfPath = Array.isArray(selections) ? selections[0] : null;
-      if (!pdfPath) return;
-      await runPdfAnnotationMapping(pdfPath, true);
-    } catch (error) {
-      console.error("Failed to analyze annotated PDF:", error);
-      dispatch(setRecords([]));
-      dispatch(
-        setError(
-          error instanceof Error
-            ? error.message
-            : "Could not analyze this PDF inside the app.",
-        ),
-      );
-    } finally {
-      // Loading handled by mapping helper.
-    }
+    await selectPdfAndRunMapping({
+      projectPath,
+      isPdfAnnotationLoading,
+      existingRecordsCount: pdfAnnotationRecords.length,
+      useCache: true,
+      dispatch,
+      runMapping: runPdfAnnotationMapping,
+    });
   }, [
     isPdfAnnotationLoading,
     pdfAnnotationRecords.length,
@@ -4149,21 +2796,14 @@ const App: React.FC = () => {
     dispatch,
   ]);
   const handleRefreshPdfAnnotationMapping = useCallback(async () => {
-    if (!projectPath || isPdfAnnotationLoading) return;
-    try {
-      const selections = await (Neutralino as any).os.showOpenDialog(
-        "Select annotated PDF",
-        {
-          multiSelections: false,
-          filters: [{ name: "PDF", extensions: ["pdf"] }],
-        },
-      );
-      const pdfPath = Array.isArray(selections) ? selections[0] : null;
-      if (!pdfPath) return;
-      await runPdfAnnotationMapping(pdfPath, false);
-    } catch (error) {
-      console.error("Failed to refresh annotated PDF:", error);
-    }
+    await selectPdfAndRunMapping({
+      projectPath,
+      isPdfAnnotationLoading,
+      existingRecordsCount: pdfAnnotationRecords.length,
+      useCache: false,
+      dispatch,
+      runMapping: runPdfAnnotationMapping,
+    });
   }, [isPdfAnnotationLoading, projectPath, runPdfAnnotationMapping]);
   const handleJumpToPdfAnnotation = useCallback(
     (annotation: PdfAnnotationUiRecord) => {
@@ -4298,37 +2938,6 @@ const App: React.FC = () => {
     void transition.finished.finally(cleanupTransitionVars);
   }, [theme]);
 
-  const handleCommandAction = (actionId: string, payload?: any) => {
-    switch (actionId) {
-      case "undo":
-        runUndo();
-        break;
-      case "redo":
-        runRedo();
-        break;
-      case "view-desktop":
-        setDeviceMode("desktop");
-        break;
-      case "view-mobile":
-        setDeviceMode("mobile");
-        break;
-      case "toggle-preview":
-        if (interactionModeRef.current === "preview") {
-          setSidebarToolMode("edit");
-          setPreviewMode("edit");
-        } else {
-          setSidebarToolMode("edit");
-          requestSwitchToPreviewMode();
-        }
-        break;
-      case "clear-selection":
-        setSelectedId(null);
-        break;
-      default:
-        if (actionId.startsWith("add-")) handleAddElement(payload, "inside");
-    }
-  };
-
   // --- Neutralino File System Integration ---
   const handleOpenFolder = async (preselectedFolder?: string | null) => {
     try {
@@ -4342,418 +2951,31 @@ const App: React.FC = () => {
       setIsLeftPanelOpen(true);
 
       const rootPath = normalizePath(selectedFolder);
-      const fsFiles: FileMap = {};
-      const absolutePathIndex: Record<string, string> = {};
-      let sharedDirectoryPath: string | null = null;
-      let nearestSharedParent: string | null = null;
-
-      const upsertIndexedFile = (virtualPath: string, absolutePath: string) => {
-        const normalizedVirtual = normalizeProjectRelative(virtualPath);
-        if (!normalizedVirtual) return;
-        if (fsFiles[normalizedVirtual]) return;
-        const name = normalizedVirtual.includes("/")
-          ? normalizedVirtual.slice(normalizedVirtual.lastIndexOf("/") + 1)
-          : normalizedVirtual;
-        fsFiles[normalizedVirtual] = {
-          path: normalizedVirtual,
-          name,
-          type: inferFileType(name),
-          content: "",
-        };
-        absolutePathIndex[normalizedVirtual] = normalizePath(absolutePath);
-      };
-
-      const walkDirectory = async (directoryPath: string): Promise<void> => {
-        const entries = await (Neutralino as any).filesystem.readDirectory(
-          directoryPath,
-        );
-
-        for (const entry of entries as Array<{ entry: string; type: string }>) {
-          if (!entry?.entry || entry.entry === "." || entry.entry === "..") {
-            continue;
-          }
-
-          const absolutePath = joinPath(directoryPath, entry.entry);
-          if (entry.type === "DIRECTORY") {
-            if (IGNORED_FOLDERS.has(entry.entry.toLowerCase())) continue;
-            await walkDirectory(absolutePath);
-            continue;
-          }
-          if (entry.type !== "FILE") continue;
-
-          const normalizedAbsolute = normalizePath(absolutePath);
-          const relativePath = normalizedAbsolute
-            .replace(`${rootPath}/`, "")
-            .replace(rootPath, "");
-          const normalizedRelative = relativePath.replace(/^\/+/, "");
-          if (!normalizedRelative) continue;
-          upsertIndexedFile(normalizedRelative, normalizedAbsolute);
-        }
-      };
-
-      const indexSharedDirectory = async (
-        sharedRoot: string,
-      ): Promise<void> => {
-        const sharedBase = normalizePath(sharedRoot);
-        const walkShared = async (directoryPath: string): Promise<void> => {
-          const entries = await (Neutralino as any).filesystem.readDirectory(
-            directoryPath,
-          );
-          for (const entry of entries as Array<{
-            entry: string;
-            type: string;
-          }>) {
-            if (!entry?.entry || entry.entry === "." || entry.entry === "..") {
-              continue;
-            }
-            const absolutePath = joinPath(directoryPath, entry.entry);
-            if (entry.type === "DIRECTORY") {
-              await walkShared(absolutePath);
-              continue;
-            }
-            if (entry.type !== "FILE") continue;
-            const normalizedAbsolute = normalizePath(absolutePath);
-            const relativeFromShared = normalizedAbsolute
-              .replace(`${sharedBase}/`, "")
-              .replace(sharedBase, "");
-            const sharedVirtual = `shared/${relativeFromShared.replace(/^\/+/, "")}`;
-            upsertIndexedFile(sharedVirtual, normalizedAbsolute);
-          }
-        };
-        await walkShared(sharedBase);
-      };
-
-      const patchMtVeevaCheck = async (sharedRoot: string): Promise<void> => {
-        const mtPath = joinPath(sharedRoot, "js/mt.js");
-        let raw = "";
-        try {
-          raw = await (Neutralino as any).filesystem.readFile(mtPath);
-        } catch {
-          console.warn(
-            "Preview mt.js patch skipped: shared/js/mt.js not found at:",
-            mtPath,
-          );
-          return;
-        }
-        if (typeof raw !== "string" || raw.length === 0) return;
-
-        const markerStart = "// nocode-x-veeva-bypass:start";
-        const markerEnd = "// nocode-x-veeva-bypass:end";
-        const markerVersion = "// nocode-x-veeva-bypass:v4";
-
-        const markerBlock = `
-  ${markerStart}
-  ${markerVersion}
-  try {
-    var host = (window.location && window.location.hostname) ? window.location.hostname : "";
-    var isLocalPreviewHost = (host === "127.0.0.1" || host === "localhost");
-    var isInIframe = window.parent && window.parent !== window;
-    if (isLocalPreviewHost && isInIframe) {
-      try {
-        if (!window.__nocodeXPreviewConsoleBridge) {
-          window.__nocodeXPreviewConsoleBridge = true;
-          var toText = function(v) {
-            if (typeof v === "string") return v;
-            try { return JSON.stringify(v); } catch (_e) { return String(v); }
-          };
-          var postToHost = function(level, args, source) {
-            if (typeof window.parent.postMessage !== "function") return;
-            var msg = Array.prototype.map.call(args || [], toText).join(" ");
-            window.parent.postMessage({
-              type: "PREVIEW_CONSOLE",
-              level: level,
-              source: source || "preview",
-              message: msg
-            }, "*");
-          };
-          ["log", "info", "warn", "error", "debug"].forEach(function(level) {
-            if (!window.console || typeof window.console[level] !== "function") return;
-            var original = window.console[level].bind(window.console);
-            window.console[level] = function() {
-              try { postToHost(level, arguments, "console"); } catch (_e) {}
-              return original.apply(window.console, arguments);
-            };
-          });
-          window.addEventListener("error", function(ev) {
-            try {
-              postToHost("error", [ev.message, ev.filename + ":" + ev.lineno + ":" + ev.colno], "window.onerror");
-            } catch (_e) {}
-          });
-          window.addEventListener("unhandledrejection", function(ev) {
-            try {
-              var reason = ev && ev.reason ? ev.reason : "Unhandled promise rejection";
-              postToHost("error", [reason], "unhandledrejection");
-            } catch (_e) {}
-          });
-        }
-      } catch (e) {}
-      try {
-        if (window.com && com.veeva && com.veeva.clm && typeof com.veeva.clm.isEngage === "function") {
-          com.veeva.clm.isEngage = function() { return false; };
-        }
-      } catch (e) {}
-      if (typeof window.parent.postMessage === "function") {
-        window.parent.postMessage({
-          type: "PREVIEW_PATH_CHANGED",
-          path: window.location.pathname || ""
-        }, "*");
-      }
-      try { console.log("[NoCodeX] Preview Veeva bypass active"); } catch (e) {}
-      return false;
-    }
-  } catch (e) {}
-  ${markerEnd}
-`;
-
-        const patchTargetRegex = /isVeevaEnvironment:\s*function\s*\(\)\s*\{/;
-        let patched = raw;
-
-        if (raw.includes(markerStart) && raw.includes(markerEnd)) {
-          const startIndex = raw.indexOf(markerStart);
-          const endIndex = raw.indexOf(markerEnd, startIndex);
-          const existingBlock =
-            startIndex >= 0 && endIndex > startIndex
-              ? raw.slice(startIndex, endIndex + markerEnd.length)
-              : "";
-          const isCurrent = existingBlock.includes(markerVersion);
-          if (isCurrent) {
-            return;
-          }
-          const endLineIndex = raw.indexOf("\n", endIndex);
-          const afterEnd = endLineIndex >= 0 ? endLineIndex + 1 : raw.length;
-          patched = `${raw.slice(0, startIndex)}${markerBlock}${raw.slice(afterEnd)}`;
-        } else if (patchTargetRegex.test(raw)) {
-          patched = raw.replace(
-            patchTargetRegex,
-            (matched) => `${matched}${markerBlock}`,
-          );
-        } else {
-          console.warn(
-            "Preview mt.js patch skipped: isVeevaEnvironment hook not found.",
-          );
-          return;
-        }
-
-        if (patched === raw) return;
-
-        try {
-          await (Neutralino as any).filesystem.writeFile(mtPath, patched);
-          console.log("[Preview] Applied mt.js Veeva bypass patch:", mtPath);
-        } catch (error) {
-          console.warn("Preview mt.js patch failed:", error);
-        }
-      };
-
-      await walkDirectory(rootPath);
-
-      // Some legacy projects keep `/shared` as a sibling/ancestor directory.
-      // Index all discovered ancestor shared dirs as virtual `shared/...`.
-      let cursor: string | null = rootPath;
-      for (let level = 0; level < 10 && cursor; level += 1) {
-        const sharedCandidate = joinPath(cursor, "shared");
-        try {
-          await (Neutralino as any).filesystem.readDirectory(sharedCandidate);
-          await indexSharedDirectory(sharedCandidate);
-          if (!sharedDirectoryPath) {
-            sharedDirectoryPath = sharedCandidate;
-          }
-          if (!nearestSharedParent) {
-            nearestSharedParent = cursor;
-          }
-        } catch {
-          // shared directory doesn't exist at this ancestor; continue upward.
-        }
-        cursor = getParentPath(cursor);
-      }
+      let {
+        files: fsFiles,
+        absolutePathIndex,
+        sharedDirectoryPath,
+        nearestSharedParent,
+      } = await indexProjectForOpen(rootPath);
 
       if (sharedDirectoryPath) {
         await patchMtVeevaCheck(sharedDirectoryPath);
       }
 
-      const presentationCssVirtualPath = findFilePathCaseInsensitive(
+      const runtime = await initializeProjectOpenRuntime({
         fsFiles,
-        PRESENTATION_CSS_VIRTUAL_PATH,
-      );
-      presentationCssPathRef.current = presentationCssVirtualPath;
-
-      let fontCacheVirtualPath: string | null = null;
-      let fontCacheAbsolutePath: string | null = null;
-      if (sharedDirectoryPath) {
-        const existingCachePath = findFilePathCaseInsensitive(
-          fsFiles,
-          FONT_CACHE_VIRTUAL_PATH,
-        );
-        if (existingCachePath) {
-          fontCacheVirtualPath = existingCachePath;
-          fontCacheAbsolutePath = absolutePathIndex[existingCachePath] || null;
-        } else {
-          fontCacheVirtualPath = FONT_CACHE_VIRTUAL_PATH;
-          fontCacheAbsolutePath = normalizePath(
-            joinPath(sharedDirectoryPath, "js/nocodex-fonts.json"),
-          );
-          absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
-        }
-      }
-      fontCachePathRef.current = fontCacheVirtualPath;
-
-      let projectFontFamilies: string[] = [];
-      let loadedFromCache = false;
-      if (fontCacheVirtualPath && fontCacheAbsolutePath) {
-        try {
-          const cacheRaw = await (Neutralino as any).filesystem.readFile(
-            fontCacheAbsolutePath,
-          );
-          if (typeof cacheRaw === "string" && cacheRaw.trim().length > 0) {
-            const cachedFamilies = parseFontCacheFamilies(cacheRaw);
-            if (cachedFamilies.length > 0) {
-              projectFontFamilies = cachedFamilies;
-              loadedFromCache = true;
-            }
-          }
-        } catch {
-          // Cache file may not exist yet for first-time projects.
-        }
-      }
-
-      if (!loadedFromCache && presentationCssVirtualPath) {
-        const presentationAbsolutePath =
-          absolutePathIndex[presentationCssVirtualPath];
-        if (presentationAbsolutePath) {
-          try {
-            const presentationCss = await (
-              Neutralino as any
-            ).filesystem.readFile(presentationAbsolutePath);
-            if (
-              typeof presentationCss === "string" &&
-              presentationCss.length > 0
-            ) {
-              projectFontFamilies =
-                parsePresentationCssFontFamilies(presentationCss);
-            }
-          } catch {
-            // Ignore missing presentation.css reads and fall back to fonts folder.
-          }
-        }
-      }
-
-      if (projectFontFamilies.length === 0) {
-        projectFontFamilies = collectSharedFontFamiliesFromFileMap(fsFiles);
-      }
-      setAvailableFonts(buildEditorFontOptions(projectFontFamilies));
-
-      if (
-        !loadedFromCache &&
-        projectFontFamilies.length > 0 &&
-        fontCacheVirtualPath &&
-        fontCacheAbsolutePath
-      ) {
-        const cachePayload: FontCachePayload = {
-          version: FONT_CACHE_VERSION,
-          source: "presentation.css",
-          generatedAt: new Date().toISOString(),
-          fonts: dedupeFontFamilies(projectFontFamilies),
-        };
-        const serializedCache = JSON.stringify(cachePayload, null, 2);
-        try {
-          await (Neutralino as any).filesystem.writeFile(
-            fontCacheAbsolutePath,
-            serializedCache,
-          );
-          if (!fsFiles[fontCacheVirtualPath]) {
-            fsFiles[fontCacheVirtualPath] = {
-              path: fontCacheVirtualPath,
-              name: "nocodex-fonts.json",
-              type: inferFileType("nocodex-fonts.json"),
-              content: serializedCache,
-            };
-            absolutePathIndex[fontCacheVirtualPath] = fontCacheAbsolutePath;
-          } else {
-            fsFiles[fontCacheVirtualPath] = {
-              ...fsFiles[fontCacheVirtualPath],
-              content: serializedCache,
-            };
-          }
-        } catch (error) {
-          console.warn("Failed writing initial font cache:", error);
-        }
-      }
-
-      const mountBasePath = nearestSharedParent || rootPath;
-      const mountBaseName =
-        normalizePath(mountBasePath).split("/").filter(Boolean).pop() || "";
-      const previewRootAliasPath =
-        mountBaseName && !mountBaseName.startsWith(".")
-          ? `/${mountBaseName}`
-          : null;
-      let mountReady = false;
-      try {
-        const mounts = await (Neutralino as any).server.getMounts();
-        if (
-          previewRootAliasPathRef.current &&
-          mounts?.[previewRootAliasPathRef.current]
-        ) {
-          await (Neutralino as any).server.unmount(
-            previewRootAliasPathRef.current,
-          );
-        }
-        if (mounts?.[PREVIEW_MOUNT_PATH]) {
-          await (Neutralino as any).server.unmount(PREVIEW_MOUNT_PATH);
-        }
-        await (Neutralino as any).server.mount(
-          PREVIEW_MOUNT_PATH,
-          mountBasePath,
-        );
-        if (
-          previewRootAliasPath &&
-          previewRootAliasPath !== PREVIEW_MOUNT_PATH &&
-          previewRootAliasPath !== SHARED_MOUNT_PATH &&
-          previewRootAliasPath !== SHARED_MOUNT_PATH_IN_PREVIEW
-        ) {
-          if (mounts?.[previewRootAliasPath]) {
-            await (Neutralino as any).server.unmount(previewRootAliasPath);
-          }
-          await (Neutralino as any).server.mount(
-            previewRootAliasPath,
-            mountBasePath,
-          );
-          previewRootAliasPathRef.current = previewRootAliasPath;
-        } else {
-          previewRootAliasPathRef.current = null;
-        }
-
-        if (sharedDirectoryPath) {
-          if (mounts?.[SHARED_MOUNT_PATH]) {
-            await (Neutralino as any).server.unmount(SHARED_MOUNT_PATH);
-          }
-          await (Neutralino as any).server.mount(
-            SHARED_MOUNT_PATH,
-            sharedDirectoryPath,
-          );
-          if (mounts?.[SHARED_MOUNT_PATH_IN_PREVIEW]) {
-            await (Neutralino as any).server.unmount(
-              SHARED_MOUNT_PATH_IN_PREVIEW,
-            );
-          }
-          await (Neutralino as any).server.mount(
-            SHARED_MOUNT_PATH_IN_PREVIEW,
-            sharedDirectoryPath,
-          );
-        } else if (mounts?.[SHARED_MOUNT_PATH]) {
-          await (Neutralino as any).server.unmount(SHARED_MOUNT_PATH);
-          if (mounts?.[SHARED_MOUNT_PATH_IN_PREVIEW]) {
-            await (Neutralino as any).server.unmount(
-              SHARED_MOUNT_PATH_IN_PREVIEW,
-            );
-          }
-        }
-
-        mountReady = true;
-      } catch (error) {
-        console.warn(
-          "Virtual host mount failed. Falling back to srcDoc preview.",
-          error,
-        );
-      }
+        absolutePathIndex,
+        sharedDirectoryPath,
+        nearestSharedParent,
+        rootPath,
+        previousPreviewRootAliasPath: previewRootAliasPathRef.current,
+      });
+      fsFiles = runtime.fsFiles;
+      absolutePathIndex = runtime.absolutePathIndex;
+      presentationCssPathRef.current = runtime.presentationCssVirtualPath;
+      fontCachePathRef.current = runtime.fontCacheVirtualPath;
+      previewRootAliasPathRef.current = runtime.previewRootAliasPath;
+      setAvailableFonts(runtime.availableFonts);
 
       filePathIndexRef.current = absolutePathIndex;
       loadingFilesRef.current.clear();
@@ -4782,8 +3004,8 @@ const App: React.FC = () => {
           ...prev.filter((entry) => normalizePath(entry) !== rootPath),
         ].slice(0, 5),
       );
-      setPreviewMountBasePath(mountBasePath);
-      setIsPreviewMountReady(mountReady);
+      setPreviewMountBasePath(runtime.mountBasePath);
+      setIsPreviewMountReady(runtime.mountReady);
 
       const defaultHtmlFile = pickDefaultHtmlFile(fsFiles);
       const firstOpenableFile = Object.values(fsFiles).find((file) =>
@@ -4862,149 +3084,20 @@ const App: React.FC = () => {
     window.addEventListener("mousedown", handlePointer);
     return () => window.removeEventListener("mousedown", handlePointer);
   }, [hideQuickTextEdit]);
-  const ensureDirectoryTree = useCallback(async (absolutePath: string) => {
-    const normalized = normalizePath(absolutePath).replace(/[\\/]$/, "");
-    if (!normalized) return;
-    const parts = normalized.split("/");
-    if (parts.length === 0) return;
-    let current = "";
-    let startIndex = 0;
-    if (/^[A-Za-z]:$/.test(parts[0])) {
-      current = `${parts[0]}/`;
-      startIndex = 1;
-    } else if (parts[0] === "") {
-      current = "/";
-      startIndex = 1;
-    } else {
-      current = parts[0];
-      startIndex = 1;
-    }
-    for (let index = startIndex; index < parts.length; index += 1) {
-      const segment = parts[index];
-      if (!segment) continue;
-      current = current.replace(/[\\/]$/, "");
-      current = `${current}/${segment}`;
-      try {
-        await (Neutralino as any).filesystem.createDirectory(current);
-      } catch {
-        // Ignore "already exists" and permission rejections for existing roots.
-      }
-    }
-  }, []);
-  const ensureDirectoryForFile = useCallback(
-    async (absoluteFilePath: string) => {
-      const parent = getParentPath(normalizePath(absoluteFilePath));
-      if (!parent) return;
-      await ensureDirectoryTree(parent);
-    },
-    [ensureDirectoryTree],
-  );
-  const dataUrlToBytes = useCallback((dataUrl: string): Uint8Array => {
-    const base64 = dataUrl.split(",")[1] || "";
-    const binary = window.atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }, []);
-  const resolveScreenshotIndexPath = useCallback(() => {
-    if (!projectPath) return null;
-    return `${normalizePath(projectPath)}/${SCREENSHOT_INDEX_FILE}`;
-  }, [projectPath]);
-  const resolveScreenshotDir = useCallback(() => {
-    if (!projectPath) return null;
-    return `${normalizePath(projectPath)}/${SCREENSHOT_DIR}`;
-  }, [projectPath]);
-  const resolvePdfExportDir = useCallback(() => {
-    if (!projectPath) return null;
-    return `${normalizePath(projectPath)}/${PDF_EXPORT_DIR}`;
-  }, [projectPath]);
+  const ensureDirectoryTreeStable = useCallback(ensureDirectoryTree, []);
+  const ensureDirectoryForFileStable = useCallback(ensureDirectoryForFile, []);
   const resolvePreviewAssetUrl = useCallback(
     (rawUrl: string | null | undefined) => {
-      if (!rawUrl) return rawUrl || null;
-      if (isExternalUrl(rawUrl)) return rawUrl;
-      if (!projectPath || !previewMountBasePath) return rawUrl;
-      const cleaned = rawUrl.split("#")[0].split("?")[0];
-      const basePath = selectedPreviewHtmlRef.current || "";
-      const normalizedRelative = cleaned.startsWith("/")
-        ? normalizeProjectRelative(cleaned.slice(1))
-        : resolveProjectRelativePath(basePath, cleaned) || cleaned;
-      const absolutePath =
-        filePathIndexRef.current[normalizedRelative] ||
-        normalizePath(joinPath(projectPath, normalizedRelative));
-      const relativePath = toMountRelativePath(
+      return resolvePreviewAssetUrlHelper({
+        rawUrl,
+        projectPath,
         previewMountBasePath,
-        absolutePath,
-      );
-      if (!relativePath) return rawUrl;
-      const nlPort = String((window as any).NL_PORT || "").trim();
-      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
-      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-      return previewServerOrigin
-        ? `${previewServerOrigin}${mountPath}`
-        : mountPath;
+        selectedPreviewHtml: selectedPreviewHtmlRef.current || "",
+        filePathIndex: filePathIndexRef.current,
+      });
     },
     [projectPath, previewMountBasePath],
   );
-  const loadScreenshotIndex = useCallback(async () => {
-    const indexPath = resolveScreenshotIndexPath();
-    if (!indexPath) return [];
-    try {
-      const raw = await (Neutralino as any).filesystem.readFile(indexPath);
-      const parsed = JSON.parse(String(raw || "[]"));
-      if (Array.isArray(parsed)) {
-        return parsed as ScreenshotMetadata[];
-      }
-    } catch {
-      // Ignore missing or malformed index.
-    }
-    return [];
-  }, [resolveScreenshotIndexPath]);
-  const writeScreenshotIndex = useCallback(
-    async (items: ScreenshotMetadata[]) => {
-      const indexPath = resolveScreenshotIndexPath();
-      if (!indexPath) return;
-      await ensureDirectoryForFile(indexPath);
-      await (Neutralino as any).filesystem.writeFile(
-        indexPath,
-        JSON.stringify(items, null, 2),
-      );
-    },
-    [ensureDirectoryForFile, resolveScreenshotIndexPath],
-  );
-  const findVisiblePopupInDoc = useCallback((doc: Document | null) => {
-    if (!doc) return null;
-    const selectors = [
-      "[data-popup-id]",
-      ".modal",
-      ".dialog",
-      "[role='dialog']",
-      ".popup",
-    ];
-    const candidates = selectors
-      .flatMap(
-        (selector) =>
-          Array.from(doc.querySelectorAll(selector)) as HTMLElement[],
-      )
-      .filter(Boolean);
-    for (const el of candidates) {
-      const style = doc.defaultView?.getComputedStyle(el);
-      if (!style) continue;
-      if (style.display === "none" || style.visibility === "hidden") continue;
-      if (Number.parseFloat(style.opacity || "1") <= 0.05) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 4 || rect.height < 4) continue;
-      const popupId = el.getAttribute("data-popup-id") || el.id || null;
-      const popupSelector = el.getAttribute("data-popup-id")
-        ? `[data-popup-id="${el.getAttribute("data-popup-id")}"]`
-        : el.id
-          ? `#${el.id}`
-          : null;
-      return { popupId, popupSelector };
-    }
-    return null;
-  }, []);
   const openPopupInPreview = useCallback(
     (selector: string | null, popupId: string | null) => {
       const doc =
@@ -5035,386 +3128,66 @@ const App: React.FC = () => {
     },
     [],
   );
-  const handleScreenshotCapture = useCallback(async () => {
-    if (!projectPath || screenshotCaptureBusy) return;
-    const doc =
-      previewFrameRef.current?.contentDocument ??
-      previewFrameRef.current?.contentWindow?.document ??
-      null;
-    if (!doc?.body) return;
-    setScreenshotCaptureBusy(true);
-    try {
-      const popupInfo = findVisiblePopupInDoc(doc);
-      const createdAt = new Date();
-      const slidePath = selectedPreviewHtmlRef.current || null;
-      const slideId = slidePath
-        ? normalizePath(slidePath).split("/").filter(Boolean).slice(-2)[0] ||
-          null
-        : null;
-      const timestamp = createdAt.getTime();
-      const randTag = Math.random().toString(36).slice(2, 8);
-      // Keep filenames short to avoid Windows path length limits.
-      const baseName = `screenshot-${timestamp}-${randTag}`;
-      const imageRelPath = `${SCREENSHOT_DIR}/${baseName}.png`;
-      const jsonRelPath = `${SCREENSHOT_DIR}/${baseName}.json`;
-      const absImagePath = `${normalizePath(projectPath)}/${imageRelPath}`;
-      const absJsonPath = `${normalizePath(projectPath)}/${jsonRelPath}`;
-      await ensureDirectoryForFile(absImagePath);
-      const canvas = await html2canvas(doc.body, {
-        backgroundColor: null,
-        useCORS: true,
-        scale: Math.max(1, window.devicePixelRatio || 1),
-        onclone: (clonedDoc) => {
-          const images = clonedDoc.querySelectorAll("img");
-          images.forEach((img) => {
-            const next = resolvePreviewAssetUrl(img.getAttribute("src"));
-            if (next) img.setAttribute("src", next);
-          });
-          const sources = clonedDoc.querySelectorAll("source");
-          sources.forEach((source) => {
-            const next = resolvePreviewAssetUrl(source.getAttribute("src"));
-            if (next) source.setAttribute("src", next);
-          });
-          const links = clonedDoc.querySelectorAll("link[rel='stylesheet']");
-          links.forEach((link) => {
-            const next = resolvePreviewAssetUrl(link.getAttribute("href"));
-            if (next) link.setAttribute("href", next);
-          });
-        },
-      });
-      const dataUrl = canvas.toDataURL("image/png");
-      const bytes = dataUrlToBytes(dataUrl);
-      await (Neutralino as any).filesystem.writeBinaryFile(absImagePath, bytes);
-      const metadata: ScreenshotMetadata = {
-        id: `${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: createdAt.toISOString(),
-        projectPath: normalizePath(projectPath),
-        slidePath,
-        slideId,
-        popupId: popupInfo?.popupId || null,
-        popupSelector: popupInfo?.popupSelector || null,
-        deviceMode,
-        tabletModel,
-        tabletOrientation,
-        frameZoom,
-        viewportWidth: doc.body.scrollWidth,
-        viewportHeight: doc.body.scrollHeight,
-        previewMode,
-        interactionMode,
-        imagePath: imageRelPath,
-        imageFileName: `${baseName}.png`,
-      };
-      await ensureDirectoryForFile(absJsonPath);
-      await (Neutralino as any).filesystem.writeFile(
-        absJsonPath,
-        JSON.stringify(metadata, null, 2),
-      );
-      const existing = await loadScreenshotIndex();
-      const nextIndex = [metadata, ...existing];
-      await writeScreenshotIndex(nextIndex);
-      setScreenshotItems(nextIndex);
-    } catch (error) {
-      console.error("Screenshot capture failed:", error);
-      window.alert("Screenshot capture failed. Check console for details.");
-    } finally {
-      setScreenshotCaptureBusy(false);
-    }
-  }, [
-    projectPath,
+  const {
+    isScreenshotGalleryOpen,
+    screenshotItems,
+    screenshotPreviewUrls,
     screenshotCaptureBusy,
+    pdfExportLogs,
+    isPdfExporting,
+    loadGalleryItems,
+    openScreenshotGallery,
+    closeScreenshotGallery,
+    handleScreenshotCapture,
+    handleOpenScreenshotItem,
+    handleDeleteScreenshotItem,
+    handleRevealScreenshotsFolder,
+    handleExportEditablePdf,
+    clearPdfExportLogs,
+  } = useScreenshotGallery({
+    projectPath,
+    showScreenshotFeatures: SHOW_SCREENSHOT_FEATURES,
+    previewFrameRef,
+    selectedPreviewHtmlRef,
+    filePathIndexRef,
+    previewMountBasePath,
     deviceMode,
     tabletModel,
     tabletOrientation,
     frameZoom,
     previewMode,
     interactionMode,
-    dataUrlToBytes,
-    ensureDirectoryForFile,
-    findVisiblePopupInDoc,
-    loadScreenshotIndex,
-    resolvePreviewAssetUrl,
-    writeScreenshotIndex,
-  ]);
-  const loadGalleryItems = useCallback(async () => {
-    const items = await loadScreenshotIndex();
-    setScreenshotItems(items);
-    if (!projectPath) return items;
-    const nextUrls: Record<string, string> = {};
-    await Promise.all(
-      items.map(async (item) => {
-        const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
-        try {
-          const binary = await (Neutralino as any).filesystem.readBinaryFile(
-            absImage,
-          );
-          const bytes = toByteArray(binary);
-          const arrayBuffer = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength,
-          ) as ArrayBuffer;
-          const blob = new Blob([arrayBuffer], { type: "image/png" });
-          nextUrls[item.id] = URL.createObjectURL(blob);
-        } catch (error) {
-          console.warn("Failed to read screenshot image:", error);
-        }
-      }),
-    );
-    setScreenshotPreviewUrls((prev) => {
-      Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
-      return nextUrls;
-    });
-    return items;
-  }, [loadScreenshotIndex, projectPath]);
-  const openScreenshotGallery = useCallback(
-    async (captureNow: boolean) => {
-      if (!SHOW_SCREENSHOT_FEATURES) return;
-      if (!projectPath) return;
-      if (!screenshotSessionRestore) {
-        setScreenshotSessionRestore({
-          leftOpen: isLeftPanelOpen,
-          rightOpen: isRightPanelOpen,
-          rightMode: rightPanelMode,
-        });
-      }
-      setIsLeftPanelOpen(false);
-      setIsRightPanelOpen(true);
-      setRightPanelMode("gallery");
-      setIsScreenshotGalleryOpen(true);
-      await loadGalleryItems();
-      if (captureNow) {
-        void handleScreenshotCapture();
-      }
-    },
-    [
-      projectPath,
-      screenshotSessionRestore,
-      isLeftPanelOpen,
-      isRightPanelOpen,
-      rightPanelMode,
-      loadGalleryItems,
-      handleScreenshotCapture,
-      SHOW_SCREENSHOT_FEATURES,
-    ],
-  );
-  const closeScreenshotGallery = useCallback(() => {
-    setIsScreenshotGalleryOpen(false);
-    if (screenshotSessionRestore) {
-      setIsLeftPanelOpen(screenshotSessionRestore.leftOpen);
-      setIsRightPanelOpen(screenshotSessionRestore.rightOpen);
-      setRightPanelMode(screenshotSessionRestore.rightMode);
-      setScreenshotSessionRestore(null);
-      return;
-    }
-    setRightPanelMode("inspector");
-  }, [screenshotSessionRestore]);
-  useEffect(() => {
-    if (rightPanelMode === "gallery" && !isRightPanelOpen) {
-      closeScreenshotGallery();
-    }
-  }, [rightPanelMode, isRightPanelOpen, closeScreenshotGallery]);
-  useEffect(() => {
-    if (isScreenshotGalleryOpen) {
-      void loadGalleryItems();
-    }
-  }, [isScreenshotGalleryOpen, loadGalleryItems]);
-  useEffect(() => {
-    if (!isScreenshotGalleryOpen && rightPanelMode === "gallery") {
-      setRightPanelMode("inspector");
-    }
-  }, [isScreenshotGalleryOpen, rightPanelMode, SHOW_SCREENSHOT_FEATURES]);
-  useEffect(() => {
-    if (!SHOW_SCREENSHOT_FEATURES) {
-      if (isScreenshotGalleryOpen) {
-        setIsScreenshotGalleryOpen(false);
-      }
-      if (rightPanelMode === "gallery") {
-        setRightPanelMode("inspector");
-      }
-    }
-  }, [isScreenshotGalleryOpen, rightPanelMode]);
-  const handleOpenScreenshotItem = useCallback(
-    async (item: ScreenshotMetadata) => {
-      if (!item.slidePath) return;
-      setPreviewMode("preview");
-      setInteractionMode("preview");
-      setSelectedId(null);
-      setPreviewSelectedPath(null);
-      setPreviewSelectedElement(null);
-      setPreviewSelectedComputedStyles(null);
-      setPreviewNavigationFile(item.slidePath);
-      pendingPopupOpenRef.current = {
-        selector: item.popupSelector,
-        popupId: item.popupId,
-      };
-      window.setTimeout(() => {
-        if (!pendingPopupOpenRef.current) return;
-        const success = openPopupInPreview(
-          pendingPopupOpenRef.current.selector,
-          pendingPopupOpenRef.current.popupId,
-        );
-        if (success) {
-          pendingPopupOpenRef.current = null;
-        }
-      }, 700);
-    },
-    [openPopupInPreview],
-  );
-  const handleDeleteScreenshotItem = useCallback(
-    async (item: ScreenshotMetadata) => {
-      if (!projectPath) return;
-      const absImage = `${normalizePath(projectPath)}/${item.imagePath}`;
-      const absJson = absImage.replace(/\.png$/i, ".json");
-      try {
-        await (Neutralino as any).filesystem.remove(absImage);
-      } catch {}
-      try {
-        await (Neutralino as any).filesystem.remove(absJson);
-      } catch {}
-      const nextItems = screenshotItems.filter((entry) => entry.id !== item.id);
-      setScreenshotItems(nextItems);
-      setScreenshotPreviewUrls((prev) => {
-        const next = { ...prev };
-        if (next[item.id]) {
-          URL.revokeObjectURL(next[item.id]);
-          delete next[item.id];
-        }
-        return next;
-      });
-      await writeScreenshotIndex(nextItems);
-    },
-    [projectPath, screenshotItems, writeScreenshotIndex],
-  );
-  const handleRevealScreenshotsFolder = useCallback(async () => {
-    const folderPath = resolveScreenshotDir();
-    if (!folderPath) return;
-    try {
-      await (Neutralino as any).os.open({ url: folderPath });
-    } catch (error) {
-      console.warn("Failed to open screenshots folder:", error);
-    }
-  }, [resolveScreenshotDir]);
-  const handleExportEditablePdf = useCallback(async () => {
-    if (!projectPath || isPdfExporting) return;
-    const appRoot = normalizePath(String((window as any).NL_PATH || ""));
-    const scriptPath = appRoot
-      ? `${appRoot}/scripts/export_slides_pdf.mjs`
-      : "";
-    if (!scriptPath) return;
-    const exportDir = resolvePdfExportDir();
-    if (!exportDir) return;
-    setIsPdfExporting(true);
-    setPdfExportLogs(["Starting editable PDF export..."]);
-    try {
-      await ensureDirectoryTree(exportDir);
-      const command = `node "${scriptPath}" "${normalizePath(
-        projectPath,
-      )}" "${exportDir}"`;
-      const execResult = await (Neutralino as any).os.execCommand(command);
-      const output = String(execResult?.stdOut || "").trim();
-      const errorOutput = String(execResult?.stdErr || "").trim();
-      const nextLogs: string[] = [];
-      if (output) nextLogs.push(...output.split(/\r?\n/));
-      if (errorOutput) nextLogs.push(...errorOutput.split(/\r?\n/));
-      if ((execResult?.exitCode ?? 1) !== 0) {
-        nextLogs.push("Export failed. See logs above.");
-      } else if (nextLogs.length === 0) {
-        nextLogs.push("Export finished.");
-      }
-      setPdfExportLogs((prev) => [...prev, ...nextLogs]);
-    } catch (error) {
-      console.error("Editable PDF export failed:", error);
-      setPdfExportLogs((prev) => [
-        ...prev,
-        "Export failed. Check console for details.",
-      ]);
-    } finally {
-      setIsPdfExporting(false);
-    }
-  }, [projectPath, isPdfExporting, ensureDirectoryTree, resolvePdfExportDir]);
-  const clearPdfExportLogs = useCallback(() => {
-    setPdfExportLogs([]);
-  }, []);
+    isLeftPanelOpen,
+    setIsLeftPanelOpen,
+    isRightPanelOpen,
+    setIsRightPanelOpen,
+    rightPanelMode,
+    setRightPanelMode,
+    ensureDirectoryTree: ensureDirectoryTreeStable,
+    ensureDirectoryForFile: ensureDirectoryForFileStable,
+    pendingPopupOpenRef,
+    openPopupInPreview,
+    setPreviewMode,
+    setInteractionMode,
+    setSelectedId,
+    setPreviewSelectedPath,
+    setPreviewSelectedElement,
+    setPreviewSelectedComputedStyles,
+    setPreviewNavigationFile,
+  });
   const refreshProjectFiles = useCallback(async () => {
     if (!projectPath) return;
     if (isRefreshingFilesRef.current) return;
     isRefreshingFilesRef.current = true;
     try {
-      const rootPath = normalizePath(projectPath);
-      const nextFiles: FileMap = {};
-      const absolutePathIndex: Record<string, string> = {};
-      const upsertFile = (virtualPath: string, absolutePath: string) => {
-        const normalizedVirtual = normalizeProjectRelative(virtualPath);
-        if (!normalizedVirtual) return;
-        const existing = nextFiles[normalizedVirtual];
-        if (existing) return;
-        const name = normalizedVirtual.includes("/")
-          ? normalizedVirtual.slice(normalizedVirtual.lastIndexOf("/") + 1)
-          : normalizedVirtual;
-        const oldEntry = filesRef.current[normalizedVirtual];
-        const cachedText = textFileCacheRef.current[normalizedVirtual];
-        const cachedBinary = binaryAssetUrlCacheRef.current[normalizedVirtual];
-        let content: string | Blob = "";
-        if (
-          oldEntry &&
-          typeof oldEntry.content === "string" &&
-          oldEntry.content.length > 0
-        ) {
-          content = oldEntry.content;
-        } else if (typeof cachedText === "string" && cachedText.length > 0) {
-          content = cachedText;
-        } else if (
-          typeof cachedBinary === "string" &&
-          cachedBinary.length > 0
-        ) {
-          content = cachedBinary;
-        }
-        nextFiles[normalizedVirtual] = {
-          path: normalizedVirtual,
-          name,
-          type: inferFileType(name),
-          content,
-        };
-        absolutePathIndex[normalizedVirtual] = normalizePath(absolutePath);
-      };
-
-      const walkDirectory = async (directoryPath: string): Promise<void> => {
-        const entries = await (Neutralino as any).filesystem.readDirectory(
-          directoryPath,
-        );
-        for (const entry of entries as Array<{ entry: string; type: string }>) {
-          if (!entry?.entry || entry.entry === "." || entry.entry === "..")
-            continue;
-          const absolutePath = joinPath(directoryPath, entry.entry);
-          if (entry.type === "DIRECTORY") {
-            if (IGNORED_FOLDERS.has(entry.entry.toLowerCase())) continue;
-            await walkDirectory(absolutePath);
-            continue;
-          }
-          if (entry.type !== "FILE") continue;
-          const normalizedAbsolute = normalizePath(absolutePath);
-          const relativePath = normalizedAbsolute
-            .replace(`${rootPath}/`, "")
-            .replace(rootPath, "")
-            .replace(/^\/+/, "");
-          if (!relativePath) continue;
-          upsertFile(relativePath, normalizedAbsolute);
-        }
-      };
-
-      await walkDirectory(rootPath);
-
-      for (const [virtualPath, absolutePath] of Object.entries(
-        filePathIndexRef.current,
-      )) {
-        if (!virtualPath.toLowerCase().startsWith("shared/")) continue;
-        if (absolutePathIndex[virtualPath]) continue;
-        try {
-          await (Neutralino as any).filesystem.getStats(absolutePath);
-          upsertFile(virtualPath, absolutePath);
-        } catch {
-          // Removed shared file; ignore.
-        }
-      }
+      const { files: nextFiles, absolutePathIndex } =
+        await refreshProjectFileIndex({
+          projectPath,
+          previousFileIndex: filePathIndexRef.current,
+          existingFiles: filesRef.current,
+          textFileCache: textFileCacheRef.current,
+          binaryAssetUrlCache: binaryAssetUrlCacheRef.current,
+        });
 
       filePathIndexRef.current = absolutePathIndex;
       setFiles(nextFiles);
@@ -5480,7 +3253,7 @@ const App: React.FC = () => {
       const absolutePath = normalizePath(joinPath(projectPath, nextVirtual));
       const absoluteParent = getParentPath(absolutePath);
       if (absoluteParent) {
-        await ensureDirectoryTree(absoluteParent);
+        await ensureDirectoryTreeStable(absoluteParent);
       }
       try {
         await (Neutralino as any).filesystem.writeFile(absolutePath, "");
@@ -5500,7 +3273,7 @@ const App: React.FC = () => {
       setIsLeftPanelOpen(true);
     },
     [
-      ensureDirectoryTree,
+      ensureDirectoryTreeStable,
       projectPath,
       refreshProjectFiles,
       setActiveFileStable,
@@ -5813,6 +3586,23 @@ const App: React.FC = () => {
     () => collectPathIdsToElement(root, selectedId),
     [root, selectedId],
   );
+  const getStablePreviewElementId = useCallback(
+    (
+      path: number[] | null | undefined,
+      explicitId?: string | null,
+      fallbackId?: string | null,
+    ) => {
+      const normalizedExplicitId = String(explicitId || "").trim();
+      if (normalizedExplicitId) return normalizedExplicitId;
+      const normalizedFallbackId = String(fallbackId || "").trim();
+      if (normalizedFallbackId) return normalizedFallbackId;
+      if (Array.isArray(path) && path.length > 0) {
+        return `preview-${toPreviewLayerId(path)}`;
+      }
+      return "preview-detached";
+    },
+    [],
+  );
   const previewLayerSelectedId = useMemo(() => {
     if (
       interactionMode !== "preview" ||
@@ -5917,9 +3707,7 @@ const App: React.FC = () => {
     const computedStyles = extractComputedStylesFromElement(target);
     const matchedCssRules = collectMatchedCssRulesFromElement(target);
     const nextElement: VirtualElement = {
-      id:
-        target.getAttribute("id") ||
-        `preview-${toPreviewLayerId(path)}-${Date.now()}`,
+      id: getStablePreviewElementId(path, target.getAttribute("id")),
       type: String(target.tagName || "div").toLowerCase(),
       name: String(target.tagName || "div").toUpperCase(),
       content: normalizeEditorMultilineText(extractTextWithBreaks(target)),
@@ -5946,7 +3734,7 @@ const App: React.FC = () => {
     setSelectedId(null);
     setIsCodePanelOpen(false);
     setIsRightPanelOpen(true);
-  }, []);
+  }, [getStablePreviewElementId]);
   const handleSidebarSelectElement = useCallback(
     (id: string) => {
       const previewPath = fromPreviewLayerId(id);
@@ -5972,54 +3760,11 @@ const App: React.FC = () => {
     const parts = normalizePath(selectedPreviewHtml).split("/").filter(Boolean);
     return parts.length >= 2 ? parts[parts.length - 2] : null;
   }, [selectedPreviewHtml]);
-  const unmappedPdfAnnotationCount = useMemo(
-    () =>
-      pdfAnnotationRecords.filter((record) => !record.mappedFilePath).length,
-    [pdfAnnotationRecords],
-  );
-
   // Sync ref with reactive state for use in callbacks
   useEffect(() => {
     selectedPreviewHtmlRef.current = selectedPreviewHtml;
   }, [selectedPreviewHtml]);
 
-  const resolveMappedLabelShort = useCallback(
-    (annotation: PdfAnnotationUiRecord) => {
-      const raw =
-        annotation.mappedSlideId ||
-        (annotation.mappedFilePath
-          ? annotation.mappedFilePath.split("/").filter(Boolean).slice(-2)[0]
-          : null);
-      if (!raw) return null;
-      const normalized = String(raw);
-      const match = normalized.match(/1\.\d/);
-      if (match) {
-        const index = normalized.lastIndexOf(match[0]);
-        if (index >= 0) {
-          const suffix = normalized.slice(index + match[0].length);
-          const cleaned = suffix
-            .replace(/^[\s._-]+/, "")
-            .replace(/[\s._-]+$/, "");
-          if (cleaned) {
-            const parts = cleaned.split(/[\s._-]+/).filter(Boolean);
-            if (parts.length > 0) return parts[parts.length - 1];
-          }
-        }
-      }
-      const parts = normalized.split(/[\s._-]+/).filter(Boolean);
-      return parts.length > 0 ? parts[parts.length - 1] : normalized;
-    },
-    [],
-  );
-  const visiblePdfAnnotations = useMemo(() => {
-    if (pdfAnnotationViewMode === "perSlide") {
-      if (!selectedPreviewHtml) return [];
-      return pdfAnnotationRecords.filter(
-        (record) => record.mappedFilePath === selectedPreviewHtml,
-      );
-    }
-    return pdfAnnotationRecords;
-  }, [pdfAnnotationRecords, pdfAnnotationViewMode, selectedPreviewHtml]);
   const annotationsForCurrentSlide = useMemo(() => {
     if (!selectedPreviewHtml) return [];
     const normalizedCurrent = normalizePath(selectedPreviewHtml);
@@ -6203,457 +3948,7 @@ const App: React.FC = () => {
 
     return;
 
-    try {
-      const popupInvocation =
-        focusedAnnotationForCurrentSlide.popupInvocation || null;
-      const normalizePopupId = (value: string | null | undefined) => {
-        if (!value) return null;
-        const cleaned = String(value).trim();
-        if (!cleaned) return null;
-        return cleaned.replace(/^#/, "");
-      };
-      const extractPopupIdFromNode = (node: Element | null): string | null => {
-        if (!node) return null;
-        const direct =
-          normalizePopupId(node.getAttribute("data-dialog")) ||
-          normalizePopupId(node.getAttribute("data-target")) ||
-          normalizePopupId(node.getAttribute("href")) ||
-          normalizePopupId(node.getAttribute("data-popup-id")) ||
-          normalizePopupId((node as HTMLElement).id);
-        if (direct) return direct;
-        const onclick = node.getAttribute("onclick") || "";
-        const match = onclick.match(/dialog[\w-]*/i);
-        return normalizePopupId(match ? match[0] : null);
-      };
-      const getContainerSelectorFromElement = (
-        node: Element | null,
-      ): string | null => {
-        if (!node) return null;
-        const element = node as HTMLElement;
-        if (element.id) return `#${element.id}`;
-        const popupDataId = element.getAttribute("data-popup-id");
-        if (popupDataId) return `[data-popup-id="${popupDataId}"]`;
-        const role = element.getAttribute("role");
-        if (role === "dialog") return `[role="dialog"]`;
-        return null;
-      };
-      const overlapScore = (candidate: string, target: string) => {
-        const normalizedCandidate = candidate
-          .toLowerCase()
-          .replace(/\s+/g, " ")
-          .trim();
-        const normalizedTarget = target
-          .toLowerCase()
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!normalizedCandidate || !normalizedTarget) return 0;
-        if (normalizedCandidate.includes(normalizedTarget)) return 120;
-        const candidateWords = normalizedCandidate
-          .split(/[^a-z0-9]+/i)
-          .filter((word) => word.length > 2);
-        const targetWords = new Set(
-          normalizedTarget
-            .split(/[^a-z0-9]+/i)
-            .filter((word) => word.length > 2),
-        );
-        if (!candidateWords.length || !targetWords.size) return 0;
-        let overlap = 0;
-        for (const word of candidateWords) {
-          if (targetWords.has(word)) overlap += 1;
-        }
-        if (overlap < 1) return 0;
-        return overlap * 14 + Math.min(candidateWords.length, 8);
-      };
-      const textHints = [
-        focusedAnnotationForCurrentSlide.annotationText,
-        focusedAnnotationForCurrentSlide.pdfContextText || "",
-        ...focusedAnnotationForCurrentSlide.threadEntries.map(
-          (entry) => entry.text,
-        ),
-      ]
-        .map((entry) => String(entry || "").trim())
-        .filter((entry) => entry.length > 0)
-        .slice(0, 8);
-      const triggerNodes = [
-        ...doc.querySelectorAll(
-          "[data-dialog], .openDialog[data-dialog], [data-target], [href^='#dialog'], [onclick*='dialog']",
-        ),
-      ] as HTMLElement[];
-      const containerNodes = [
-        ...doc.querySelectorAll(
-          ".popup, [data-popup-id], [role='dialog'], .modal, .dialog, [id*='dialog']",
-        ),
-      ] as HTMLElement[];
-      const containerById = new Map<string, HTMLElement>();
-      for (const containerNode of containerNodes) {
-        const popupId = extractPopupIdFromNode(containerNode);
-        if (!popupId || containerById.has(popupId)) continue;
-        containerById.set(popupId, containerNode);
-      }
-      const genericPopupContainers = [
-        ...doc.querySelectorAll(
-          "[id*='popup'], [id*='modal'], [id*='dialog'], [class*='popup'], [class*='modal'], [class*='dialog'], [data-popup], [data-modal], [aria-haspopup='dialog']",
-        ),
-      ] as HTMLElement[];
-      let runtimeResolvedPopup: {
-        popupId: string;
-        trigger: HTMLElement | null;
-        container: HTMLElement | null;
-      } | null = null;
-      let bestScore = 0;
-      for (const triggerNode of triggerNodes) {
-        const popupId = extractPopupIdFromNode(triggerNode);
-        if (!popupId) continue;
-        const containerNode = containerById.get(popupId) || null;
-        const candidateText = [
-          triggerNode.textContent || "",
-          containerNode?.textContent || "",
-          popupId,
-        ]
-          .join(" ")
-          .trim();
-        let score = 0;
-        for (const hint of textHints) {
-          score = Math.max(score, overlapScore(candidateText, hint));
-        }
-        if (popupInvocation?.popupId && popupInvocation.popupId === popupId)
-          score += 45;
-        if (
-          popupInvocation?.triggerSelector &&
-          popupInvocation.triggerSelector ===
-            (triggerNode.id
-              ? `#${triggerNode.id}`
-              : popupInvocation.triggerSelector)
-        ) {
-          score += 20;
-        }
-        if (score > bestScore) {
-          bestScore = score;
-          runtimeResolvedPopup = {
-            popupId,
-            trigger: triggerNode,
-            container: containerNode,
-          };
-        }
-      }
-      const isExplicitPopup =
-        focusedAnnotationForCurrentSlide.subtype === "Popup" ||
-        focusedAnnotationForCurrentSlide.detectedSubtype === "Popup";
 
-      const minRequiredScore = isExplicitPopup ? 20 : 65; // Non-popups need MUCH higher proof to trigger a dialog
-
-      if (bestScore < minRequiredScore) {
-        for (const [popupId, containerNode] of containerById.entries()) {
-          const candidateText = [containerNode.textContent || "", popupId]
-            .join(" ")
-            .trim();
-          let score = 0;
-          for (const hint of textHints) {
-            score = Math.max(score, overlapScore(candidateText, hint));
-          }
-          if (score > bestScore) {
-            bestScore = score;
-            runtimeResolvedPopup = {
-              popupId,
-              trigger: null,
-              container: containerNode,
-            };
-          }
-        }
-      }
-      if (bestScore < minRequiredScore) {
-        for (const containerNode of genericPopupContainers) {
-          const popupId =
-            extractPopupIdFromNode(containerNode) ||
-            normalizePopupId(containerNode.id) ||
-            `runtime-${Math.random().toString(36).slice(2, 8)}`;
-          const candidateText = [
-            containerNode.textContent || "",
-            popupId,
-            containerNode.className || "",
-          ]
-            .join(" ")
-            .trim();
-          let score = 0;
-          for (const hint of textHints) {
-            score = Math.max(score, overlapScore(candidateText, hint));
-          }
-          if (score > bestScore) {
-            bestScore = score;
-            runtimeResolvedPopup = {
-              popupId,
-              trigger: null,
-              container: containerNode,
-            };
-          }
-        }
-      }
-
-      // If after all scans the score is still below threshold, discard the runtime result
-      if (bestScore < minRequiredScore) {
-        runtimeResolvedPopup = null;
-      }
-
-      if (!runtimeResolvedPopup && popupInvocation?.popupId) {
-        const fallbackContainer =
-          containerById.get(popupInvocation.popupId) || null;
-        runtimeResolvedPopup = {
-          popupId: popupInvocation.popupId,
-          trigger: null,
-          container: fallbackContainer,
-        };
-      }
-      const primarySelector = focusedAnnotationForCurrentSlide.foundSelector;
-      const fallbackPopupTriggerSelector =
-        popupInvocation?.triggerSelector || null;
-      const target = ((primarySelector
-        ? doc.querySelector(primarySelector)
-        : null) ||
-        (fallbackPopupTriggerSelector
-          ? doc.querySelector(fallbackPopupTriggerSelector)
-          : null) ||
-        runtimeResolvedPopup?.trigger ||
-        runtimeResolvedPopup?.container) as HTMLElement | null;
-      if (target) {
-        target.setAttribute("data-nx-pdf-focus", "true");
-        target.style.transition = "outline 0.2s ease, box-shadow 0.2s ease";
-        target.style.outline = "3px solid rgba(34,211,238,0.95)";
-        target.style.boxShadow =
-          "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
-        target.scrollIntoView({ block: "center", inline: "center" });
-        previewFocusedPdfElementRef.current = target;
-      }
-
-      const isNavBottomSpecial = !!(
-        target &&
-        (target.id === "pi" ||
-          target.id === "si" ||
-          target.id === "references" ||
-          target.id === "objection" ||
-          target.id === "quickres" ||
-          target.classList.contains("gotoSlide") ||
-          target
-            .getAttribute("data-description")
-            ?.toLowerCase()
-            .includes("pi") ||
-          target
-            .getAttribute("data-description")
-            ?.toLowerCase()
-            .includes("reference"))
-      );
-
-      const intent = focusedAnnotationForCurrentSlide.annotationIntent;
-      const subtype = focusedAnnotationForCurrentSlide.annotationType;
-      const isExcludedIntent = intent === "flowChange" || intent === "notFound";
-
-      const shouldOpenSlidePopup = Boolean(
-        !isExcludedIntent &&
-        (isNavBottomSpecial ||
-          popupInvocation?.triggerSelector ||
-          popupInvocation?.containerSelector ||
-          popupInvocation?.popupId ||
-          runtimeResolvedPopup?.trigger ||
-          runtimeResolvedPopup?.container ||
-          runtimeResolvedPopup?.popupId ||
-          (target &&
-            (target.classList.contains("openDialog") ||
-              Boolean(target.getAttribute("data-dialog"))))),
-      );
-      if (shouldOpenSlidePopup && ALLOW_POPUP_OPEN_FROM_PDF) {
-        const popupTriggerCandidates: Array<HTMLElement | null> = [
-          primarySelector
-            ? (doc.querySelector(primarySelector) as HTMLElement | null)
-            : null, // HIGHEST PRIORITY
-          runtimeResolvedPopup?.trigger || null,
-          popupInvocation?.triggerSelector
-            ? (doc.querySelector(
-                popupInvocation.triggerSelector,
-              ) as HTMLElement | null)
-            : null,
-          popupInvocation?.popupId
-            ? (doc.querySelector(
-                `[data-dialog="#${popupInvocation.popupId}"], [data-dialog="${popupInvocation.popupId}"], .openDialog[data-dialog="#${popupInvocation.popupId}"], .openDialog[data-dialog="${popupInvocation.popupId}"]`,
-              ) as HTMLElement | null)
-            : null,
-          target,
-        ];
-        const popupTrigger =
-          popupTriggerCandidates.find((entry) => Boolean(entry)) || null;
-        if (popupTrigger) {
-          try {
-            popupTrigger.click();
-          } catch {
-            // ignore
-          }
-          popupTrigger.dispatchEvent(
-            new MouseEvent("click", { bubbles: true, cancelable: true }),
-          );
-        }
-        const popupIdForOpen =
-          runtimeResolvedPopup?.popupId || popupInvocation?.popupId || null;
-        if (popupIdForOpen) {
-          const normalizedPopupId = popupIdForOpen.replace(/^#/, "");
-          const directDialogSelector = `#${normalizedPopupId}`;
-          const openViaMtRuntime = () => {
-            const nextFrameWindow = frame?.contentWindow as any;
-            const nextFrameJquery = nextFrameWindow?.$;
-            const nextFrameMt = nextFrameWindow?.com?.gsk?.mt;
-            if (
-              !nextFrameMt ||
-              typeof nextFrameMt.openDialog !== "function" ||
-              typeof nextFrameJquery !== "function"
-            ) {
-              return false;
-            }
-            try {
-              const directDialogNode = nextFrameJquery(directDialogSelector);
-              if (directDialogNode && directDialogNode.length > 0) {
-                nextFrameMt.openDialog(directDialogNode);
-                return true;
-              }
-            } catch {}
-            return false;
-          };
-          const frameWindow = frame?.contentWindow as any;
-          const frameJquery = frameWindow?.$;
-          const frameMt = frameWindow?.com?.gsk?.mt;
-          const frameReleaseEvent =
-            typeof frameMt?.releaseEvent === "string" && frameMt.releaseEvent
-              ? frameMt.releaseEvent
-              : "mouseup";
-          const mtOpenedImmediately = openViaMtRuntime();
-          if (!mtOpenedImmediately) {
-            window.setTimeout(openViaMtRuntime, 80);
-            window.setTimeout(openViaMtRuntime, 180);
-            window.setTimeout(openViaMtRuntime, 320);
-            window.setTimeout(openViaMtRuntime, 560);
-            window.setTimeout(openViaMtRuntime, 900);
-          }
-          const popupFunctionCandidates = [
-            "openDialog",
-            "showDialog",
-            "openPopup",
-            "showPopup",
-            "toggleDialog",
-            "togglePopup",
-          ];
-          for (const functionName of popupFunctionCandidates) {
-            const fn = frameWindow?.[functionName];
-            if (typeof fn !== "function") continue;
-            try {
-              fn(`#${popupIdForOpen}`);
-            } catch {}
-            try {
-              fn(popupIdForOpen);
-            } catch {}
-          }
-          const allPopupTriggers = [
-            ...doc.querySelectorAll(
-              `[data-dialog="#${popupIdForOpen}"], [data-dialog="${popupIdForOpen}"], .openDialog[data-dialog="#${popupIdForOpen}"], .openDialog[data-dialog="${popupIdForOpen}"], [data-target="#${popupIdForOpen}"], [href="#${popupIdForOpen}"]`,
-            ),
-          ] as HTMLElement[];
-          for (const triggerNode of allPopupTriggers) {
-            try {
-              triggerNode.click();
-            } catch {
-              // ignore
-            }
-            try {
-              if (typeof frameJquery === "function") {
-                frameJquery(triggerNode).trigger(frameReleaseEvent);
-              }
-            } catch {}
-            triggerNode.dispatchEvent(
-              new MouseEvent("click", { bubbles: true, cancelable: true }),
-            );
-            triggerNode.dispatchEvent(
-              new MouseEvent(frameReleaseEvent, {
-                bubbles: true,
-                cancelable: true,
-              }),
-            );
-          }
-        }
-        const resolvedContainerSelector = runtimeResolvedPopup?.container
-          ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
-          : null;
-        const dialogSelector =
-          resolvedContainerSelector ||
-          popupInvocation?.containerSelector ||
-          popupTrigger?.getAttribute("data-dialog") ||
-          (runtimeResolvedPopup?.popupId
-            ? `#${runtimeResolvedPopup.popupId}`
-            : popupInvocation?.popupId
-              ? `#${popupInvocation.popupId}`
-              : null);
-        const popupOpenSelectors = [
-          dialogSelector,
-          popupInvocation?.popupId
-            ? `[data-popup-id="${popupInvocation.popupId}"], #${popupInvocation.popupId}`
-            : null,
-          runtimeResolvedPopup?.popupId
-            ? `[data-popup-id="${runtimeResolvedPopup.popupId}"], #${runtimeResolvedPopup.popupId}`
-            : null,
-          runtimeResolvedPopup?.container
-            ? getContainerSelectorFromElement(runtimeResolvedPopup.container)
-            : null,
-        ].filter((entry): entry is string => Boolean(entry));
-        if (popupOpenSelectors.length > 0 || runtimeResolvedPopup?.container) {
-          const applyPopupFocus = () => {
-            try {
-              let popupTarget: HTMLElement | null = null;
-              for (const selector of popupOpenSelectors) {
-                popupTarget = doc.querySelector(selector) as HTMLElement | null;
-                if (popupTarget) break;
-              }
-              if (!popupTarget) {
-                popupTarget = (runtimeResolvedPopup?.container ||
-                  null) as HTMLElement | null;
-              }
-              if (!popupTarget) return;
-              popupTarget.style.display = popupTarget.style.display || "block";
-              popupTarget.style.visibility = "visible";
-              popupTarget.style.opacity = popupTarget.style.opacity || "1";
-              popupTarget.classList.add("open");
-              popupTarget.classList.add("active");
-              popupTarget.classList.add("show");
-              popupTarget.classList.remove("hidden");
-              popupTarget.classList.remove("is-hidden");
-              popupTarget.classList.remove("closed");
-              popupTarget.setAttribute("aria-hidden", "false");
-              popupTarget.removeAttribute("hidden");
-              popupTarget.style.pointerEvents = "auto";
-              if (
-                previewFocusedPdfElementRef.current &&
-                previewFocusedPdfElementRef.current !== popupTarget
-              ) {
-                previewFocusedPdfElementRef.current.style.outline = "";
-                previewFocusedPdfElementRef.current.style.boxShadow = "";
-                previewFocusedPdfElementRef.current.style.transition = "";
-                previewFocusedPdfElementRef.current.removeAttribute(
-                  "data-nx-pdf-focus",
-                );
-              }
-              popupTarget.setAttribute("data-nx-pdf-focus", "true");
-              popupTarget.style.transition =
-                "outline 0.2s ease, box-shadow 0.2s ease";
-              popupTarget.style.outline = "3px solid rgba(34,211,238,0.95)";
-              popupTarget.style.boxShadow =
-                "0 0 0 6px rgba(34,211,238,0.18), 0 0 28px rgba(34,211,238,0.32)";
-              popupTarget.scrollIntoView({ block: "center", inline: "center" });
-              previewFocusedPdfElementRef.current = popupTarget;
-            } catch (error) {
-              console.warn("Failed to focus popup container:", error);
-            }
-          };
-          window.setTimeout(applyPopupFocus, 40);
-          window.setTimeout(applyPopupFocus, 140);
-          window.setTimeout(applyPopupFocus, 280);
-        }
-      }
-    } catch (error) {
-      console.warn("Failed to focus PDF annotation target:", error);
-    }
   }, [
     focusedAnnotationForCurrentSlide,
     isPopupAnnotation,
@@ -6667,41 +3962,18 @@ const App: React.FC = () => {
   // --- NEW: Automatic Tablet Orientation Switching ---
   useEffect(() => {
     if (!selectedPreviewHtml) return;
+    const pathParts = selectedPreviewHtml.toLowerCase().split(/[\\/]/);
+    const relevantSegments = pathParts.slice(-2).join("/");
+    const nextOrientation =
+      relevantSegments.includes("vertical") ||
+      relevantSegments.includes("portrait")
+        ? "portrait"
+        : "landscape";
 
-    const index = resourceScanner.getFullIndex();
-    // 1. Try to find the slide in the slides index
-    const slideId = currentPreviewSlideId;
-    if (!slideId) return;
-
-    const slideEntry = index.slides[slideId] || index.popups[slideId];
-    if (slideEntry?.orientation) {
-      if (slideEntry.orientation !== tabletOrientation) {
-        console.log(
-          `[NX] Auto-switching tablet orientation to ${slideEntry.orientation} for slide ${slideId}`,
-        );
-        setTabletOrientation(slideEntry.orientation);
-      }
-    } else {
-      // Fallback: If path contains "Vertical", force portrait
-      // Only check the last few segments of the path to avoid picking up parent folders
-      const pathParts = selectedPreviewHtml.toLowerCase().split(/[\\/]/);
-      const relevantSegments = pathParts.slice(-2).join("/"); // Just the file and its folder
-
-      if (
-        relevantSegments.includes("vertical") ||
-        relevantSegments.includes("portrait")
-      ) {
-        if (tabletOrientation !== "portrait") {
-          setTabletOrientation("portrait");
-        }
-      } else {
-        // Explicitly switch back to landscape for anything else if no entry found
-        if (tabletOrientation !== "landscape") {
-          setTabletOrientation("landscape");
-        }
-      }
+    if (tabletOrientation !== nextOrientation) {
+      setTabletOrientation(nextOrientation);
     }
-  }, [selectedPreviewHtml, currentPreviewSlideId, tabletOrientation]);
+  }, [selectedPreviewHtml, tabletOrientation]);
   // ----------------------------------------------------
 
   const selectedMountedPreviewHtml = useMemo(() => {
@@ -6866,34 +4138,7 @@ const App: React.FC = () => {
   );
   const injectMountedPreviewBridge = useCallback(
     (frame: HTMLIFrameElement | null) => {
-      const frameWindow = frame?.contentWindow ?? null;
-      const frameDocument = frameWindow?.document ?? null;
-      if (!frameWindow || !frameDocument) return;
-      if (
-        frameDocument.documentElement?.getAttribute(
-          "data-nx-mounted-preview-bridge",
-        ) === "1"
-      ) {
-        return;
-      }
-      try {
-        const script = frameDocument.createElement("script");
-        script.type = "text/javascript";
-        script.text = MOUNTED_PREVIEW_BRIDGE_SCRIPT;
-        const target =
-          frameDocument.head ||
-          frameDocument.documentElement ||
-          frameDocument.body;
-        if (!target) return;
-        target.appendChild(script);
-        script.remove();
-      } catch {
-        try {
-          (frameWindow as any).eval(MOUNTED_PREVIEW_BRIDGE_SCRIPT);
-        } catch {
-          // Ignore bridge injection failures for locked-down page contexts.
-        }
-      }
+      injectMountedPreviewBridgeHelper(frame, MOUNTED_PREVIEW_BRIDGE_SCRIPT);
     },
     [],
   );
@@ -6905,42 +4150,15 @@ const App: React.FC = () => {
       drawTag?: string;
       force?: boolean;
     }) => {
-      const frameWindow =
-        previewFrameRef.current?.contentWindow ??
-        previewFrameRef.current?.contentDocument?.defaultView ??
-        null;
-      if (!frameWindow) return;
-      const nextMode = overrides?.mode ?? previewMode;
-      const nextSelectionMode =
-        overrides?.selectionMode ?? previewSelectionMode;
-      const nextToolMode = overrides?.toolMode ?? sidebarToolMode;
-      const nextDrawTag = overrides?.drawTag ?? drawElementTag;
-      const shouldSend = overrides?.force
-        ? true
-        : interactionMode === "preview";
-      if (!shouldSend) return;
-      try {
-        (frameWindow as any).__nxPreviewHostMode = nextMode;
-        (frameWindow as any).__nxPreviewHostSelectionMode = nextSelectionMode;
-        (frameWindow as any).__nxPreviewHostToolMode = nextToolMode;
-        (frameWindow as any).__nxPreviewHostDrawTag = nextDrawTag;
-      } catch {
-        // Ignore host flag sync issues for transient frame reloads.
-      }
-      try {
-        frameWindow.postMessage(
-          JSON.stringify({
-            type: "PREVIEW_SET_MODE",
-            mode: nextMode,
-            selectionMode: nextSelectionMode,
-            toolMode: nextToolMode,
-            drawTag: nextDrawTag,
-          }),
-          "*",
-        );
-      } catch {
-        // Ignore postMessage failures for transient frame reloads.
-      }
+      postPreviewModeToFrameHelper({
+        frame: previewFrameRef.current,
+        previewMode,
+        previewSelectionMode,
+        sidebarToolMode,
+        drawElementTag,
+        interactionMode,
+        overrides,
+      });
     },
     [
       drawElementTag,
@@ -7067,101 +4285,32 @@ const App: React.FC = () => {
   );
   const postPreviewPatchToFrame = useCallback(
     (payload: Record<string, unknown>) => {
-      const frameWindow =
-        previewFrameRef.current?.contentWindow ??
-        previewFrameRef.current?.contentDocument?.defaultView ??
-        null;
-      if (!frameWindow) return;
-      try {
-        frameWindow.postMessage(JSON.stringify(payload), "*");
-      } catch {
-        // Ignore transient frame messaging errors.
-      }
+      postPreviewFrameMessage(previewFrameRef.current, payload);
     },
     [],
   );
 
   const handlePreviewFrameLoad = useCallback(
     (event: React.SyntheticEvent<HTMLIFrameElement>) => {
-      const frame = event.currentTarget;
-      setPreviewFrameLoadNonce((prev) => prev + 1);
-
-      if (selectedPreviewSrc) {
-        injectMountedPreviewBridge(frame);
-      }
-
-      postPreviewModeToFrame();
-      window.setTimeout(postPreviewModeToFrame, 0);
-      window.setTimeout(postPreviewModeToFrame, 120);
-      window.setTimeout(postPreviewModeToFrame, 360);
-
-      if (!isPreviewMountReady) return;
-
-      const frameSrc = frame.getAttribute("src") || frame.src || "";
-      if (!frameSrc) return;
-
-      let locationPath = "";
-      try {
-        locationPath = new URL(frameSrc).pathname || "";
-      } catch {
-        return;
-      }
-      if (!locationPath) return;
-
-      const mountRelativePath = extractMountRelativePath(locationPath);
-      if (!mountRelativePath) return;
-
-      const resolvedVirtualPath =
-        resolveVirtualPathFromMountRelative(mountRelativePath);
-      if (!resolvedVirtualPath) return;
-
-      const lockPath = explorerSelectionLockRef.current;
-      const lockActive =
-        Boolean(lockPath) &&
-        Date.now() <= explorerSelectionLockUntilRef.current;
-      if (lockPath && !lockActive) {
-        explorerSelectionLockRef.current = null;
-        explorerSelectionLockUntilRef.current = 0;
-      }
-      if (lockPath && lockActive) {
-        const resolvedNorm =
-          normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
-        const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
-        if (resolvedNorm !== lockNorm) {
-          return;
-        }
-        explorerSelectionLockRef.current = null;
-        explorerSelectionLockUntilRef.current = 0;
-      }
-
-      const resolvedFile = filesRef.current[resolvedVirtualPath];
-      if (!resolvedFile || resolvedFile.type !== "html") return;
-
-      // THE FIX: Block rogue automated script redirects after manual click
-      const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
-      if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
-        return;
-      }
-
-      if (resolvedVirtualPath === activeFileRef.current) return;
-      if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
-
-      console.log("[Preview] Current page:", resolvedVirtualPath);
-
-      syncPreviewActiveFile(resolvedVirtualPath, "load", {
-        skipUnsavedPrompt: true,
+      handlePreviewFrameLoadHelper({
+        frame: event.currentTarget,
+        selectedPreviewSrc,
+        injectBridge: injectMountedPreviewBridge,
+        postMode: postPreviewModeToFrame,
+        isPreviewMountReady,
+        extractMountRelativePath,
+        resolveVirtualPathFromMountRelative,
+        explorerSelectionLockRef,
+        explorerSelectionLockUntilRef,
+        normalizeProjectRelative,
+        files: filesRef.current,
+        activeFilePath: activeFileRef.current,
+        shouldProcessPreviewPageSignal,
+        syncPreviewActiveFile,
+        pendingPopupOpenRef,
+        openPopupInPreview,
+        setPreviewFrameLoadNonce,
       });
-
-      if (pendingPopupOpenRef.current) {
-        const pending = pendingPopupOpenRef.current;
-        window.setTimeout(() => {
-          if (!pendingPopupOpenRef.current) return;
-          const opened = openPopupInPreview(pending.selector, pending.popupId);
-          if (opened) {
-            pendingPopupOpenRef.current = null;
-          }
-        }, 180);
-      }
     },
     [
       extractMountRelativePath,
@@ -7228,13 +4377,11 @@ const App: React.FC = () => {
       injectMountedPreviewBridge(previewFrameRef.current);
     }
     postPreviewModeToFrame();
-    const t0 = window.setTimeout(postPreviewModeToFrame, 0);
-    const t120 = window.setTimeout(postPreviewModeToFrame, 120);
-    const t360 = window.setTimeout(postPreviewModeToFrame, 360);
+    const timeoutIds = schedulePreviewModeSync(postPreviewModeToFrame, [
+      0, 120, 360,
+    ]);
     return () => {
-      window.clearTimeout(t0);
-      window.clearTimeout(t120);
-      window.clearTimeout(t360);
+      clearPreviewModeSync(timeoutIds);
     };
   }, [
     injectMountedPreviewBridge,
@@ -7255,327 +4402,143 @@ const App: React.FC = () => {
         pushToHistory?: boolean;
       },
     ) => {
-      const shouldRefreshPreviewDoc = options?.refreshPreviewDoc ?? false;
-      const shouldSaveNow = options?.saveNow ?? false;
-      const shouldSkipAutoSave = options?.skipAutoSave ?? false;
-      const shouldPushToHistory = options?.pushToHistory ?? true;
-      const previousSerialized =
-        typeof filesRef.current[updatedPath]?.content === "string"
-          ? (filesRef.current[updatedPath]?.content as string)
-          : typeof textFileCacheRef.current[updatedPath] === "string"
-            ? textFileCacheRef.current[updatedPath]
-            : "";
-
-      // CRITICAL SAFETY GUARD: Prevent accidental wiping of files
-      if (!serialized || serialized.trim().length === 0) {
-        console.error(
-          `[CRITICAL] Safety Guard: Blocked attempt to write empty content to ${updatedPath}`,
-        );
-        return;
-      }
-
-      if (
-        previousSerialized &&
-        previousSerialized.length > 500 &&
-        serialized.length < 100
-      ) {
-        console.error(
-          `[CRITICAL] Safety Guard: Blocked suspicious downsizing of ${updatedPath} (from ${previousSerialized.length} to ${serialized.length} bytes)`,
-        );
-        return;
-      }
-
-      // --- FIX: Scrub the bridge attribute and transient editor classes before saving ---
-      serialized = serialized
-        .replace(/\s*data-nx-mounted-preview-bridge=(["']?)1\1/gi, "")
-        .replace(/\s*__nx-preview-selected/g, "")
-        .replace(/\s*__nx-preview-dirty/g, "")
-        .replace(/\s*__nx-preview-editing/g, "")
-        .replace(/\s+class=(["'])\s*\1/g, ""); // Cleans up empty class attributes left behind
-
-      textFileCacheRef.current[updatedPath] = serialized;
-      setFiles((prev) => {
-        const current = prev[updatedPath];
-        if (!current) return prev;
-        return {
-          ...prev,
-          [updatedPath]: {
-            ...current,
-            content: serialized,
-          },
-        };
+      await persistPreviewHtmlContentHelper({
+        updatedPath,
+        serialized,
+        options,
+        filesRef,
+        textFileCacheRef,
+        pendingPreviewWritesRef,
+        previewDependencyIndexRef,
+        setFiles,
+        setDirtyFiles,
+        setSelectedPreviewDoc,
+        setPreviewRefreshNonce,
+        invalidatePreviewDocCache,
+        markPreviewPathDirty,
+        pushPreviewHistory,
+        flushPendingPreviewSaves,
+        schedulePreviewAutoSave,
+        isMountedPreview,
       });
-
-      // Also synchronously update the ref so any code that reads filesRef.current
-      // in the same tick (e.g. applyPreviewContentUpdate called right after draw)
-      // immediately sees the new HTML with the just-created element.
-      const existingRefEntry = filesRef.current[updatedPath];
-      if (existingRefEntry) {
-        filesRef.current = {
-          ...filesRef.current,
-          [updatedPath]: { ...existingRefEntry, content: serialized },
-        };
-      }
-      invalidatePreviewDocCache(updatedPath);
-      pendingPreviewWritesRef.current[updatedPath] = serialized;
-      setDirtyFiles((prev) =>
-        prev.includes(updatedPath) ? prev : [...prev, updatedPath],
-      );
-      if (options?.elementPath && options.elementPath.length > 0) {
-        markPreviewPathDirty(updatedPath, options.elementPath);
-      }
-      if (shouldPushToHistory) {
-        pushPreviewHistory(updatedPath, serialized, previousSerialized);
-      }
-
-      const currentEntry = filesRef.current[updatedPath];
-      if (shouldRefreshPreviewDoc && currentEntry) {
-        if (!isMountedPreview) {
-          const previewSnapshot: FileMap = {
-            ...filesRef.current,
-            [updatedPath]: {
-              ...currentEntry,
-              content: serialized,
-            },
-          };
-          setSelectedPreviewDoc(
-            createPreviewDocument(
-              previewSnapshot,
-              updatedPath,
-              previewDependencyIndexRef.current[updatedPath],
-            ),
-          );
-        } else if (!shouldSaveNow) {
-          setPreviewRefreshNonce((prev) => prev + 1);
-        }
-      }
-
-      if (shouldSaveNow) {
-        await flushPendingPreviewSaves();
-        if (shouldRefreshPreviewDoc && isMountedPreview) {
-          setPreviewRefreshNonce((prev) => prev + 1);
-        }
-        return;
-      }
-      if (!shouldSkipAutoSave) {
-        schedulePreviewAutoSave();
-      }
     },
     [
       flushPendingPreviewSaves,
       invalidatePreviewDocCache,
       isMountedPreview,
       markPreviewPathDirty,
+      previewDependencyIndexRef,
       pushPreviewHistory,
       schedulePreviewAutoSave,
     ],
   );
   const applyPreviewInlineEditDraft = useCallback(
     async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
-      if (
-        !filePath ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return;
-      }
-      const sourceHtml =
-        typeof filesRef.current[filePath]?.content === "string"
-          ? (filesRef.current[filePath]?.content as string)
-          : typeof textFileCacheRef.current[filePath] === "string"
-            ? textFileCacheRef.current[filePath]
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
-      if (!target) return;
-      target.innerHTML = nextInnerHtml;
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(filePath, serialized, {
-        refreshPreviewDoc: false,
-        pushToHistory: false,
-      });
-    },
-    [persistPreviewHtmlContent],
-  );
-  const applyPreviewInlineEdit = useCallback(
-    async (elementPath: number[], nextInnerHtml: string) => {
-      if (
-        !selectedPreviewHtml ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return;
-      }
-
-      const normalizedPath = elementPath
-        .map((segment) => {
-          const numeric = Number(segment);
-          if (!Number.isFinite(numeric)) return -1;
-          return Math.max(0, Math.trunc(numeric));
-        })
-        .filter((segment) => segment >= 0);
-
-      if (normalizedPath.length !== elementPath.length) return;
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, normalizedPath);
-      if (!target) return;
-
-      target.innerHTML = nextInnerHtml;
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath: normalizedPath,
-      });
-      const liveElement = getLivePreviewSelectedElement(normalizedPath);
-      const snapshotElement =
-        liveElement instanceof HTMLElement
-          ? liveElement
-          : target instanceof HTMLElement
-            ? target
-            : null;
-      const snapshotNode: Element = snapshotElement || target;
-      const snapshotInlineStyle =
-        snapshotElement instanceof HTMLElement
-          ? snapshotElement.getAttribute("style") || ""
-          : snapshotNode.getAttribute("style") || "";
-      const snapshotInlineStyles = parseInlineStyleText(snapshotInlineStyle);
-      const snapshotComputedStyles =
-        extractComputedStylesFromElement(snapshotElement || snapshotNode) ||
-        null;
-      const snapshotText = normalizeEditorMultilineText(
-        extractTextWithBreaks(snapshotNode),
-      );
-      const snapshotHtml =
-        snapshotElement instanceof HTMLElement
-          ? snapshotElement.innerHTML || ""
-          : target.innerHTML || nextInnerHtml;
-      const snapshotAttributes =
-        extractCustomAttributesFromElement(snapshotElement || snapshotNode) ||
-        undefined;
-      const snapshotSrc =
-        snapshotElement instanceof HTMLElement
-          ? snapshotElement.getAttribute("src") || undefined
-          : snapshotNode.getAttribute("src") || undefined;
-      const snapshotHref =
-        snapshotElement instanceof HTMLElement
-          ? snapshotElement.getAttribute("href") || undefined
-          : snapshotNode.getAttribute("href") || undefined;
-      const snapshotClassName =
-        snapshotElement && typeof snapshotElement.className === "string"
-          ? snapshotElement.className
-          : typeof snapshotNode.className === "string"
-            ? snapshotNode.className
-            : undefined;
-      const snapshotTag = String(snapshotNode.tagName || "div").toLowerCase();
-      const inlineAnimation =
-        typeof snapshotInlineStyles.animation === "string"
-          ? snapshotInlineStyles.animation.trim()
-          : "";
-      const computedAnimationCandidate =
-        snapshotComputedStyles &&
-        typeof snapshotComputedStyles.animation === "string"
-          ? snapshotComputedStyles.animation.trim()
-          : "";
-      const resolvedAnimation =
-        inlineAnimation ||
-        (computedAnimationCandidate &&
-        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
-          ? computedAnimationCandidate
-          : "");
-      setPreviewSelectedPath(normalizedPath);
-      setPreviewSelectedComputedStyles(snapshotComputedStyles);
-      setPreviewSelectedElement({
-        id:
-          snapshotElement?.id ||
-          snapshotNode.getAttribute("id") ||
-          `preview-${Date.now()}`,
-        type: snapshotTag,
-        name: snapshotTag.toUpperCase(),
-        content: snapshotText,
-        html: snapshotHtml,
-        ...(snapshotSrc ? { src: snapshotSrc } : {}),
-        ...(snapshotHref ? { href: snapshotHref } : {}),
-        ...(snapshotClassName ? { className: snapshotClassName } : {}),
-        ...(snapshotAttributes ? { attributes: snapshotAttributes } : {}),
-        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-        styles: snapshotInlineStyles,
-        children: [],
+      await applyPreviewInlineEditDraftHelper({
+        filePath,
+        elementPath,
+        nextInnerHtml,
+        persistPreviewHtmlContent: persistPreviewHtmlContentHelper,
+        persistArgs: {
+          filesRef,
+          textFileCacheRef,
+          pendingPreviewWritesRef,
+          previewDependencyIndexRef,
+          setFiles,
+          setDirtyFiles,
+          setSelectedPreviewDoc,
+          setPreviewRefreshNonce,
+          invalidatePreviewDocCache,
+          markPreviewPathDirty,
+          pushPreviewHistory,
+          flushPendingPreviewSaves,
+          schedulePreviewAutoSave,
+          isMountedPreview,
+        },
       });
     },
     [
+      flushPendingPreviewSaves,
+      invalidatePreviewDocCache,
+      isMountedPreview,
+      markPreviewPathDirty,
+      previewDependencyIndexRef,
+      pushPreviewHistory,
+      schedulePreviewAutoSave,
+      setFiles,
+    ],
+  );
+  const applyPreviewInlineEdit = useCallback(
+    async (elementPath: number[], nextInnerHtml: string) => {
+      const snapshot = await applyPreviewInlineEditHelper({
+        selectedPreviewHtml,
+        elementPath,
+        nextInnerHtml,
+        loadFileContent,
+        filesRef,
+        getLivePreviewSelectedElement,
+        getStablePreviewElementId,
+        previousSnapshotId: previewSelectedElement?.id,
+        persistPreviewHtmlContent: persistPreviewHtmlContentHelper,
+        persistArgs: {
+          filesRef,
+          textFileCacheRef,
+          pendingPreviewWritesRef,
+          previewDependencyIndexRef,
+          setFiles,
+          setDirtyFiles,
+          setSelectedPreviewDoc,
+          setPreviewRefreshNonce,
+          invalidatePreviewDocCache,
+          markPreviewPathDirty,
+          pushPreviewHistory,
+          flushPendingPreviewSaves,
+          schedulePreviewAutoSave,
+          isMountedPreview,
+        },
+      });
+      if (!snapshot) return;
+
+      setPreviewSelectedPath(snapshot.normalizedPath);
+      setPreviewSelectedComputedStyles(snapshot.computedStyles);
+      setPreviewSelectedMatchedCssRules(snapshot.matchedCssRules);
+      setPreviewSelectedElement(snapshot.elementData);
+    },
+    [
+      flushPendingPreviewSaves,
+      getStablePreviewElementId,
       getLivePreviewSelectedElement,
+      invalidatePreviewDocCache,
+      isMountedPreview,
       loadFileContent,
-      persistPreviewHtmlContent,
+      markPreviewPathDirty,
+      previewDependencyIndexRef,
+      previewSelectedElement?.id,
+      pushPreviewHistory,
+      schedulePreviewAutoSave,
       selectedPreviewHtml,
     ],
   );
   const syncPreviewSelectionSnapshotFromLiveElement = useCallback(
     (elementPath: number[]) => {
-      const liveElement = getLivePreviewSelectedElement(elementPath);
-      if (!(liveElement instanceof HTMLElement)) return false;
+      const snapshot = syncPreviewSelectionSnapshotFromLiveElementHelper({
+        elementPath,
+        getLivePreviewSelectedElement,
+        getStablePreviewElementId,
+        previousSnapshotId: previewSelectedElement?.id,
+      });
+      if (!snapshot) return false;
 
-      const inlineStyles = parseInlineStyleText(
-        liveElement.getAttribute("style") || "",
-      );
-      const computedStyles =
-        extractComputedStylesFromElement(liveElement) || null;
-      const matchedCssRules = collectMatchedCssRulesFromElement(liveElement);
-      const liveAttributes =
-        extractCustomAttributesFromElement(liveElement) || undefined;
-      const liveSrc = liveElement.getAttribute("src") || "";
-      const liveHref = liveElement.getAttribute("href") || "";
-      const liveTag = String(liveElement.tagName || "div").toLowerCase();
-      const inlineAnimation =
-        typeof inlineStyles.animation === "string"
-          ? inlineStyles.animation.trim()
-          : "";
-      const computedAnimationCandidate =
-        computedStyles && typeof computedStyles.animation === "string"
-          ? computedStyles.animation.trim()
-          : "";
-      const resolvedAnimation =
-        inlineAnimation ||
-        (computedAnimationCandidate &&
-        !/^none(?:\s|$)/i.test(computedAnimationCandidate)
-          ? computedAnimationCandidate
-          : "");
-
-      setPreviewSelectedComputedStyles(computedStyles);
-      setPreviewSelectedMatchedCssRules(matchedCssRules);
-      setPreviewSelectedElement((prev) => ({
-        id: liveElement.id || prev?.id || `preview-${Date.now()}`,
-        type: liveTag,
-        name: liveTag.toUpperCase(),
-        content: normalizeEditorMultilineText(
-          extractTextWithBreaks(liveElement),
-        ),
-        html: liveElement.innerHTML || prev?.html || "",
-        ...(liveSrc ? { src: liveSrc } : {}),
-        ...(liveHref ? { href: liveHref } : {}),
-        ...(liveElement.className ? { className: liveElement.className } : {}),
-        ...(liveAttributes ? { attributes: liveAttributes } : {}),
-        ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-        styles: inlineStyles,
-        children: [],
-      }));
-
+      setPreviewSelectedComputedStyles(snapshot.computedStyles);
+      setPreviewSelectedMatchedCssRules(snapshot.matchedCssRules);
+      setPreviewSelectedElement(snapshot.elementData);
       return true;
     },
-    [getLivePreviewSelectedElement],
+    [
+      getLivePreviewSelectedElement,
+      getStablePreviewElementId,
+      previewSelectedElement?.id,
+    ],
   );
   useEffect(() => {
     const ensureCdpBridge = async () => {
@@ -7688,100 +4651,18 @@ const App: React.FC = () => {
       styles: Partial<React.CSSProperties>,
       options?: { syncSelectedElement?: boolean },
     ) => {
-      if (
-        !selectedPreviewHtml ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return;
-      }
-
-      const liveTarget = getLivePreviewSelectedElement(elementPath);
-      const normalizedStyles = Object.entries(styles).map(([key, rawValue]) => {
-        const cssKey = toCssPropertyName(key);
-        const valueRaw =
-          rawValue === undefined || rawValue === null ? "" : String(rawValue);
-        const value =
-          cssKey === "font-family"
-            ? normalizeFontFamilyCssValue(valueRaw)
-            : valueRaw;
-        return { key, cssKey, value };
-      });
-      const previewStylePatch: Record<string, string> = {};
-      for (const { key, cssKey, value } of normalizedStyles) {
-        previewStylePatch[key] = value;
-        if (!(liveTarget instanceof HTMLElement)) continue;
-        if (!value) {
-          liveTarget.style.removeProperty(cssKey);
-          continue;
-        }
-        if (cssKey === "animation") {
-          liveTarget.style.setProperty("animation", "none");
-          // Force layout so the next assignment retriggers animation playback.
-          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-          liveTarget.offsetWidth;
-        }
-        liveTarget.style.setProperty(
-          cssKey,
-          value,
-          cssKey === "font-family" ? "important" : "",
-        );
-      }
-      if (
-        liveTarget instanceof HTMLElement &&
-        !liveTarget.getAttribute("style")?.trim()
-      ) {
-        liveTarget.removeAttribute("style");
-      }
-      postPreviewPatchToFrame({
-        type: "PREVIEW_APPLY_STYLE",
-        path: elementPath,
-        styles: previewStylePatch,
-      });
-
-      const pathMatchesSelection =
-        Array.isArray(previewSelectedPath) &&
-        previewSelectedPath.length === elementPath.length &&
-        previewSelectedPath.every(
-          (segment, idx) => segment === elementPath[idx],
-        );
-      const shouldSyncSelected =
-        options?.syncSelectedElement ?? pathMatchesSelection;
-      if (shouldSyncSelected && liveTarget instanceof HTMLElement) {
-        syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-      }
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
-      if (!(target instanceof HTMLElement)) return;
-      for (const { cssKey, value } of normalizedStyles) {
-        if (!value) {
-          target.style.removeProperty(cssKey);
-          continue;
-        }
-        target.style.setProperty(
-          cssKey,
-          value,
-          cssKey === "font-family" ? "important" : "",
-        );
-      }
-      if (!target.getAttribute("style")?.trim()) {
-        target.removeAttribute("style");
-      }
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
+      await applyPreviewStyleUpdateAtPathHelper({
+        selectedPreviewHtml,
         elementPath,
+        styles,
+        options,
+        getLivePreviewSelectedElement,
+        postPreviewPatchToFrame,
+        previewSelectedPath,
+        syncPreviewSelectionSnapshotFromLiveElement,
+        loadFileContent,
+        filesRef,
+        persistPreviewHtmlContent,
       });
     },
     [
@@ -7796,70 +4677,17 @@ const App: React.FC = () => {
   );
   const queuePreviewStyleUpdate = useCallback(
     (styles: Partial<React.CSSProperties>) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const targetPath = [...previewSelectedPath];
-      const currentPending = previewStyleDraftPendingRef.current;
-      const samePendingTarget =
-        currentPending &&
-        currentPending.filePath === selectedPreviewHtml &&
-        currentPending.elementPath.length === targetPath.length &&
-        currentPending.elementPath.every(
-          (segment, index) => segment === targetPath[index],
-        );
-
-      if (
-        currentPending &&
-        !samePendingTarget &&
-        currentPending.elementPath.length > 0
-      ) {
-        void applyPreviewStyleUpdateAtPath(
-          currentPending.elementPath,
-          currentPending.styles,
-          { syncSelectedElement: false },
-        );
-      }
-
-      previewStyleDraftPendingRef.current = {
-        filePath: selectedPreviewHtml,
-        elementPath: targetPath,
-        styles: {
-          ...(samePendingTarget ? currentPending?.styles || {} : {}),
-          ...styles,
-        },
-      };
-
-      if (!dirtyFilesRef.current.includes(selectedPreviewHtml)) {
-        dirtyFilesRef.current = [...dirtyFilesRef.current, selectedPreviewHtml];
-        setDirtyFiles((prev) =>
-          prev.includes(selectedPreviewHtml)
-            ? prev
-            : [...prev, selectedPreviewHtml],
-        );
-      }
-      markPreviewPathDirty(selectedPreviewHtml, targetPath);
-
-      if (previewStyleDraftTimerRef.current !== null) {
-        window.clearTimeout(previewStyleDraftTimerRef.current);
-      }
-      previewStyleDraftTimerRef.current = window.setTimeout(() => {
-        previewStyleDraftTimerRef.current = null;
-        const pending = previewStyleDraftPendingRef.current;
-        previewStyleDraftPendingRef.current = null;
-        if (!pending || pending.elementPath.length === 0) return;
-        void applyPreviewStyleUpdateAtPath(
-          pending.elementPath,
-          pending.styles,
-          { syncSelectedElement: true },
-        );
-      }, 120);
+      queuePreviewStyleUpdateHelper({
+        selectedPreviewHtml,
+        previewSelectedPath,
+        styles,
+        previewStyleDraftPendingRef,
+        previewStyleDraftTimerRef,
+        dirtyFilesRef,
+        setDirtyFiles,
+        markPreviewPathDirty,
+        applyPreviewStyleUpdateAtPath,
+      });
     },
     [
       applyPreviewStyleUpdateAtPath,
@@ -7867,21 +4695,6 @@ const App: React.FC = () => {
       previewSelectedPath,
       selectedPreviewHtml,
     ],
-  );
-  const applyPreviewStyleUpdate = useCallback(
-    async (styles: Partial<React.CSSProperties>) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-      await applyPreviewStyleUpdateAtPath(previewSelectedPath, styles, {
-        syncSelectedElement: true,
-      });
-    },
-    [applyPreviewStyleUpdateAtPath, previewSelectedPath],
   );
   const applyPreviewContentUpdate = useCallback(
     async (data: {
@@ -7891,240 +4704,17 @@ const App: React.FC = () => {
       liveSrc?: string;
       href?: string;
     }) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, previewSelectedPath);
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-      if (!target && !liveTarget) return;
-      let didChangeContent = false;
-      let didChangeSrc = false;
-      let didChangeHref = false;
-      let nextResolvedContent: string | null = null;
-      let nextResolvedHtml: string | null = null;
-
-      if (typeof data.html === "string") {
-        const nextHtml = data.html;
-        const currentHtml =
-          target instanceof HTMLElement
-            ? target.innerHTML
-            : liveTarget instanceof HTMLElement
-              ? liveTarget.innerHTML
-              : "";
-        if (currentHtml !== nextHtml) {
-          if (target instanceof HTMLElement) {
-            target.innerHTML = nextHtml;
-          }
-          if (liveTarget instanceof HTMLElement) {
-            liveTarget.innerHTML = nextHtml;
-          }
-          didChangeContent = true;
-        }
-        if (didChangeContent) {
-          const baselineElement =
-            (target instanceof HTMLElement && target) ||
-            (liveTarget instanceof HTMLElement && liveTarget) ||
-            null;
-          nextResolvedHtml =
-            baselineElement instanceof HTMLElement
-              ? baselineElement.innerHTML
-              : nextHtml;
-          nextResolvedContent = baselineElement
-            ? normalizeEditorMultilineText(
-                extractTextWithBreaks(baselineElement),
-              )
-            : normalizeEditorMultilineText(
-                extractTextFromHtmlFragment(nextHtml),
-              );
-        }
-      } else if (typeof data.content === "string") {
-        const normalizedText = data.content.replace(/\r\n?/g, "\n");
-        const baselineElement = target || liveTarget;
-        const currentText = extractTextWithBreaks(baselineElement);
-        const nextComparable = normalizeEditorMultilineText(normalizedText);
-        const currentComparable = normalizeEditorMultilineText(currentText);
-        if (nextComparable !== currentComparable) {
-          if (target) {
-            applyMultilineTextToElement(target, normalizedText);
-          }
-          if (liveTarget) {
-            applyMultilineTextToElement(liveTarget, normalizedText);
-          }
-          didChangeContent = true;
-        }
-        if (didChangeContent) {
-          const updatedElement = target || liveTarget;
-          nextResolvedContent = normalizeEditorMultilineText(
-            extractTextWithBreaks(updatedElement),
-          );
-          nextResolvedHtml =
-            updatedElement instanceof HTMLElement
-              ? updatedElement.innerHTML
-              : null;
-        }
-      }
-      if (
-        typeof data.src === "string" &&
-        (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
-      ) {
-        const sourceValue = data.src.trim();
-        const liveResolvedSource =
-          (typeof data.liveSrc === "string" && data.liveSrc.trim()) ||
-          resolvePreviewAssetUrl(sourceValue) ||
-          sourceValue;
-        const lowerTag =
-          target instanceof HTMLElement
-            ? target.tagName.toLowerCase()
-            : liveTarget instanceof HTMLElement
-              ? liveTarget.tagName.toLowerCase()
-              : "";
-        const isDirectImageTag =
-          lowerTag === "img" || lowerTag === "source" || lowerTag === "video";
-        if (isDirectImageTag) {
-          if (target instanceof HTMLElement) {
-            const previousSrc = target.getAttribute("src") || "";
-            if (previousSrc !== sourceValue) {
-              target.setAttribute("src", sourceValue);
-              didChangeSrc = true;
-            }
-          }
-          if (liveTarget instanceof HTMLElement) {
-            const previousSrc = liveTarget.getAttribute("src") || "";
-            if (previousSrc !== liveResolvedSource) {
-              liveTarget.setAttribute("src", liveResolvedSource);
-              didChangeSrc = true;
-            }
-          }
-        } else {
-          const nextBackground =
-            sourceValue.length === 0
-              ? ""
-              : /^url\(/i.test(sourceValue)
-                ? sourceValue
-                : `url("${sourceValue}")`;
-          if (nextBackground) {
-            if (target instanceof HTMLElement) {
-              const previous =
-                target.style.getPropertyValue("background-image");
-              if (previous !== nextBackground) {
-                target.style.setProperty("background-image", nextBackground);
-                didChangeSrc = true;
-              }
-            }
-            if (liveTarget instanceof HTMLElement) {
-              const liveBackground =
-                sourceValue.length === 0
-                  ? ""
-                  : /^url\(/i.test(sourceValue)
-                    ? sourceValue.replace(
-                        /url\((['"]?)(.*?)\1\)/i,
-                        (_match, quote, rawUrl) => {
-                          const resolved =
-                            resolvePreviewAssetUrl(rawUrl) || rawUrl;
-                          const nextQuote = quote || '"';
-                          return `url(${nextQuote}${resolved}${nextQuote})`;
-                        },
-                      )
-                    : `url("${liveResolvedSource}")`;
-              const previous =
-                liveTarget.style.getPropertyValue("background-image");
-              if (previous !== liveBackground) {
-                liveTarget.style.setProperty(
-                  "background-image",
-                  liveBackground,
-                );
-                didChangeSrc = true;
-              }
-            }
-          } else {
-            if (target instanceof HTMLElement) {
-              const previous =
-                target.style.getPropertyValue("background-image");
-              if (previous) {
-                target.style.removeProperty("background-image");
-                didChangeSrc = true;
-              }
-            }
-            if (liveTarget instanceof HTMLElement) {
-              const previous =
-                liveTarget.style.getPropertyValue("background-image");
-              if (previous) {
-                liveTarget.style.removeProperty("background-image");
-                didChangeSrc = true;
-              }
-            }
-          }
-        }
-      }
-      if (typeof data.href === "string") {
-        if (target instanceof HTMLElement) {
-          const previousHref = target.getAttribute("href") || "";
-          if (previousHref !== data.href) {
-            target.setAttribute("href", data.href);
-            didChangeHref = true;
-          }
-        }
-        if (liveTarget instanceof HTMLElement) {
-          const previousHref = liveTarget.getAttribute("href") || "";
-          if (previousHref !== data.href) {
-            liveTarget.setAttribute("href", data.href);
-            didChangeHref = true;
-          }
-        }
-      }
-
-      if (target && (didChangeContent || didChangeSrc || didChangeHref)) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath: previewSelectedPath,
-        });
-      }
-
-      if (didChangeContent || didChangeSrc || didChangeHref) {
-        setPreviewSelectedElement((prev) =>
-          prev
-            ? {
-                ...prev,
-                ...(didChangeContent
-                  ? {
-                      content:
-                        nextResolvedContent ??
-                        (typeof data.content === "string"
-                          ? data.content.replace(/\r\n?/g, "\n")
-                          : prev.content),
-                      ...(nextResolvedHtml !== null
-                        ? { html: nextResolvedHtml }
-                        : {}),
-                    }
-                  : {}),
-                ...(didChangeSrc && typeof data.src === "string"
-                  ? { src: data.src }
-                  : {}),
-                ...(didChangeHref && typeof data.href === "string"
-                  ? { href: data.href }
-                  : {}),
-              }
-            : prev,
-        );
-      }
+      await applyPreviewContentUpdateHelper({
+        data,
+        selectedPreviewHtml,
+        previewSelectedPath,
+        loadFileContent,
+        filesRef,
+        getLivePreviewSelectedElement,
+        resolvePreviewAssetUrl,
+        persistPreviewHtmlContent,
+        setPreviewSelectedElement,
+      });
     },
     [
       getLivePreviewSelectedElement,
@@ -8206,7 +4796,7 @@ const App: React.FC = () => {
       ? `${htmlDirRelative}/${uniqueFileName}`
       : uniqueFileName;
 
-    await ensureDirectoryForFile(targetAbsolutePath);
+    await ensureDirectoryForFileStable(targetAbsolutePath);
     try {
       await (Neutralino as any).filesystem.copy(
         normalizePath(String(sourceAbsolutePath)),
@@ -8252,7 +4842,7 @@ const App: React.FC = () => {
     return true;
   }, [
     applyPreviewContentUpdate,
-    ensureDirectoryForFile,
+    ensureDirectoryForFileStable,
     loadFileContent,
     previewSelectedElement,
     previewSelectedPath,
@@ -8385,71 +4975,6 @@ const App: React.FC = () => {
       selectedPreviewHtml,
     ],
   );
-  const applyQuickTextStyle = useCallback(
-    async (styles: Record<string, string>) => {
-      const frame = previewFrameRef.current;
-      const win = frame?.contentWindow;
-      const doc = frame?.contentDocument;
-      if (!win || !doc) return;
-      if (!selectedPreviewHtml) return;
-      const selection = win.getSelection?.();
-      const activeRange =
-        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-      const range =
-        activeRange && !activeRange.collapsed
-          ? activeRange
-          : quickTextRangeRef.current;
-      if (!range || range.collapsed) return;
-      if (selection && range) {
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-
-      const toCssKey = (value: string) =>
-        value.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-      const span = doc.createElement("span");
-      for (const [key, value] of Object.entries(styles)) {
-        if (!value) continue;
-        span.style.setProperty(toCssKey(key), value);
-      }
-      const workingRange = range.cloneRange();
-      try {
-        workingRange.surroundContents(span);
-      } catch {
-        const frag = workingRange.extractContents();
-        span.appendChild(frag);
-        workingRange.insertNode(span);
-      }
-
-      const liveTarget =
-        previewSelectedPath && Array.isArray(previewSelectedPath)
-          ? getLivePreviewSelectedElement(previewSelectedPath)
-          : null;
-      if (liveTarget instanceof HTMLElement) {
-        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
-      } else if (doc.documentElement) {
-        sanitizeQuickEditDocument(doc);
-        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-        });
-      }
-      if (selection) {
-        selection.removeAllRanges();
-        const nextRange = doc.createRange();
-        nextRange.selectNodeContents(span);
-        selection.addRange(nextRange);
-        quickTextRangeRef.current = nextRange.cloneRange();
-      }
-    },
-    [
-      applyPreviewContentUpdate,
-      getLivePreviewSelectedElement,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
   const applyPreviewTagUpdate = useCallback(
     async (nextTag: string) => {
       if (
@@ -8522,84 +5047,6 @@ const App: React.FC = () => {
             : prev,
         );
       }
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewAttributesUpdate = useCallback(
-    async (attributes: Record<string, string>) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, previewSelectedPath);
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-      if (!target && !liveTarget) return;
-
-      const reserved = new Set(["id", "class", "style", "src", "href"]);
-      if (target) {
-        const targetAttrs = target.attributes;
-        Array.from(targetAttrs).forEach((attr) => {
-          if (!reserved.has(attr.name.toLowerCase())) {
-            target.removeAttribute(attr.name);
-          }
-        });
-      }
-      if (liveTarget) {
-        const liveAttrs = liveTarget.attributes;
-        Array.from(liveAttrs).forEach((attr) => {
-          if (!reserved.has(attr.name.toLowerCase())) {
-            liveTarget.removeAttribute(attr.name);
-          }
-        });
-      }
-      Object.entries(attributes || {}).forEach(([key, value]) => {
-        if (!key) return;
-        if (target) {
-          target.setAttribute(key, value);
-        }
-        if (liveTarget) {
-          liveTarget.setAttribute(key, value);
-        }
-      });
-
-      if (target) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath: previewSelectedPath,
-        });
-      }
-
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              attributes,
-            }
-          : prev,
-      );
     },
     [
       getLivePreviewSelectedElement,
@@ -9171,7 +5618,7 @@ const App: React.FC = () => {
         if (absoluteAssetPath) {
           const absoluteParent = getParentPath(absoluteAssetPath);
           if (absoluteParent) {
-            await ensureDirectoryTree(absoluteParent);
+            await ensureDirectoryTreeStable(absoluteParent);
           }
           filePathIndexRef.current[asset.path] = absoluteAssetPath;
         }
@@ -9296,7 +5743,7 @@ const App: React.FC = () => {
     },
     [
       applyPreviewStyleUpdateAtPath,
-      ensureDirectoryTree,
+      ensureDirectoryTreeStable,
       loadFileContent,
       persistPreviewHtmlContent,
       previewSelectedElement?.id,
@@ -9429,7 +5876,7 @@ const App: React.FC = () => {
       if (absoluteCssPath) {
         const absoluteParent = getParentPath(absoluteCssPath);
         if (absoluteParent) {
-          await ensureDirectoryTree(absoluteParent);
+          await ensureDirectoryTreeStable(absoluteParent);
         }
         filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
       }
@@ -9763,7 +6210,7 @@ const App: React.FC = () => {
         "nav",
       ].includes(drawTag);
       const nextElement: VirtualElement = {
-        id: `preview-${Date.now()}`,
+        id: getStablePreviewElementId(newPath),
         type: drawTag,
         name: drawTag.toUpperCase(),
         content:
@@ -9781,6 +6228,7 @@ const App: React.FC = () => {
       setIsRightPanelOpen(true);
     },
     [
+      getStablePreviewElementId,
       loadFileContent,
       persistPreviewHtmlContent,
       postPreviewPatchToFrame,
@@ -9916,7 +6364,7 @@ const App: React.FC = () => {
         if (absoluteAssetPath) {
           const absoluteParent = getParentPath(absoluteAssetPath);
           if (absoluteParent) {
-            await ensureDirectoryTree(absoluteParent);
+            await ensureDirectoryTreeStable(absoluteParent);
           }
           filePathIndexRef.current[assetVirtualPath] = absoluteAssetPath;
         }
@@ -10316,7 +6764,6 @@ const App: React.FC = () => {
       setSelectedId(null);
       setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
-      requestPropertiesPanelTab("content");
       setSidebarToolMode("edit");
       setPreviewMode("edit");
       setInteractionMode("preview");
@@ -10325,7 +6772,6 @@ const App: React.FC = () => {
       loadFileContent,
       postPreviewPatchToFrame,
       persistPreviewHtmlContent,
-      requestPropertiesPanelTab,
       selectedPreviewHtml,
       selectedPreviewSrc,
     ],
@@ -11249,12 +7695,6 @@ const App: React.FC = () => {
     },
     [applyPreviewContentUpdate],
   );
-  const handlePreviewAttributesUpdateStable = useCallback(
-    (attributes: Record<string, string>) => {
-      void applyPreviewAttributesUpdate(attributes);
-    },
-    [applyPreviewAttributesUpdate],
-  );
   const handlePreviewAnimationUpdateStable = useCallback(
     (animation: string) => {
       void applyPreviewAnimationUpdate(animation);
@@ -11264,8 +7704,6 @@ const App: React.FC = () => {
   const handlePreviewDeleteStable = useCallback(() => {
     void applyPreviewDeleteSelected();
   }, [applyPreviewDeleteSelected]);
-  const noopPropertiesAction = useCallback(() => {}, []);
-  const noopMoveOrder = useCallback((_dir: "up" | "down") => {}, []);
 
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
@@ -11360,13 +7798,6 @@ const App: React.FC = () => {
             setPreviewMode("edit");
             return;
           }
-          if (key === "k") {
-            setIsCommandPaletteOpen((prev) => !prev);
-            return;
-          }
-          if (code === "Backquote") {
-            setShowTerminal((prev) => !prev);
-          }
           return;
         }
         if (
@@ -11398,10 +7829,6 @@ const App: React.FC = () => {
         }
         if (!hasModifier) return;
 
-        if (key === "k") {
-          setIsCommandPaletteOpen((prev) => !prev);
-          return;
-        }
         if (key === "f") {
           setIsLeftPanelOpen(true);
           setIsRightPanelOpen(true);
@@ -11416,10 +7843,6 @@ const App: React.FC = () => {
           setSidebarToolMode("edit");
           setInteractionMode("preview");
           setPreviewMode("edit");
-          return;
-        }
-        if (key === "`" || code === "Backquote") {
-          setShowTerminal((prev) => !prev);
           return;
         }
         if (key === "j") {
@@ -11611,7 +8034,7 @@ const App: React.FC = () => {
             : "");
         setPreviewSelectedComputedStyles(computedStyles);
         setPreviewSelectedElement((prev) => ({
-          id: liveElement.id || prev?.id || `preview-${Date.now()}`,
+          id: getStablePreviewElementId(nextPath, liveElement.id, prev?.id),
           type: liveTag,
           name: liveTag.toUpperCase(),
           content: draftText,
@@ -11677,7 +8100,12 @@ const App: React.FC = () => {
 
         // 2. Prepare data parsing
         const tag = (payload.tag || "div").toLowerCase();
-        const id = payload.id ? String(payload.id) : `preview-${Date.now()}`;
+        const sameSelectedPath =
+          Array.isArray(previewSelectedPath) &&
+          previewSelectedPath.length === nextPath.length &&
+          previewSelectedPath.every(
+            (segment, index) => segment === nextPath[index],
+          );
         const inlineStyles = parseInlineStyleText(
           typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
         );
@@ -11726,6 +8154,11 @@ const App: React.FC = () => {
               .filter(Boolean) as PreviewMatchedCssRule[])
           : [];
         const liveElement = getLivePreviewSelectedElement(nextPath);
+        const id = getStablePreviewElementId(
+          nextPath,
+          payload.id ? String(payload.id) : liveElement?.id || "",
+          sameSelectedPath ? previewSelectedElement?.id : "",
+        );
         const computedStyles =
           payloadComputedStyles ||
           extractComputedStylesFromElement(liveElement);
@@ -11906,6 +8339,9 @@ const App: React.FC = () => {
     toggleZenMode,
     applyPreviewInlineEditDraft,
     applyPreviewInlineEdit,
+    getStablePreviewElementId,
+    previewSelectedElement?.id,
+    previewSelectedPath,
     EXPLORER_LOCK_TTL_MS,
   ]);
   useEffect(() => {
@@ -12110,9 +8546,6 @@ const App: React.FC = () => {
     );
     return firstText ?? null;
   }, [activeFile, files, selectedPreviewHtml]);
-  const activeCodeFileType: ProjectFile["type"] | null = activeCodeFilePath
-    ? (files[activeCodeFilePath]?.type ?? null)
-    : null;
   const activeCodeContent = useMemo(() => {
     if (!activeCodeFilePath) return "";
     if (typeof codeDraftByPath[activeCodeFilePath] === "string") {
@@ -12121,9 +8554,6 @@ const App: React.FC = () => {
     const raw = files[activeCodeFilePath]?.content;
     return typeof raw === "string" ? raw : "";
   }, [activeCodeFilePath, codeDraftByPath, files]);
-  const activeCodeIsDirty = activeCodeFilePath
-    ? Boolean(codeDirtyPathSet[activeCodeFilePath])
-    : false;
   const activeDetachedEditorFilePath = useMemo(() => {
     if (activeFile && files[activeFile]) return activeFile;
     if (selectedPreviewHtml && files[selectedPreviewHtml])
@@ -12159,10 +8589,6 @@ const App: React.FC = () => {
       activeDetachedEditorFilePath,
       activeDetachedEditorFileType,
     ),
-  );
-  const detachedEditorFiles = useMemo(
-    () => Object.keys(files).sort((a, b) => a.localeCompare(b)),
-    [files],
   );
   const handleDetachedEditorSelectFile = useCallback(
     (path: string) => {
@@ -12404,8 +8830,6 @@ const App: React.FC = () => {
       ? window.devicePixelRatio
       : 1,
   );
-  const useCompactBottomPanel = true;
-  const CONSOLE_PANEL_WIDTH = 420;
   const shouldPushTabletFrame =
     deviceMode === "tablet" &&
     frameZoom === 75 &&
@@ -12465,8 +8889,7 @@ const App: React.FC = () => {
           0.28 +
             (isLeftPanelOpen ? 0.12 : 0) +
             (isRightPanelOpen ? 0.12 : 0) +
-            (isCodePanelOpen ? 0.12 : 0) +
-            (showTerminal ? 0.14 : 0),
+            (isCodePanelOpen ? 0.12 : 0),
         )
       : 0;
   const codePanelStageOffset =
@@ -12697,6 +9120,15 @@ const App: React.FC = () => {
       return;
     }
 
+    renderDetachedConsoleWindowHelper({
+      detachedWindow,
+      entries: previewConsoleEntries,
+      warnCount: previewConsoleWarnCount,
+      errorCount: previewConsoleErrorCount,
+      theme,
+    });
+    return;
+
     const rows =
       previewConsoleEntries.length === 0
         ? `<div class="empty">No project logs yet</div>`
@@ -12802,7 +9234,6 @@ const App: React.FC = () => {
     window.setTimeout(() => {
       renderDetachedConsoleWindow();
     }, 0);
-    setShowTerminal(false);
   }, [renderDetachedConsoleWindow]);
 
   useEffect(() => {
@@ -12868,293 +9299,6 @@ const App: React.FC = () => {
       : pendingPageSwitch?.nextPath || "next page";
   const isPendingRefresh = pendingPageSwitch?.mode === "refresh";
   const isPendingPreviewMode = pendingPageSwitch?.mode === "preview_mode";
-  const renderPdfAnnotationCard = useCallback(
-    (annotation: PdfAnnotationUiRecord) => {
-      const isCurrentSlideMatch =
-        annotation.mappedSlideId === currentPreviewSlideId;
-      const isFocused =
-        focusedPdfAnnotation?.annotationId === annotation.annotationId;
-      const mainThreadEntry =
-        annotation.threadEntries.find((entry) => entry.role === "comment") ||
-        annotation.threadEntries[0] ||
-        null;
-      const replyEntries = annotation.threadEntries.filter(
-        (entry) => entry !== mainThreadEntry,
-      );
-      const mappedLabel = resolveMappedLabelShort(annotation);
-      const effectiveType =
-        pdfAnnotationTypeOverrides[annotation.annotationId] ||
-        (ANNOTATION_INTENT_OPTIONS.includes(annotation.annotationType)
-          ? annotation.annotationType
-          : "notFound");
-      const typeOptions = ANNOTATION_INTENT_OPTIONS;
-      const hasResolvableTarget = Boolean(
-        annotation.foundSelector ||
-        annotation.mappedFilePath ||
-        annotation.status === "Mapped" ||
-        annotation.popupInvocation?.triggerSelector ||
-        annotation.popupInvocation?.containerSelector ||
-        (annotation.subtype === "Popup" && annotation.mappedFilePath) ||
-        (annotation.subtype === "Popup" &&
-          annotation.pdfContextText &&
-          annotation.pdfContextText.length > 5),
-      );
-      return (
-        <div
-          key={annotation.annotationId}
-          className="rounded-[22px] border px-4 py-4"
-          style={{
-            borderColor: isFocused
-              ? "rgba(34,211,238,0.55)"
-              : theme === "dark"
-                ? "rgba(148,163,184,0.18)"
-                : "rgba(15,23,42,0.08)",
-            background: isCurrentSlideMatch
-              ? theme === "dark"
-                ? "rgba(8,145,178,0.16)"
-                : "rgba(14,165,233,0.1)"
-              : theme === "dark"
-                ? "rgba(15,23,42,0.54)"
-                : "rgba(255,255,255,0.8)",
-          }}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold">
-                Page {annotation.annoPdfPage}
-              </div>
-              <div
-                className="mt-1 text-[11px] uppercase tracking-[0.18em]"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {mappedLabel ? mappedLabel : "Unmapped"}
-              </div>
-            </div>
-            <div className="shrink-0 flex flex-col items-end gap-2">
-              <select
-                title={`Annotation intent for page ${annotation.annoPdfPage}`}
-                aria-label={`Annotation intent for page ${annotation.annoPdfPage}`}
-                className="rounded-full border bg-transparent px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
-                style={{
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(34,211,238,0.4)"
-                      : "rgba(14,165,233,0.35)",
-                  color: "var(--text-main)",
-                }}
-                value={effectiveType}
-                onChange={(event) =>
-                  dispatch(
-                    setTypeOverrides({
-                      ...pdfAnnotationTypeOverrides,
-                      [annotation.annotationId]: event.target.value,
-                    }),
-                  )
-                }
-              >
-                {typeOptions.map((option) => (
-                  <option
-                    key={`anno-type-${annotation.annotationId}-${option}`}
-                    value={option}
-                  >
-                    {option}
-                  </option>
-                ))}
-              </select>
-              <div
-                className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
-                style={{
-                  background:
-                    theme === "dark"
-                      ? "rgba(148,163,184,0.18)"
-                      : "rgba(15,23,42,0.1)",
-                  color: "var(--text-main)",
-                }}
-              >
-                {annotation.annotationLocationType}
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 text-[13px] leading-6 break-words">
-            {mainThreadEntry ? (
-              <div className="space-y-3">
-                <div>
-                  <div className="font-medium leading-6">
-                    {mainThreadEntry.text}
-                  </div>
-                  <div
-                    className="mt-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {mainThreadEntry.author}
-                  </div>
-                </div>
-                {replyEntries.length > 0 ? (
-                  <div
-                    className="rounded-2xl border px-3 py-3 space-y-3"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.14)"
-                          : "rgba(15,23,42,0.08)",
-                      background:
-                        theme === "dark"
-                          ? "rgba(2,6,23,0.24)"
-                          : "rgba(248,250,252,0.9)",
-                    }}
-                  >
-                    <div
-                      className="text-[10px] font-semibold uppercase tracking-[0.18em]"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Discussion
-                    </div>
-                    {replyEntries.map((entry, index) => (
-                      <div
-                        key={`${annotation.annotationId}-reply-${index}`}
-                        className="pl-3 border-l space-y-1"
-                        style={{
-                          borderColor:
-                            theme === "dark"
-                              ? "rgba(34,211,238,0.24)"
-                              : "rgba(14,165,233,0.18)",
-                        }}
-                      >
-                        <div className="leading-6">{entry.text}</div>
-                        <div
-                          className="text-[11px] font-semibold uppercase tracking-[0.16em]"
-                          style={{ color: "var(--text-muted)" }}
-                        >
-                          {entry.author}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              annotation.annotationText
-            )}
-          </div>
-          <div
-            className="mt-3 flex items-center gap-2 text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{
-                background: hasResolvableTarget
-                  ? "rgba(34,197,94,0.9)"
-                  : "rgba(248,113,113,0.9)",
-              }}
-            />
-            {hasResolvableTarget
-              ? "Target mapped in preview"
-              : "Target not mapped to preview"}
-          </div>
-          <div className="mt-4 flex items-center justify-end gap-3">
-            {annotation.annotationText && hasResolvableTarget && (
-              <button
-                type="button"
-                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors flex items-center gap-1.5"
-                style={{
-                  borderColor: "rgba(16,185,129,0.34)",
-                  background: "rgba(16,185,129,0.1)",
-                  color: theme === "dark" ? "#6ee7b7" : "#065f46",
-                }}
-                onClick={async () => {
-                  try {
-                    const aiRoot =
-                      interactionMode === "preview" ? previewLayersRoot : root;
-                    if (!aiRoot) return;
-
-                    const pipeline = new AIPipeline();
-                    const response = await pipeline.process(
-                      annotation.annotationText,
-                      aiRoot,
-                      files,
-                      {
-                        allowPopupActions: true,
-                        annotationContext: annotation,
-                      },
-                    );
-
-                    if (response.intent !== "UNKNOWN" && response.updatedRoot) {
-                      if (interactionMode === "preview") {
-                        const currentPath = selectedPreviewHtmlRef.current;
-                        if (currentPath) {
-                          const tempDoc =
-                            document.implementation.createHTMLDocument();
-                          const node = materializeVirtualElement(
-                            tempDoc,
-                            response.updatedRoot,
-                          );
-                          const serialized =
-                            (node as HTMLElement).innerHTML || "";
-                          // @ts-ignore
-                          await persistPreviewHtmlContent(
-                            currentPath,
-                            serialized,
-                            { refreshPreviewDoc: true, saveNow: true },
-                          );
-                        }
-                      } else {
-                        setRoot(response.updatedRoot);
-                      }
-
-                      console.log(
-                        "AI Action Applied from Annotation:",
-                        response.message,
-                      );
-                    }
-                  } catch (err) {
-                    console.error("AI Action failed:", err);
-                  }
-                }}
-              >
-                <Sparkles size={12} />
-                Apply AI Action
-              </button>
-            )}
-            {annotation.popupInvocation?.popupId && (
-              <div
-                className="px-2 py-1 rounded text-[10px] font-mono opacity-60 hover:opacity-100 transition-opacity cursor-help"
-                title={`Resolved Popup ID: ${annotation.popupInvocation.popupId}`}
-                style={{ background: "rgba(0,0,0,0.1)" }}
-              >
-                PID: {annotation.popupInvocation.popupId.slice(0, 8)}...
-              </div>
-            )}
-            {annotation.mappedFilePath ? (
-              <button
-                type="button"
-                className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors"
-                style={{
-                  borderColor:
-                    theme === "dark"
-                      ? "rgba(34,211,238,0.34)"
-                      : "rgba(14,165,233,0.28)",
-                  color: theme === "dark" ? "#67e8f9" : "#0f766e",
-                }}
-                onClick={() => handleJumpToPdfAnnotation(annotation)}
-              >
-                Open In Slide
-              </button>
-            ) : null}
-          </div>
-        </div>
-      );
-    },
-    [
-      currentPreviewSlideId,
-      focusedPdfAnnotation?.annotationId,
-      handleJumpToPdfAnnotation,
-      pdfAnnotationTypeOverrides,
-      resolveMappedLabelShort,
-      theme,
-    ],
-  );
-
   return (
     <div
       ref={appRootRef}
@@ -13168,15 +9312,10 @@ const App: React.FC = () => {
           ? {
               boxShadow:
                 "inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 0 0 rgba(255,255,255,0.12), inset 1px 0 0 0 rgba(255,255,255,0.06), inset -1px 0 0 0 rgba(255,255,255,0.06), inset 0 -1px 0 0 rgba(255,255,255,0.04)",
-            }
-          : {}),
+        }
+        : {}),
       }}
     >
-      <CommandPalette
-        isOpen={isCommandPaletteOpen}
-        onClose={() => setIsCommandPaletteOpen(false)}
-        onAction={handleCommandAction}
-      />
       {isPageSwitchPromptOpen && pendingPageSwitch && (
         <div
           className="fixed inset-0 z-[1400] flex items-center justify-center px-4"
@@ -13451,11 +9590,6 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
-      )}
-      {isZenMode && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[999] px-3 py-1 rounded-full text-[10px] font-semibold tracking-wider border backdrop-blur-md bg-black/20 text-white/90 border-white/20">
-          Zen Mode Active • Press Esc to exit
         </div>
       )}
 
@@ -14496,8 +10630,6 @@ const App: React.FC = () => {
                               handleResize={handleResize}
                               interactionMode={interactionMode}
                               INJECTED_STYLES={INJECTED_STYLES}
-                              vibeUpdateKey={lastVibeUpdateRef.current}
-                              onVibeError={(msg) => setVibeErrorContext(msg)}
                             />
                           </div>
                         )}
@@ -15083,915 +11215,95 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Right Sidebar */}
-        {rightPanelMode === "gallery" && (
-          <div
-            className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isZenMode || isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
-            style={{
-              transform: isRightPanelOpen
-                ? "translateX(0)"
-                : isFloatingPanels
-                  ? "translateX(calc(100% + 2.5rem))"
-                  : isPanelsSwapped
-                    ? "translateX(-100%)"
-                    : "translateX(100%)",
-              width: "var(--right-panel-width)",
-              left: isFloatingPanels
-                ? `${rightPanelFloatingPosition.left}px`
-                : undefined,
-              top: isFloatingPanels
-                ? `${rightPanelFloatingPosition.top}px`
-                : undefined,
-              minHeight: isFloatingPanels ? "30vh" : undefined,
-              maxHeight: isFloatingPanels
-                ? "min(70vh, calc(100vh - 7.5rem))"
-                : undefined,
-              height: isFloatingPanels ? "fit-content" : undefined,
-              borderRadius: isFloatingPanels ? "1rem" : undefined,
-              border: isFloatingPanels
-                ? theme === "light"
-                  ? "1px solid rgba(15, 23, 42, 0.18)"
-                  : "1px solid rgba(255, 255, 255, 0.25)"
-                : undefined,
-              background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
-              overflowY: isFloatingPanels ? "auto" : undefined,
-              overflowX: isFloatingPanels ? "hidden" : undefined,
-              transitionTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+        {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES && (
+          <ScreenshotGalleryPanel
+            isFloatingPanels={isFloatingPanels}
+            isPanelsSwapped={isPanelsSwapped}
+            isResizingRightPanel={isResizingRightPanel}
+            isDraggingRightPanel={isDraggingRightPanel}
+            isZenMode={isZenMode}
+            isCodePanelOpen={isCodePanelOpen}
+            isRightPanelOpen={isRightPanelOpen}
+            rightPanelFloatingPosition={rightPanelFloatingPosition}
+            theme={theme}
+            rightPanelMode={rightPanelMode}
+            screenshotCaptureBusy={screenshotCaptureBusy}
+            screenshotItems={screenshotItems}
+            screenshotPreviewUrls={screenshotPreviewUrls}
+            isPdfExporting={isPdfExporting}
+            pdfExportLogs={pdfExportLogs}
+            projectPath={projectPath}
+            onRightPanelDragStart={handleRightPanelDragStart}
+            onCloseGallery={closeScreenshotGallery}
+            onCollapsePanel={() => {
+              setIsRightPanelOpen(false);
+              setRightPanelMode("inspector");
             }}
-          >
-            <div
-              className={`h-full min-h-full relative flex flex-col overflow-hidden ${isFloatingPanels ? "rounded-2xl overflow-hidden" : ""}`}
-              style={{
-                background:
-                  theme === "dark"
-                    ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
-                    : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
-                backdropFilter: "blur(14px)",
-              }}
-            >
-              <div
-                className="h-11 shrink-0 px-3 flex items-center justify-between"
-                onMouseDown={handleRightPanelDragStart}
-                style={{
-                  borderBottom:
-                    theme === "dark"
-                      ? "1px solid rgba(148,163,184,0.28)"
-                      : "1px solid rgba(0,0,0,0.1)",
-                  background:
-                    theme === "dark"
-                      ? "linear-gradient(90deg, rgba(99,102,241,0.2), rgba(16,185,129,0.16), rgba(15,23,42,0.0))"
-                      : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
-                }}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className="w-2 h-2 rounded-full"
-                    style={{
-                      backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
-                      boxShadow:
-                        theme === "dark"
-                          ? "0 0 10px rgba(255,255,255,0.8)"
-                          : "0 0 10px rgba(139,92,246,0.8)",
-                    }}
-                  />
-                  <span
-                    className="text-[11px] uppercase tracking-[0.2em] font-semibold"
-                    style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
-                  >
-                    {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {rightPanelMode === "gallery" ? (
-                    <button
-                      type="button"
-                      className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
-                      style={{
-                        background:
-                          theme === "dark"
-                            ? "rgba(248,113,113,0.12)"
-                            : "rgba(248,113,113,0.18)",
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(248,113,113,0.4)"
-                            : "rgba(248,113,113,0.35)",
-                        color: theme === "dark" ? "#fecdd3" : "#be123c",
-                      }}
-                      onClick={closeScreenshotGallery}
-                      title="Close gallery"
-                    >
-                      Close
-                    </button>
-                  ) : !isFloatingPanels ? (
-                    <button
-                      type="button"
-                      className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
-                      style={{
-                        background:
-                          theme === "dark"
-                            ? "rgba(15,23,42,0.7)"
-                            : "rgba(255,255,255,0.7)",
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(148,163,184,0.32)"
-                            : "rgba(0,0,0,0.1)",
-                        color: theme === "dark" ? "#94a3b8" : "#64748b",
-                      }}
-                      onClick={() => {
-                        setIsRightPanelOpen(false);
-                        setRightPanelMode("inspector");
-                      }}
-                      title="Collapse right panel"
-                    >
-                      <PanelRightClose size={12} />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {rightPanelMode === "gallery" && SHOW_SCREENSHOT_FEATURES ? (
-                <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                  <div
-                    className="shrink-0 px-3 py-2 border-b"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(0,0,0,0.1)",
-                      background:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.42)"
-                          : "rgba(255,255,255,0.72)",
-                    }}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div
-                        className="text-[10px] font-semibold uppercase tracking-[0.2em]"
-                        style={{
-                          color: theme === "dark" ? "#94a3b8" : "#64748b",
-                        }}
-                      >
-                        Screenshots
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                          style={{
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(148,163,184,0.38)"
-                                : "rgba(15,23,42,0.18)",
-                            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                          }}
-                          onClick={() => void loadGalleryItems()}
-                          title="Refresh gallery"
-                        >
-                          Refresh
-                        </button>
-                        <button
-                          type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                          style={{
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(34,211,238,0.45)"
-                                : "rgba(8,145,178,0.3)",
-                            color: theme === "dark" ? "#a5f3fc" : "#0e7490",
-                            opacity: screenshotCaptureBusy ? 0.6 : 1,
-                          }}
-                          onClick={() => void handleScreenshotCapture()}
-                          disabled={screenshotCaptureBusy}
-                          title="Capture screenshot"
-                        >
-                          {screenshotCaptureBusy ? "Capturing..." : "Capture"}
-                        </button>
-                        <button
-                          type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                          style={{
-                            borderColor:
-                              theme === "dark"
-                                ? "rgba(148,163,184,0.38)"
-                                : "rgba(15,23,42,0.18)",
-                            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-                          }}
-                          onClick={() => void handleRevealScreenshotsFolder()}
-                          title="Reveal screenshots folder"
-                        >
-                          Reveal
-                        </button>
-                      </div>
-                    </div>
-                    <div
-                      className="mt-2 text-[10px] uppercase tracking-[0.12em]"
-                      style={{
-                        color: theme === "dark" ? "#94a3b8" : "#64748b",
-                      }}
-                    >
-                      {screenshotItems.length} items
-                    </div>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
-                    {screenshotItems.length === 0 ? (
-                      <div
-                        className="rounded-xl border px-4 py-6 text-center text-xs"
-                        style={{
-                          borderColor:
-                            theme === "dark"
-                              ? "rgba(148,163,184,0.3)"
-                              : "rgba(15,23,42,0.12)",
-                          color: theme === "dark" ? "#94a3b8" : "#64748b",
-                        }}
-                      >
-                        No screenshots yet. Capture one from the iPad button.
-                      </div>
-                    ) : (
-                      screenshotItems.map((item) => {
-                        const imageUrl = screenshotPreviewUrls[item.id] || "";
-                        return (
-                          <div
-                            key={item.id}
-                            className="rounded-2xl border overflow-hidden"
-                            style={{
-                              borderColor:
-                                theme === "dark"
-                                  ? "rgba(148,163,184,0.3)"
-                                  : "rgba(15,23,42,0.12)",
-                              background:
-                                theme === "dark"
-                                  ? "rgba(15,23,42,0.65)"
-                                  : "rgba(255,255,255,0.7)",
-                            }}
-                          >
-                            {imageUrl && (
-                              <img
-                                src={imageUrl}
-                                alt={item.imageFileName}
-                                className="w-full h-40 object-cover"
-                              />
-                            )}
-                            <div className="p-3 space-y-2">
-                              <div className="text-xs font-semibold">
-                                {item.slideId || "Unknown slide"}
-                                {item.popupId ? ` • ${item.popupId}` : ""}
-                              </div>
-                              <div className="text-[10px] opacity-70">
-                                {new Date(item.createdAt).toLocaleString()}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                  style={{
-                                    borderColor:
-                                      theme === "dark"
-                                        ? "rgba(34,211,238,0.45)"
-                                        : "rgba(8,145,178,0.3)",
-                                    color:
-                                      theme === "dark" ? "#a5f3fc" : "#0e7490",
-                                  }}
-                                  onClick={() =>
-                                    void handleOpenScreenshotItem(item)
-                                  }
-                                >
-                                  Open
-                                </button>
-                                <button
-                                  type="button"
-                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                  style={{
-                                    borderColor:
-                                      theme === "dark"
-                                        ? "rgba(148,163,184,0.38)"
-                                        : "rgba(15,23,42,0.18)",
-                                    color:
-                                      theme === "dark" ? "#e2e8f0" : "#0f172a",
-                                  }}
-                                  onClick={() =>
-                                    void handleRevealScreenshotsFolder()
-                                  }
-                                >
-                                  Reveal
-                                </button>
-                                <button
-                                  type="button"
-                                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
-                                  style={{
-                                    borderColor:
-                                      theme === "dark"
-                                        ? "rgba(248,113,113,0.45)"
-                                        : "rgba(248,113,113,0.35)",
-                                    color:
-                                      theme === "dark" ? "#fecdd3" : "#be123c",
-                                  }}
-                                  onClick={() =>
-                                    void handleDeleteScreenshotItem(item)
-                                  }
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                  <div
-                    className="shrink-0 px-3 py-3 border-t"
-                    style={{
-                      borderColor:
-                        theme === "dark"
-                          ? "rgba(148,163,184,0.28)"
-                          : "rgba(0,0,0,0.1)",
-                      background:
-                        theme === "dark"
-                          ? "rgba(15,23,42,0.42)"
-                          : "rgba(255,255,255,0.72)",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
-                      style={{
-                        borderColor:
-                          theme === "dark"
-                            ? "rgba(14,165,233,0.45)"
-                            : "rgba(8,145,178,0.3)",
-                        color: theme === "dark" ? "#bae6fd" : "#0e7490",
-                        opacity: isPdfExporting ? 0.6 : 1,
-                      }}
-                      onClick={() => void handleExportEditablePdf()}
-                      disabled={isPdfExporting || !projectPath}
-                    >
-                      <FileDown size={14} />
-                      {isPdfExporting
-                        ? "Exporting Editable PDF..."
-                        : "Export Editable PDF"}
-                    </button>
-                    {pdfExportLogs.length > 0 && (
-                      <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
-                        {pdfExportLogs.map((log, index) => (
-                          <div key={`${index}-${log}`} className="opacity-80">
-                            {log}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                  <div className="min-h-0 flex-1 overflow-hidden">
-                    {interactionMode === "inspect" && selectedId ? (
-                      <StyleInspectorPanel
-                        element={inspectorElement}
-                        availableFonts={availableFonts}
-                        onImmediateChange={handleImmediatePreviewStyle}
-                        onUpdateContent={
-                          previewSelectedElement
-                            ? handlePreviewContentUpdateStable
-                            : handleUpdateContent
-                        }
-                        onToggleTextTag={
-                          previewSelectedElement
-                            ? (tag) => {
-                                void applyPreviewTagUpdate(
-                                  previewSelectedElement.type === tag
-                                    ? "span"
-                                    : tag,
-                                );
-                              }
-                            : undefined
-                        }
-                        onWrapTextTag={
-                          previewSelectedElement
-                            ? (tag) => {
-                                void applyQuickTextWrapTag(tag);
-                              }
-                            : undefined
-                        }
-                        selectionMode={
-                          previewSelectedElement
-                            ? previewSelectionMode
-                            : "default"
-                        }
-                        resolveAssetPreviewUrl={resolveInspectorAssetPreviewUrl}
-                        onUpdateStyle={
-                          previewSelectedElement
-                            ? handlePreviewStyleUpdateStable
-                            : handleUpdateStyle
-                        }
-                        onUpdateIdentity={
-                          previewSelectedElement
-                            ? handlePreviewIdentityUpdateStable
-                            : handleUpdateIdentity
-                        }
-                        onReplaceAsset={undefined}
-                        onAddMatchedRuleProperty={
-                          previewSelectedElement
-                            ? handlePreviewMatchedRulePropertyAdd
-                            : undefined
-                        }
-                        matchedCssRules={
-                          previewSelectedElement
-                            ? previewSelectedMatchedCssRules
-                            : []
-                        }
-                        computedStyles={
-                          previewSelectedElement
-                            ? previewSelectedComputedStyles
-                            : null
-                        }
-                      />
-                    ) : (
-                      <PropertiesPanel
-                        element={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? previewSelectedElement
-                            : selectedElement
-                        }
-                        requestedTab={propertiesPanelRequestedTab}
-                        requestedTabNonce={propertiesPanelRequestedTabNonce}
-                        onUpdateStyle={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? handlePreviewStyleUpdateStable
-                            : handleUpdateStyle
-                        }
-                        onUpdateContent={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? handlePreviewContentUpdateStable
-                            : handleUpdateContent
-                        }
-                        onUpdateAttributes={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? handlePreviewAttributesUpdateStable
-                            : handleUpdateAttributes
-                        }
-                        onUpdateAnimation={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? handlePreviewAnimationUpdateStable
-                            : handleUpdateAnimation
-                        }
-                        onDelete={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? handlePreviewDeleteStable
-                            : handleDeleteElement
-                        }
-                        onAddElement={
-                          interactionMode === "preview" &&
-                          previewSelectedElement
-                            ? noopPropertiesAction
-                            : handleAddElement
-                        }
-                        onMoveOrder={noopMoveOrder}
-                        resolveImage={resolvePreviewImagePath}
-                        availableFonts={availableFonts}
-                      />
-                    )}
-                  </div>
-                </div>
-              )}
-              <div
-                className="pointer-events-none absolute inset-0 rounded-2xl"
-                style={{
-                  boxShadow:
-                    theme === "dark"
-                      ? "inset 0 0 0 1px rgba(148,163,184,0.2)"
-                      : "inset 0 0 0 1px rgba(255,255,255,0.45)",
-                }}
-              />
-            </div>
-            {isRightPanelOpen && (
-              <div
-                onMouseDown={handleRightPanelResizeStart}
-                className={`absolute top-0 ${isPanelsSwapped ? "right-0" : "left-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
-                title="Resize panel"
-              />
-            )}
-          </div>
+            onRefreshGallery={() => void loadGalleryItems()}
+            onCaptureScreenshot={() => void handleScreenshotCapture()}
+            onRevealScreenshotsFolder={() => void handleRevealScreenshotsFolder()}
+            onOpenScreenshotItem={(item) => void handleOpenScreenshotItem(item)}
+            onDeleteScreenshotItem={(item) =>
+              void handleDeleteScreenshotItem(item)
+            }
+            onExportEditablePdf={() => void handleExportEditablePdf()}
+          />
         )}
       </div>
 
-      {/* Code Panel */}
-      <div
-        className={`absolute z-50 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24 bottom-3" : "right-0 top-0 bottom-0"} ${isZenMode ? "opacity-0 pointer-events-none" : ""} ${isCodePanelOpen ? "animate-panelInRight" : ""}`}
-        style={{
-          transform: isCodePanelOpen
-            ? "translateX(0)"
-            : isFloatingPanels
-              ? "translateX(calc(100% + 2.5rem))"
-              : "translateX(100%)",
-          width: isFloatingPanels
-            ? "min(42rem, calc(100vw - 6rem))"
-            : `${CODE_PANEL_WIDTH}px`,
-          borderRadius: isFloatingPanels ? "1rem" : undefined,
-          border: isFloatingPanels
-            ? theme === "light"
-              ? "1px solid rgba(15, 23, 42, 0.18)"
-              : "1px solid rgba(255, 255, 255, 0.24)"
-            : undefined,
-          background: theme === "dark" ? "rgba(10, 15, 30, 0.96)" : "#fff",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-            isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
-          }`}
-          style={{
-            background:
-              theme === "dark"
-                ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
-                : "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(248,250,252,0.82) 100%)",
-            backdropFilter: "blur(14px)",
-          }}
-        >
-          <div
-            className="h-11 shrink-0 px-3 flex items-center justify-between"
-            style={{
-              borderBottom:
-                theme === "dark"
-                  ? "1px solid rgba(148,163,184,0.28)"
-                  : "1px solid rgba(0,0,0,0.1)",
-              background:
-                theme === "dark"
-                  ? "linear-gradient(90deg, rgba(139,92,246,0.2), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
-                  : "linear-gradient(90deg,rgba(139,92,246,0.12),rgba(99,102,241,0.1),transparent)",
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <div
-                className="w-2 h-2 rounded-full"
-                style={{
-                  backgroundColor: theme === "dark" ? "#c4b5fd" : "#7c3aed",
-                  boxShadow:
-                    theme === "dark"
-                      ? "0 0 10px rgba(196,181,253,0.85)"
-                      : "0 0 10px rgba(124,58,237,0.55)",
-                }}
-              />
-              <span
-                className="text-[11px] uppercase tracking-[0.2em] font-semibold"
-                style={{ color: theme === "dark" ? "#e9d5ff" : "#5b21b6" }}
-              >
-                Code Studio
-              </span>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
-                style={{
-                  borderColor: "var(--border-color)",
-                  color: "var(--text-main)",
-                }}
-                onClick={() => {
-                  if (!activeCodeFilePath) return;
-                  void saveCodeDraftAtPath(activeCodeFilePath);
-                }}
-              >
-                Save File
-              </button>
-              <button
-                type="button"
-                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
-                style={{
-                  borderColor: "var(--border-color)",
-                  color: "var(--text-main)",
-                }}
-                onClick={() => {
-                  void saveCodeDraftsRef.current?.();
-                }}
-              >
-                Save All
-              </button>
-              <button
-                type="button"
-                className="h-7 w-7 rounded-md border flex items-center justify-center transition-colors hover:bg-violet-500/15"
-                style={{
-                  borderColor: "var(--border-color)",
-                  color: "var(--text-main)",
-                }}
-                onClick={closeCodePanel}
-                title="Close code panel"
-              >
-                <PanelRightClose size={14} />
-              </button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ColorCodeEditor
-              value={activeCodeContent}
-              onChange={handleCodeDraftChange}
-              language={
-                activeCodeFilePath?.endsWith(".ts")
-                  ? "ts"
-                  : activeCodeFilePath?.endsWith(".tsx")
-                    ? "tsx"
-                    : activeCodeFilePath?.endsWith(".jsx")
-                      ? "jsx"
-                      : activeCodeFilePath?.endsWith(".js")
-                        ? "js"
-                        : activeCodeFilePath?.endsWith(".css")
-                          ? "css"
-                          : activeCodeFilePath?.endsWith(".html")
-                            ? "html"
-                            : activeCodeFilePath?.endsWith(".json")
-                              ? "json"
-                              : activeCodeFilePath?.endsWith(".svg")
-                                ? "svg"
-                                : "text"
-              }
-              theme={theme}
-              minHeight="100%"
-              readOnly={!activeCodeFilePath}
-            />
-          </div>
-          <div
-            className="pointer-events-none absolute inset-0 rounded-2xl"
-            style={{
-              boxShadow:
-                theme === "dark"
-                  ? "inset 0 0 0 1px rgba(196,181,253,0.2)"
-                  : "inset 0 0 0 1px rgba(139,92,246,0.2)",
-            }}
-          />
-        </div>
-      </div>
+      <AppOverlays
+        theme={theme}
+        isFloatingPanels={isFloatingPanels}
+        isZenMode={isZenMode}
+        isCodePanelOpen={isCodePanelOpen}
+        setIsCodePanelOpen={setIsCodePanelOpen}
+        isRightPanelOpen={isRightPanelOpen}
+        setIsRightPanelOpen={setIsRightPanelOpen}
+        rightPanelMode={rightPanelMode}
+        setRightPanelMode={setRightPanelMode}
+        isCompactConsoleOpening={isCompactConsoleOpening}
+        setIsCompactConsoleOpening={setIsCompactConsoleOpening}
+        previewConsoleErrorCount={previewConsoleErrorCount}
+        handleDetachConsoleWindow={handleDetachConsoleWindow}
+        isConfigModalOpen={isConfigModalOpen}
+        setIsConfigModalOpen={setIsConfigModalOpen}
+        configModalInitialTab={configModalInitialTab}
+        isConfigModalSlidesOnly={isConfigModalSlidesOnly}
+        files={files}
+        configPathForModal={configPathForModal}
+        portfolioPathForModal={portfolioPathForModal}
+        handleSaveConfig={handleSaveConfig}
+        autoSaveEnabled={autoSaveEnabled}
+        setAutoSaveEnabled={setAutoSaveEnabled}
+        panelSide={panelSide}
+        setPanelSide={setPanelSide}
+        projectPath={projectPath}
+        selectedFolderCloneSource={selectedFolderCloneSource}
+        setSelectedFolderCloneSource={setSelectedFolderCloneSource}
+        isDetachedEditorOpen={isDetachedEditorOpen}
+        closeCodePanel={closeCodePanel}
+        activeDetachedEditorFilePath={activeDetachedEditorFilePath}
+        activeDetachedEditorContent={activeDetachedEditorContent}
+        activeDetachedEditorIsDirty={activeDetachedEditorIsDirty}
+        handleDetachedEditorSelectFile={handleDetachedEditorSelectFile}
+        handleDetachedEditorChange={handleDetachedEditorChange}
+        detachedEditorIsTextEditable={detachedEditorIsTextEditable}
+        saveCodeDraftAtPath={saveCodeDraftAtPath}
+        loadFileContent={loadFileContent}
+        setCodeDraftByPath={setCodeDraftByPath}
+        setCodeDirtyPathSet={setCodeDirtyPathSet}
+        isPdfExporting={isPdfExporting}
+        pdfExportLogs={pdfExportLogs}
+        clearPdfExportLogs={clearPdfExportLogs}
+        activeCodeContent={activeCodeContent}
+        handleCodeDraftChange={handleCodeDraftChange}
+        activeCodeFilePath={activeCodeFilePath}
+        saveCodeDraftsRef={saveCodeDraftsRef}
+      />
 
-      {!isRightPanelOpen &&
-      isRightInspectorMode &&
-      !isZenMode &&
-      !isCodePanelOpen ? (
-        <div
-          className="fixed z-[95] transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-          style={{
-            right: "1rem",
-            top: "1rem",
-            opacity: 1,
-            transform: "translateY(0)",
-          }}
-        >
-          <button
-            type="button"
-            className="h-12 px-3 rounded-2xl border backdrop-blur-xl flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
-            style={{
-              background:
-                theme === "light"
-                  ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
-                  : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
-              border: "1px solid var(--border-color)",
-              boxShadow: "0 8px 20px rgba(15,23,42,0.14)",
-              color: "var(--text-muted)",
-            }}
-            onClick={() => {
-              setRightPanelMode("inspector");
-              setIsRightPanelOpen(true);
-              setIsCodePanelOpen(false);
-            }}
-            title="Show right inspector"
-          >
-            <PanelRight
-              size={16}
-              style={{
-                color: theme === "dark" ? "#67e8f9" : "#0891b2",
-                transform: "scaleX(-1)",
-              }}
-            />
-            <span
-              className="text-[10px] font-semibold uppercase tracking-[0.16em]"
-              style={{ color: theme === "dark" ? "#a5f3fc" : "#0e7490" }}
-            >
-              Show
-            </span>
-          </button>
-        </div>
-      ) : null}
 
       {/* Console Panel — Chrome-like side panel */}
-      <div
-        ref={bottomPanelRef}
-        className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isZenMode || isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
-        style={{
-          left: "1rem",
-          bottom: "1rem",
-        }}
-      >
-        <button
-          type="button"
-          className={`relative z-10 h-14 w-14 rounded-full backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
-          style={{
-            background:
-              theme === "light"
-                ? "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)"
-                : "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,0.9) 100%)",
-            border: "1px solid var(--border-color)",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.2)",
-            color: "var(--text-muted)",
-          }}
-          onClick={() => {
-            setIsCompactConsoleOpening(true);
-            handleDetachConsoleWindow();
-          }}
-          title="Open console in a separate window"
-        >
-          <PanelRight
-            size={18}
-            className="shrink-0"
-            style={{ color: theme === "dark" ? "#67e8f9" : "#0891b2" }}
-          />
-          {previewConsoleErrorCount > 0 && (
-            <span className="absolute -top-1 -right-1 inline-flex min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] leading-[18px] justify-center">
-              {previewConsoleErrorCount}
-            </span>
-          )}
-        </button>
-      </div>
 
-      <ConfigEditorModal
-        isOpen={isConfigModalOpen}
-        onClose={() => setIsConfigModalOpen(false)}
-        initialTab={configModalInitialTab}
-        slidesOnlyMode={isConfigModalSlidesOnly}
-        configContent={(files[configPathForModal]?.content as string) || null}
-        portfolioContent={
-          (files[portfolioPathForModal]?.content as string) || null
-        }
-        onSave={handleSaveConfig}
-        theme={theme}
-        aiBackend={aiBackend}
-        onAiBackendChange={(val) => {
-          setAiBackend(val);
-          localStorage.setItem(AI_BACKEND_STORAGE_KEY, val);
-        }}
-        colabUrl={colabUrl}
-        onColabUrlChange={(val) => {
-          setColabUrl(val);
-          localStorage.setItem(COLAB_URL_STORAGE_KEY, val);
-        }}
-        autoSaveEnabled={autoSaveEnabled}
-        onAutoSaveChange={(val) => {
-          setAutoSaveEnabled(val);
-          localStorage.setItem(PREVIEW_AUTOSAVE_STORAGE_KEY, val ? "1" : "0");
-        }}
-        panelSide={panelSide}
-        onPanelSideChange={(val) => {
-          setPanelSide(val);
-          localStorage.setItem(PANEL_SIDE_STORAGE_KEY, val);
-        }}
-        showAiOptions={SHOW_AI_FEATURES}
-        hasProjectConfig={Boolean(projectPath)}
-        selectedSlideCloneSource={selectedFolderCloneSource}
-        onSelectSlideCloneSource={setSelectedFolderCloneSource}
-        files={files}
-      />
-
-      <DetachedCodeEditorWindow
-        isOpen={isDetachedEditorOpen}
-        onClose={closeCodePanel}
-        theme={theme}
-        files={files}
-        activeFilePath={activeDetachedEditorFilePath}
-        content={activeDetachedEditorContent}
-        isDirty={activeDetachedEditorIsDirty}
-        onSelectFile={handleDetachedEditorSelectFile}
-        onChange={handleDetachedEditorChange}
-        onSave={() => {
-          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
-            return;
-          void saveCodeDraftAtPath(activeDetachedEditorFilePath);
-        }}
-        onReload={() => {
-          if (!activeDetachedEditorFilePath || !detachedEditorIsTextEditable)
-            return;
-          if (isSvgPath(activeDetachedEditorFilePath)) {
-            handleDetachedEditorSelectFile(activeDetachedEditorFilePath);
-            return;
-          }
-          void loadFileContent(activeDetachedEditorFilePath, {
-            persistToState: true,
-          });
-          setCodeDraftByPath((prev) => {
-            const next = { ...prev };
-            delete next[activeDetachedEditorFilePath];
-            return next;
-          });
-          setCodeDirtyPathSet((prev) => {
-            const next = { ...prev };
-            delete next[activeDetachedEditorFilePath];
-            return next;
-          });
-        }}
-        isTextEditable={detachedEditorIsTextEditable}
-      />
-
-      {SHOW_AI_FEATURES ? (
-        <button
-          type="button"
-          className={`fixed z-[2147483647] right-6 bottom-24 flex items-center gap-2 px-3 py-2 rounded-full text-xs font-semibold border shadow-lg transition-all ${
-            isVibeAssistantOpen
-              ? theme === "dark"
-                ? "bg-cyan-500/25 text-cyan-200 border-cyan-400/40"
-                : "bg-cyan-500/20 text-cyan-700 border-cyan-500/30"
-              : theme === "dark"
-                ? "bg-slate-900/80 text-slate-200 border-slate-600/40 hover:bg-slate-900"
-                : "bg-white/95 text-slate-700 border-slate-300/70 hover:bg-white"
-          }`}
-          style={{ pointerEvents: "auto" }}
-          onClick={() => setIsVibeAssistantOpen((prev) => !prev)}
-          title="AI Assistant"
-        >
-          <Sparkles size={14} />
-          AI Assistant
-        </button>
-      ) : null}
-
-      {SHOW_AI_FEATURES ? (
-        <VibeAssistant
-          isOpen={isVibeAssistantOpen}
-          onClose={() => setIsVibeAssistantOpen(false)}
-          currentRoot={interactionMode === "preview" ? previewLayersRoot : root}
-          selectedElement={previewSelectedElement}
-          fileMap={files}
-          onVibeUpdate={async (response) => {
-            if (response.updatedRoot) {
-              lastVibeUpdateRef.current = Date.now();
-              setVibeErrorContext(undefined);
-              if (interactionMode === "preview") {
-                const currentPath = selectedPreviewHtmlRef.current;
-                if (currentPath) {
-                  const tempDoc = document.implementation.createHTMLDocument();
-                  const node = materializeVirtualElement(
-                    tempDoc,
-                    response.updatedRoot,
-                  );
-                  const serialized = (node as HTMLElement).innerHTML || "";
-                  // @ts-ignore
-                  await persistPreviewHtmlContent(currentPath, serialized, {
-                    refreshPreviewDoc: true,
-                    saveNow: true,
-                  });
-                }
-              } else {
-                setRoot(response.updatedRoot);
-              }
-            }
-          }}
-          lastErrorContext={vibeErrorContext}
-          aiBackend={aiBackend}
-          colabUrl={colabUrl}
-        />
-      ) : null}
-
-      {(isPdfExporting || pdfExportLogs.length > 0) && (
-        <div
-          className="fixed right-6 bottom-6 z-[1200] w-[320px] rounded-2xl border shadow-2xl p-3 text-xs"
-          style={{
-            background:
-              theme === "dark"
-                ? "rgba(15,23,42,0.92)"
-                : "rgba(255,255,255,0.95)",
-            borderColor:
-              theme === "dark"
-                ? "rgba(148,163,184,0.35)"
-                : "rgba(15,23,42,0.15)",
-            color: theme === "dark" ? "#e2e8f0" : "#0f172a",
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.2em] font-semibold opacity-70">
-              PDF Export
-            </div>
-            {pdfExportLogs.length > 0 && (
-              <button
-                type="button"
-                className="text-[10px] font-semibold opacity-70 hover:opacity-100"
-                onClick={clearPdfExportLogs}
-              >
-                Close
-              </button>
-            )}
-          </div>
-          <div className="mt-2 space-y-1 max-h-32 overflow-auto">
-            {pdfExportLogs.length === 0 ? (
-              <div className="opacity-70">Exporting...</div>
-            ) : (
-              pdfExportLogs.slice(-6).map((log, index) => (
-                <div key={`${index}-${log}`} className="opacity-80">
-                  {log}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

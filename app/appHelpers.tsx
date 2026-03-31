@@ -118,10 +118,7 @@ export const IGNORED_FOLDERS = new Set([
 ]);
 export const THEME_STORAGE_KEY = "nocode-x-studio-theme";
 export const PREVIEW_AUTOSAVE_STORAGE_KEY = "nocode-x-studio-preview-autosave";
-export const AI_BACKEND_STORAGE_KEY = "nocode-x-studio-ai-backend";
-export const COLAB_URL_STORAGE_KEY = "nocode-x-studio-colab-url";
 export const PANEL_SIDE_STORAGE_KEY = "nocode-x-studio-panel-side";
-export const SHOW_AI_FEATURES = false;
 export const SHOW_SCREENSHOT_FEATURES = false;
 export const SHOW_MASTER_TOOLS = true;
 export const MAX_CANVAS_HISTORY = 80;
