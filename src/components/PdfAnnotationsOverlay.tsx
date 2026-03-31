@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { setTypeOverrides, setViewMode, setTypeFilter } from '../store/annotationSlice';
-import { PdfAnnotationUiRecord } from '../../app/pdfAnnotationHelpers';
+import { PdfAnnotationUiRecord } from '../../app/helpers/pdfAnnotationHelpers';
 
 const ANNOTATION_INTENT_OPTIONS = [
   "stylingChange",

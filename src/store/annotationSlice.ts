@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { PdfAnnotationUiRecord } from '../../app/pdfAnnotationHelpers';
+import { PdfAnnotationUiRecord } from '../../app/helpers/pdfAnnotationHelpers';
 
 interface AnnotationState {
   records: PdfAnnotationUiRecord[];

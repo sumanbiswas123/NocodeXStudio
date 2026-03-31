@@ -1,5 +1,5 @@
 import React from "react";
-import { PreviewSelectionMode } from "../app/appHelpers";
+import { PreviewSelectionMode } from "../app/helpers/appHelpers";
 
 type SelectionModeOption = {
   value: PreviewSelectionMode;

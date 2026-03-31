@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { flushSync } from "react-dom";
-import { THEME_STORAGE_KEY } from "../app/appHelpers"; // Adjust import path as needed
+import { THEME_STORAGE_KEY } from "../app/helpers/appHelpers"; // Adjust import path as needed
 
 // Constants from your original file
 const LEFT_PANEL_MIN_WIDTH = 220;
