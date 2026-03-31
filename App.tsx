@@ -75,48 +75,28 @@ import { resolvePreviewAssetUrl as resolvePreviewAssetUrlHelper } from "./app/me
 import { initializeProjectOpenRuntime } from "./app/projectOpenRuntime";
 import AppOverlays from "./app/AppOverlays";
 import {
-  clearPreviewModeSync,
-  handlePreviewFrameLoad as handlePreviewFrameLoadHelper,
-  injectMountedPreviewBridge as injectMountedPreviewBridgeHelper,
-  postPreviewFrameMessage,
-  postPreviewModeToFrame as postPreviewModeToFrameHelper,
-  schedulePreviewModeSync,
-} from "./app/previewFrameBridge";
-import {
-  applyPreviewInlineEdit as applyPreviewInlineEditHelper,
-  applyPreviewInlineEditDraft as applyPreviewInlineEditDraftHelper,
   persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
-  syncPreviewSelectionSnapshotFromLiveElement as syncPreviewSelectionSnapshotFromLiveElementHelper,
 } from "./app/previewSelectionHelpers";
-import {
-  applyPreviewContentUpdate as applyPreviewContentUpdateHelper,
-  applyPreviewStyleUpdateAtPath as applyPreviewStyleUpdateAtPathHelper,
-  queuePreviewStyleUpdate as queuePreviewStyleUpdateHelper,
-} from "./app/previewUpdateHelpers";
 import ScreenshotGalleryPanel from "./app/ScreenshotGalleryPanel";
-import {
-  renderDetachedConsoleWindow as renderDetachedConsoleWindowHelper,
-} from "./app/detachedConsoleWindow";
+import { useCodeEditorState } from "./app/useCodeEditorState";
+import { usePreviewContentEditing } from "./app/usePreviewContentEditing";
+import { usePreviewElementActions } from "./app/usePreviewElementActions";
+import { usePreviewGeometry } from "./app/usePreviewGeometry";
+import { usePreviewCreation } from "./app/usePreviewCreation";
+import { usePreviewCssMutation } from "./app/usePreviewCssMutation";
+import { usePreviewDocumentLoader } from "./app/usePreviewDocumentLoader";
+import { usePreviewInspectorRuntime } from "./app/usePreviewInspectorRuntime";
+import { usePreviewFrameMessages } from "./app/usePreviewFrameMessages";
+import { usePreviewFrameBridgeState } from "./app/usePreviewFrameBridgeState";
+import { usePreviewConsole } from "./app/usePreviewConsole";
 import { useScreenshotGallery } from "./app/useScreenshotGallery";
 import {
-  applyPatchToDeclarationEntries,
-  annotateMatchedCssRuleActivity,
-  collectLiveMatchedCssRuleRefsFromElement,
   collectMatchedCssRulesFromElement,
-  cssRuleSourcesMatch,
-  CdpInspectSelectedResponse,
-  derivePreviewMatchedCssRulesFromCdp,
-  extractAssetUrlFromCssValue,
-  findCssRuleRange,
-  getCssSourceBasename,
-  getStyleSheetSourceLabel,
   normalizePresentationCssValue,
   normalizePresentationStylePatch,
-  normalizeSelectorSignature,
   PreviewMatchedCssDeclaration,
   PreviewMatchedCssRule,
   PreviewMatchedRuleMutation,
-  toReactComputedStylesFromCdp,
 } from "./app/previewCssHelpers";
 import {
   isEdaProject,
@@ -179,7 +159,6 @@ import {
   rewriteInlineAssetRefs,
   createPreviewDocument,
   pickDefaultHtmlFile,
-  MOUNTED_PREVIEW_BRIDGE_SCRIPT,
   toCssPropertyName,
   parseNumericCssValue,
   readElementByPath,
@@ -203,7 +182,6 @@ import {
   buildPreviewLayerTreeFromElement,
   DeviceContextMenu,
   PreviewConsoleLevel,
-  PreviewConsoleEntry,
   PreviewSelectionMode,
   PreviewSyncSource,
   PendingPageSwitch,
@@ -320,24 +298,17 @@ const App: React.FC = () => {
   const [availableFonts, setAvailableFonts] =
     useState<string[]>(DEFAULT_EDITOR_FONTS);
   const [drawElementTag, setDrawElementTag] = useState<string>("div");
-  const [isCompactConsoleOpening, setIsCompactConsoleOpening] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
   const [isCodePanelOpen, setIsCodePanelOpen] = useState(false);
   const [isDetachedEditorOpen, setIsDetachedEditorOpen] = useState(false);
   const [isStyleInspectorSectionOpen, setIsStyleInspectorSectionOpen] =
     useState(true);
-  const [bottomPanelTab, setBottomPanelTab] = useState<"terminal" | "console">(
-    "terminal",
-  );
   const [codeDraftByPath, setCodeDraftByPath] = useState<
     Record<string, string>
   >({});
   const [codeDirtyPathSet, setCodeDirtyPathSet] = useState<
     Record<string, true>
   >({});
-  const [previewConsoleEntries, setPreviewConsoleEntries] = useState<
-    PreviewConsoleEntry[]
-  >([]);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     try {
       const saved = localStorage.getItem(THEME_STORAGE_KEY);
@@ -482,12 +453,6 @@ const App: React.FC = () => {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
   const previewFocusedPdfElementRef = useRef<HTMLElement | null>(null);
-  const [previewSelectionBox, setPreviewSelectionBox] = useState<{
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  } | null>(null);
   const [quickTextEdit, setQuickTextEdit] = useState<{
     open: boolean;
     x: number;
@@ -495,7 +460,6 @@ const App: React.FC = () => {
   }>({ open: false, x: 0, y: 0 });
   const quickTextEditRef = useRef<HTMLDivElement | null>(null);
   const quickTextRangeRef = useRef<Range | null>(null);
-  const lastAutoAssetReplaceKeyRef = useRef<string | null>(null);
   const QUICK_TEXT_PANEL_WIDTH = 320;
   const QUICK_TEXT_PANEL_HEIGHT = 220;
   const showQuickTextEdit = useCallback((x: number, y: number) => {
@@ -537,22 +501,6 @@ const App: React.FC = () => {
     },
     [hideQuickTextEdit, showQuickTextEdit],
   );
-  const [isPreviewResizing, setIsPreviewResizing] = useState(false);
-  const previewResizeDragRef = useRef<{
-    path: number[];
-    target: HTMLElement;
-    direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-    startX: number;
-    startY: number;
-    startLeft: number;
-    startTop: number;
-    startWidth: number;
-    startHeight: number;
-    scaleX: number;
-    scaleY: number;
-    canMoveLeft: boolean;
-    canMoveTop: boolean;
-  } | null>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState(256);
   const [rightPanelWidth, setRightPanelWidth] = useState(264);
   const [isResizingLeftPanel, setIsResizingLeftPanel] = useState(false);
@@ -617,10 +565,6 @@ const App: React.FC = () => {
     selector: string | null;
     popupId: string | null;
   } | null>(null);
-  const previewConsoleSeqRef = useRef(0);
-  const previewConsoleBufferRef = useRef<PreviewConsoleEntry[]>([]);
-  const previewConsoleFlushTimerRef = useRef<number | null>(null);
-  const detachedConsoleWindowRef = useRef<Window | null>(null);
   const isRefreshingFilesRef = useRef(false);
   const saveCodeDraftsRef = useRef<(() => Promise<void>) | null>(null);
   const pendingPreviewWritesRef = useRef<Record<string, string>>({});
@@ -690,48 +634,18 @@ const App: React.FC = () => {
       };
     });
   }, [getDefaultRightPanelPosition, rightPanelWidth]);
-  const previewConsoleErrorCount = useMemo(
-    () =>
-      previewConsoleEntries.reduce(
-        (count, item) => count + (item.level === "error" ? 1 : 0),
-        0,
-      ),
-    [previewConsoleEntries],
-  );
-  const previewConsoleWarnCount = useMemo(
-    () =>
-      previewConsoleEntries.reduce(
-        (count, item) => count + (item.level === "warn" ? 1 : 0),
-        0,
-      ),
-    [previewConsoleEntries],
-  );
-  const appendPreviewConsole = useCallback(
-    (level: PreviewConsoleLevel, message: string, source = "preview") => {
-      const nextId = previewConsoleSeqRef.current + 1;
-      previewConsoleSeqRef.current = nextId;
-      previewConsoleBufferRef.current.push({
-        id: nextId,
-        level,
-        message,
-        source,
-        time: Date.now(),
-      });
-      if (previewConsoleFlushTimerRef.current !== null) return;
-      previewConsoleFlushTimerRef.current = window.setTimeout(() => {
-        previewConsoleFlushTimerRef.current = null;
-        const buffered = previewConsoleBufferRef.current.splice(0);
-        if (buffered.length === 0) return;
-        setPreviewConsoleEntries((prev) => {
-          const next = [...prev, ...buffered];
-          return next.length > MAX_PREVIEW_CONSOLE_ENTRIES
-            ? next.slice(next.length - MAX_PREVIEW_CONSOLE_ENTRIES)
-            : next;
-        });
-      }, 120);
-    },
-    [],
-  );
+  const {
+    appendPreviewConsole,
+    clearPreviewConsole,
+    handleOpenDetachedConsole,
+    isCompactConsoleOpening,
+    previewConsoleEntries,
+    previewConsoleErrorCount,
+    previewConsoleWarnCount,
+  } = usePreviewConsole({
+    maxEntries: MAX_PREVIEW_CONSOLE_ENTRIES,
+    theme,
+  });
 
   const revokeBinaryAssetUrls = useCallback(() => {
     const cache = binaryAssetUrlCacheRef.current;
@@ -845,9 +759,6 @@ const App: React.FC = () => {
   useEffect(() => {
     return () => {
       revokeBinaryAssetUrls();
-      if (previewConsoleFlushTimerRef.current !== null) {
-        window.clearTimeout(previewConsoleFlushTimerRef.current);
-      }
       if (autoSaveTimerRef.current !== null) {
         window.clearTimeout(autoSaveTimerRef.current);
       }
@@ -1384,9 +1295,6 @@ const App: React.FC = () => {
       }
       if (previewLocalCssDraftTimerRef.current !== null) {
         window.clearTimeout(previewLocalCssDraftTimerRef.current);
-      }
-      if (previewConsoleFlushTimerRef.current !== null) {
-        window.clearTimeout(previewConsoleFlushTimerRef.current);
       }
     },
     [],
@@ -2982,13 +2890,7 @@ const App: React.FC = () => {
       loadingFilePromisesRef.current = {};
       textFileCacheRef.current = {};
       revokeBinaryAssetUrls();
-      previewConsoleSeqRef.current = 0;
-      previewConsoleBufferRef.current = [];
-      if (previewConsoleFlushTimerRef.current !== null) {
-        window.clearTimeout(previewConsoleFlushTimerRef.current);
-        previewConsoleFlushTimerRef.current = null;
-      }
-      setPreviewConsoleEntries([]);
+      clearPreviewConsole();
       pendingPreviewWritesRef.current = {};
       previewHistoryRef.current = {};
       previewDependencyIndexRef.current = {};
@@ -3448,8 +3350,9 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!projectPath) return;
     const timer = window.setInterval(() => {
+      if (document.hidden || !document.hasFocus()) return;
       void refreshProjectFiles();
-    }, 8000);
+    }, 30000);
     return () => window.clearInterval(timer);
   }, [projectPath, refreshProjectFiles]);
   const resolveAdjacentSlidePath = useCallback(
@@ -4032,219 +3935,11 @@ const App: React.FC = () => {
   );
   const shouldShowFrameWelcome = !projectPath;
   useEffect(() => {
-    const setActive = (active: boolean) => setIsToolboxDragging(active);
-    const onToolboxDragState = (event: Event) => {
-      const detail = (event as CustomEvent<{ active?: boolean; type?: string }>)
-        .detail;
-      const isActive = Boolean(detail?.active);
-      const nextType = String(detail?.type || "").trim();
-      setActive(isActive);
-      if (isActive && nextType) {
-        toolboxDragTypeRef.current = nextType;
-      } else if (!isActive) {
-        toolboxDragTypeRef.current = "";
-      }
-    };
-    const onWindowDrop = () => {
-      setActive(false);
-      toolboxDragTypeRef.current = "";
-    };
-    const onWindowDragEnd = () => {
-      setActive(false);
-      toolboxDragTypeRef.current = "";
-    };
-    const onWindowDragOver = (event: DragEvent) => {
-      if (hasToolboxDragType(event.dataTransfer)) {
-        setActive(true);
-      }
-    };
-    window.addEventListener(
-      "nocodex-toolbox-drag-state",
-      onToolboxDragState as EventListener,
-    );
-    window.addEventListener("drop", onWindowDrop);
-    window.addEventListener("dragend", onWindowDragEnd);
-    window.addEventListener("dragover", onWindowDragOver);
-    return () => {
-      window.removeEventListener(
-        "nocodex-toolbox-drag-state",
-        onToolboxDragState as EventListener,
-      );
-      window.removeEventListener("drop", onWindowDrop);
-      window.removeEventListener("dragend", onWindowDragEnd);
-      window.removeEventListener("dragover", onWindowDragOver);
-    };
-  }, []);
-  useEffect(() => {
     selectedPreviewHtmlRef.current = selectedPreviewHtml;
     setPreviewSelectedPath(null);
     setPreviewSelectedElement(null);
     setPreviewSelectedComputedStyles(null);
   }, [selectedPreviewHtml]);
-  const handlePreviewStageDragOver = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      if (
-        !selectedPreviewHtml ||
-        (!hasToolboxDragType(event.dataTransfer) && !toolboxDragTypeRef.current)
-      ) {
-        return;
-      }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-    },
-    [selectedPreviewHtml],
-  );
-
-  const resolveVirtualPathFromMountRelative = useCallback(
-    (mountRelativePath: string): string | null => {
-      if (!previewMountBasePath || !mountRelativePath) return null;
-      const normalizedTarget = normalizeProjectRelative(
-        decodeURIComponent(mountRelativePath).replace(/^\/+|\/+$/g, ""),
-      ).toLowerCase();
-      if (!normalizedTarget) return null;
-
-      for (const virtualPath in filePathIndexRef.current) {
-        const absolutePath = filePathIndexRef.current[virtualPath];
-        const relative = toMountRelativePath(
-          previewMountBasePath,
-          absolutePath,
-        );
-        if (!relative) continue;
-        if (
-          relative.toLowerCase() === normalizedTarget ||
-          relative.toLowerCase() === `${normalizedTarget}/index.html`
-        ) {
-          return virtualPath;
-        }
-      }
-      return null;
-    },
-    [previewMountBasePath],
-  );
-
-  const extractMountRelativePath = useCallback(
-    (locationPath: string): string | null => {
-      if (!locationPath) return null;
-      if (locationPath.startsWith(`${PREVIEW_MOUNT_PATH}/`)) {
-        return locationPath.slice(PREVIEW_MOUNT_PATH.length + 1);
-      }
-      const aliasPath = previewRootAliasPathRef.current;
-      if (aliasPath && locationPath.startsWith(`${aliasPath}/`)) {
-        return locationPath.slice(aliasPath.length + 1);
-      }
-      return null;
-    },
-    [],
-  );
-  const injectMountedPreviewBridge = useCallback(
-    (frame: HTMLIFrameElement | null) => {
-      injectMountedPreviewBridgeHelper(frame, MOUNTED_PREVIEW_BRIDGE_SCRIPT);
-    },
-    [],
-  );
-  const postPreviewModeToFrame = useCallback(
-    (overrides?: {
-      mode?: "edit" | "preview";
-      selectionMode?: PreviewSelectionMode;
-      toolMode?: "edit" | "inspect" | "draw" | "move";
-      drawTag?: string;
-      force?: boolean;
-    }) => {
-      postPreviewModeToFrameHelper({
-        frame: previewFrameRef.current,
-        previewMode,
-        previewSelectionMode,
-        sidebarToolMode,
-        drawElementTag,
-        interactionMode,
-        overrides,
-      });
-    },
-    [
-      drawElementTag,
-      interactionMode,
-      previewMode,
-      previewSelectionMode,
-      sidebarToolMode,
-    ],
-  );
-  const setPreviewModeWithSync = useCallback(
-    (
-      nextMode: "edit" | "preview",
-      options?: { skipUnsavedPrompt?: boolean },
-    ) => {
-      const currentPath = selectedPreviewHtmlRef.current;
-      const shouldPromptUnsaved =
-        !options?.skipUnsavedPrompt &&
-        interactionModeRef.current === "preview" &&
-        previewModeRef.current === "edit" &&
-        nextMode === "preview" &&
-        Boolean(currentPath) &&
-        hasUnsavedChangesForFile(currentPath);
-      if (shouldPromptUnsaved && currentPath) {
-        setPendingPageSwitch({
-          mode: "preview_mode",
-          fromPath: currentPath,
-          nextPath: currentPath,
-          source: "navigate",
-          nextPreviewMode: "preview",
-        });
-        setIsPageSwitchPromptOpen(true);
-        return;
-      }
-      setPreviewMode(nextMode);
-      if (interactionModeRef.current !== "preview") return;
-      postPreviewModeToFrame({ mode: nextMode, force: true });
-      window.setTimeout(() => {
-        postPreviewModeToFrame({ mode: nextMode, force: true });
-      }, 50);
-      window.setTimeout(() => {
-        postPreviewModeToFrame({ mode: nextMode, force: true });
-      }, 180);
-    },
-    [hasUnsavedChangesForFile, postPreviewModeToFrame],
-  );
-  const handleSidebarInteractionModeChange = useCallback(
-    (nextMode: "edit" | "preview" | "inspect" | "draw" | "move") => {
-      if (nextMode === "preview") {
-        setSidebarToolMode("edit");
-        setInteractionMode("preview");
-        return;
-      }
-      setSidebarToolMode(nextMode);
-      if (interactionModeRef.current === "preview") {
-        // Keep mounted project visible; only switch preview into edit sub-mode.
-        setPreviewModeWithSync("edit");
-        postPreviewModeToFrame({
-          mode: "edit",
-          toolMode: nextMode,
-          drawTag: drawElementTag,
-          force: true,
-        });
-        return;
-      }
-      if (projectPath) {
-        setPreviewMode("edit");
-        setInteractionMode("preview");
-        return;
-      }
-      setInteractionMode(nextMode);
-    },
-    [
-      drawElementTag,
-      postPreviewModeToFrame,
-      projectPath,
-      setPreviewModeWithSync,
-    ],
-  );
-  const sidebarInteractionMode = useMemo<
-    "edit" | "preview" | "inspect" | "draw" | "move"
-  >(() => {
-    if (interactionMode === "preview") {
-      return previewMode === "edit" ? sidebarToolMode : "preview";
-    }
-    return interactionMode;
-  }, [interactionMode, previewMode, sidebarToolMode]);
   const resolvedConfigVirtualPath = useMemo(
     () => resolveConfigPathFromFiles(files, "config.json") || CONFIG_JSON_PATH,
     [files],
@@ -4258,138 +3953,55 @@ const App: React.FC = () => {
   const configPathForModal = configModalConfigPath || resolvedConfigVirtualPath;
   const portfolioPathForModal =
     configModalPortfolioPath || resolvedPortfolioConfigVirtualPath;
-  const isActivePreviewMessageSource = useCallback(
-    (source: MessageEventSource | null): boolean => {
-      const activeWindow = previewFrameRef.current?.contentWindow ?? null;
-      if (!activeWindow || !source) return false;
-      return source === activeWindow;
-    },
-    [],
-  );
-  const getLivePreviewSelectedElement = useCallback(
-    (path?: number[] | null): Element | null => {
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      if (!frameDocument?.body) return null;
-      if (Array.isArray(path) && path.length > 0) {
-        const byPath = readElementByPath(frameDocument.body, path);
-        if (byPath) return byPath;
-      }
-      const byMarker = frameDocument.querySelector(".__nx-preview-selected");
-      if (byMarker) return byMarker;
-      return null;
-    },
-    [],
-  );
-  const postPreviewPatchToFrame = useCallback(
-    (payload: Record<string, unknown>) => {
-      postPreviewFrameMessage(previewFrameRef.current, payload);
-    },
-    [],
-  );
-
-  const handlePreviewFrameLoad = useCallback(
-    (event: React.SyntheticEvent<HTMLIFrameElement>) => {
-      handlePreviewFrameLoadHelper({
-        frame: event.currentTarget,
-        selectedPreviewSrc,
-        injectBridge: injectMountedPreviewBridge,
-        postMode: postPreviewModeToFrame,
-        isPreviewMountReady,
-        extractMountRelativePath,
-        resolveVirtualPathFromMountRelative,
-        explorerSelectionLockRef,
-        explorerSelectionLockUntilRef,
-        normalizeProjectRelative,
-        files: filesRef.current,
-        activeFilePath: activeFileRef.current,
-        shouldProcessPreviewPageSignal,
-        syncPreviewActiveFile,
-        pendingPopupOpenRef,
-        openPopupInPreview,
-        setPreviewFrameLoadNonce,
-      });
-    },
-    [
-      extractMountRelativePath,
-      injectMountedPreviewBridge,
-      isPreviewMountReady,
-      postPreviewModeToFrame,
-      resolveVirtualPathFromMountRelative,
-      selectedPreviewSrc,
-      shouldProcessPreviewPageSignal,
-      syncPreviewActiveFile,
-      openPopupInPreview,
-    ],
-  );
-  useEffect(() => {
-    const frame = previewFrameRef.current;
-    const doc = frame?.contentDocument;
-    const win = frame?.contentWindow;
-    if (!doc || !win) return;
-
-    const handleContextMenu = (event: MouseEvent) => {
-      if (interactionModeRef.current !== "preview") return;
-      const selection = win.getSelection?.();
-      if (!selection || selection.isCollapsed) {
-        hideQuickTextEdit();
-        return;
-      }
-      const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-      if (!range) {
-        hideQuickTextEdit();
-        return;
-      }
-      quickTextRangeRef.current = range.cloneRange();
-      event.preventDefault();
-      event.stopPropagation();
-      positionQuickTextEditAtRange(range);
-    };
-
-    const handleSelectionChange = () => {
-      const selection = win.getSelection?.();
-      if (!selection || selection.rangeCount === 0) {
-        hideQuickTextEdit();
-        return;
-      }
-      if (selection.isCollapsed) {
-        hideQuickTextEdit();
-        return;
-      }
-      try {
-        const range = selection.getRangeAt(0);
-        quickTextRangeRef.current = range.cloneRange();
-        positionQuickTextEditAtRange(range);
-      } catch {}
-    };
-
-    doc.addEventListener("contextmenu", handleContextMenu);
-    doc.addEventListener("selectionchange", handleSelectionChange);
-    return () => {
-      doc.removeEventListener("contextmenu", handleContextMenu);
-      doc.removeEventListener("selectionchange", handleSelectionChange);
-    };
-  }, [previewFrameLoadNonce, hideQuickTextEdit, positionQuickTextEditAtRange]);
-  useEffect(() => {
-    if (selectedPreviewSrc) {
-      injectMountedPreviewBridge(previewFrameRef.current);
-    }
-    postPreviewModeToFrame();
-    const timeoutIds = schedulePreviewModeSync(postPreviewModeToFrame, [
-      0, 120, 360,
-    ]);
-    return () => {
-      clearPreviewModeSync(timeoutIds);
-    };
-  }, [
-    injectMountedPreviewBridge,
-    postPreviewModeToFrame,
-    selectedPreviewDoc,
-    selectedPreviewSrc,
+  const {
+    extractMountRelativePath,
+    getLivePreviewSelectedElement,
+    handlePreviewFrameLoad,
+    handlePreviewStageDragOver,
+    handleSidebarInteractionModeChange,
+    isActivePreviewMessageSource,
+    postPreviewPatchToFrame,
+    resolveVirtualPathFromMountRelative,
+    setPreviewModeWithSync,
+    sidebarInteractionMode,
+  } = usePreviewFrameBridgeState({
+    activeFileRef,
+    drawElementTag,
+    explorerSelectionLockRef,
+    explorerSelectionLockUntilRef,
+    filePathIndexRef,
+    filesRef,
+    hasUnsavedChangesForFile,
+    hideQuickTextEdit,
+    interactionMode,
+    interactionModeRef,
+    isPreviewMountReady,
+    openPopupInPreview,
+    pendingPopupOpenRef,
+    positionQuickTextEditAtRange,
+    previewFrameLoadNonce,
+    previewFrameRef,
     previewMode,
-  ]);
+    previewModeRef,
+    previewMountBasePath,
+    previewRootAliasPathRef,
+    previewSelectionMode,
+    projectPath,
+    quickTextRangeRef,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+    setInteractionMode,
+    setIsPageSwitchPromptOpen,
+    setIsToolboxDragging,
+    setPendingPageSwitch,
+    setPreviewFrameLoadNonce,
+    setPreviewMode,
+    setSidebarToolMode,
+    shouldProcessPreviewPageSignal,
+    sidebarToolMode,
+    syncPreviewActiveFile,
+    toolboxDragTypeRef,
+  });
   const persistPreviewHtmlContent = useCallback(
     async (
       updatedPath: string,
@@ -4432,3252 +4044,194 @@ const App: React.FC = () => {
       schedulePreviewAutoSave,
     ],
   );
-  const applyPreviewInlineEditDraft = useCallback(
-    async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
-      await applyPreviewInlineEditDraftHelper({
-        filePath,
-        elementPath,
-        nextInnerHtml,
-        persistPreviewHtmlContent: persistPreviewHtmlContentHelper,
-        persistArgs: {
-          filesRef,
-          textFileCacheRef,
-          pendingPreviewWritesRef,
-          previewDependencyIndexRef,
-          setFiles,
-          setDirtyFiles,
-          setSelectedPreviewDoc,
-          setPreviewRefreshNonce,
-          invalidatePreviewDocCache,
-          markPreviewPathDirty,
-          pushPreviewHistory,
-          flushPendingPreviewSaves,
-          schedulePreviewAutoSave,
-          isMountedPreview,
-        },
-      });
-    },
-    [
-      flushPendingPreviewSaves,
-      invalidatePreviewDocCache,
-      isMountedPreview,
-      markPreviewPathDirty,
-      previewDependencyIndexRef,
-      pushPreviewHistory,
-      schedulePreviewAutoSave,
-      setFiles,
-    ],
-  );
-  const applyPreviewInlineEdit = useCallback(
-    async (elementPath: number[], nextInnerHtml: string) => {
-      const snapshot = await applyPreviewInlineEditHelper({
-        selectedPreviewHtml,
-        elementPath,
-        nextInnerHtml,
-        loadFileContent,
-        filesRef,
-        getLivePreviewSelectedElement,
-        getStablePreviewElementId,
-        previousSnapshotId: previewSelectedElement?.id,
-        persistPreviewHtmlContent: persistPreviewHtmlContentHelper,
-        persistArgs: {
-          filesRef,
-          textFileCacheRef,
-          pendingPreviewWritesRef,
-          previewDependencyIndexRef,
-          setFiles,
-          setDirtyFiles,
-          setSelectedPreviewDoc,
-          setPreviewRefreshNonce,
-          invalidatePreviewDocCache,
-          markPreviewPathDirty,
-          pushPreviewHistory,
-          flushPendingPreviewSaves,
-          schedulePreviewAutoSave,
-          isMountedPreview,
-        },
-      });
-      if (!snapshot) return;
-
-      setPreviewSelectedPath(snapshot.normalizedPath);
-      setPreviewSelectedComputedStyles(snapshot.computedStyles);
-      setPreviewSelectedMatchedCssRules(snapshot.matchedCssRules);
-      setPreviewSelectedElement(snapshot.elementData);
-    },
-    [
-      flushPendingPreviewSaves,
-      getStablePreviewElementId,
-      getLivePreviewSelectedElement,
-      invalidatePreviewDocCache,
-      isMountedPreview,
-      loadFileContent,
-      markPreviewPathDirty,
-      previewDependencyIndexRef,
-      previewSelectedElement?.id,
-      pushPreviewHistory,
-      schedulePreviewAutoSave,
-      selectedPreviewHtml,
-    ],
-  );
-  const syncPreviewSelectionSnapshotFromLiveElement = useCallback(
-    (elementPath: number[]) => {
-      const snapshot = syncPreviewSelectionSnapshotFromLiveElementHelper({
-        elementPath,
-        getLivePreviewSelectedElement,
-        getStablePreviewElementId,
-        previousSnapshotId: previewSelectedElement?.id,
-      });
-      if (!snapshot) return false;
-
-      setPreviewSelectedComputedStyles(snapshot.computedStyles);
-      setPreviewSelectedMatchedCssRules(snapshot.matchedCssRules);
-      setPreviewSelectedElement(snapshot.elementData);
-      return true;
-    },
-    [
-      getLivePreviewSelectedElement,
-      getStablePreviewElementId,
-      previewSelectedElement?.id,
-    ],
-  );
-  useEffect(() => {
-    const ensureCdpBridge = async () => {
-      const nlPort = String((window as any).NL_PORT || "").trim();
-      if (!nlPort) return;
-
-      try {
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 600);
-        try {
-          const response = await fetch("http://127.0.0.1:38991/health", {
-            signal: controller.signal,
-          });
-          if (response.ok) return;
-        } finally {
-          window.clearTimeout(timeoutId);
-        }
-      } catch {
-        // Bridge is not running yet.
-      }
-
-      const appRoot = normalizePath(String((window as any).NL_PATH || ""));
-      if (!appRoot) return;
-
-      const candidatePaths = [
-        `${appRoot}/native/cdp_bridge.exe`,
-        `${appRoot}/native/cdp_bridge/target/release/cdp_bridge.exe`,
-        `${appRoot}/native/cdp_bridge/target/debug/cdp_bridge.exe`,
-      ];
-
-      for (const candidatePath of candidatePaths) {
-        try {
-          await (Neutralino as any).filesystem.getStats(candidatePath);
-          await (Neutralino as any).os.spawnProcess(
-            `"${candidatePath}" --cdp-port 9222 --listen-port 38991`,
-            appRoot,
-          );
-          return;
-        } catch {
-          // Try the next candidate path.
-        }
-      }
-    };
-
-    void ensureCdpBridge();
-  }, []);
-  useEffect(() => {
-    if (
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0 ||
-      !previewSelectedElement
-    ) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch("http://127.0.0.1:38991/inspect-selected", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            cdp_port: 9222,
-            iframe_title: "project-preview",
-            selected_selector: ".__nx-preview-selected",
-            target_url_contains: window.location.origin,
-          }),
-          signal: controller.signal,
-        });
-        if (!response.ok) return;
-        const payload =
-          (await response.json()) as CdpInspectSelectedResponse | null;
-        if (!payload?.ok) return;
-
-        const cdpComputedStyles = toReactComputedStylesFromCdp(
-          payload.computedStyles,
-        );
-        const cdpMatchedCssRules = derivePreviewMatchedCssRulesFromCdp(
-          payload.matchedStyles,
-          previewSelectedMatchedCssRules,
-          previewSelectedElement.styles,
-        );
-
-        if (cdpComputedStyles) {
-          setPreviewSelectedComputedStyles(cdpComputedStyles);
-        }
-        if (cdpMatchedCssRules.length > 0) {
-          setPreviewSelectedMatchedCssRules(cdpMatchedCssRules);
-        }
-      } catch {
-        if (controller.signal.aborted) return;
-      }
-    }, 120);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    previewRefreshNonce,
-    previewSelectedElement,
-    previewSelectedMatchedCssRules,
-    previewSelectedPath,
-  ]);
-  const applyPreviewStyleUpdateAtPath = useCallback(
-    async (
-      elementPath: number[],
-      styles: Partial<React.CSSProperties>,
-      options?: { syncSelectedElement?: boolean },
-    ) => {
-      await applyPreviewStyleUpdateAtPathHelper({
-        selectedPreviewHtml,
-        elementPath,
-        styles,
-        options,
-        getLivePreviewSelectedElement,
-        postPreviewPatchToFrame,
-        previewSelectedPath,
-        syncPreviewSelectionSnapshotFromLiveElement,
-        loadFileContent,
-        filesRef,
-        persistPreviewHtmlContent,
-      });
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      postPreviewPatchToFrame,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      selectedPreviewHtml,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const queuePreviewStyleUpdate = useCallback(
-    (styles: Partial<React.CSSProperties>) => {
-      queuePreviewStyleUpdateHelper({
-        selectedPreviewHtml,
-        previewSelectedPath,
-        styles,
-        previewStyleDraftPendingRef,
-        previewStyleDraftTimerRef,
-        dirtyFilesRef,
-        setDirtyFiles,
-        markPreviewPathDirty,
-        applyPreviewStyleUpdateAtPath,
-      });
-    },
-    [
-      applyPreviewStyleUpdateAtPath,
-      markPreviewPathDirty,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewContentUpdate = useCallback(
-    async (data: {
-      content?: string;
-      html?: string;
-      src?: string;
-      liveSrc?: string;
-      href?: string;
-    }) => {
-      await applyPreviewContentUpdateHelper({
-        data,
-        selectedPreviewHtml,
-        previewSelectedPath,
-        loadFileContent,
-        filesRef,
-        getLivePreviewSelectedElement,
-        resolvePreviewAssetUrl,
-        persistPreviewHtmlContent,
-        setPreviewSelectedElement,
-      });
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      resolvePreviewAssetUrl,
-      selectedPreviewHtml,
-    ],
-  );
-  const handleReplacePreviewAsset = useCallback(async () => {
-    if (
-      !projectPath ||
-      !selectedPreviewHtml ||
-      !previewSelectedElement ||
-      !previewSelectedPath ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      return false;
-    }
-
-    const selections = await (Neutralino as any).os.showOpenDialog(
-      "Select replacement asset",
-      {
-        multiSelections: false,
-        filters: [
-          {
-            name: "Assets",
-            extensions: [
-              "png",
-              "jpg",
-              "jpeg",
-              "webp",
-              "gif",
-              "svg",
-              "mp4",
-              "webm",
-              "mov",
-            ],
-          },
-          {
-            name: "Images",
-            extensions: ["png", "jpg", "jpeg", "webp", "gif", "svg"],
-          },
-          { name: "Video", extensions: ["mp4", "webm", "mov"] },
-        ],
-      },
-    );
-    const sourceAbsolutePath = Array.isArray(selections)
-      ? selections[0]
-      : selections;
-    if (!sourceAbsolutePath) {
-      lastAutoAssetReplaceKeyRef.current = null;
-      return false;
-    }
-
-    const htmlAbsolutePath = filePathIndexRef.current[selectedPreviewHtml];
-    const htmlDirAbsolute = htmlAbsolutePath
-      ? getParentPath(normalizePath(htmlAbsolutePath))
-      : null;
-    const htmlDirRelative = getParentPath(selectedPreviewHtml) || "";
-    if (!htmlDirAbsolute) return false;
-
-    const sourceName =
-      normalizePath(String(sourceAbsolutePath)).split("/").pop() || "asset";
-    const dotIndex = sourceName.lastIndexOf(".");
-    const rawBaseName =
-      dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
-    const extension = dotIndex > 0 ? sourceName.slice(dotIndex) : "";
-    const safeBaseName =
-      rawBaseName
-        .toLowerCase()
-        .replace(/[^a-z0-9-_]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "asset";
-    const uniqueFileName = `${safeBaseName}-${Date.now()}${extension}`;
-    const targetAbsolutePath = `${htmlDirAbsolute}/${uniqueFileName}`;
-    const targetRelativePath = htmlDirRelative
-      ? `${htmlDirRelative}/${uniqueFileName}`
-      : uniqueFileName;
-
-    await ensureDirectoryForFileStable(targetAbsolutePath);
-    try {
-      await (Neutralino as any).filesystem.copy(
-        normalizePath(String(sourceAbsolutePath)),
-        targetAbsolutePath,
-      );
-    } catch {
-      const binary = await (Neutralino as any).filesystem.readBinaryFile(
-        normalizePath(String(sourceAbsolutePath)),
-      );
-      await (Neutralino as any).filesystem.writeBinaryFile(
-        targetAbsolutePath,
-        binary,
-      );
-    }
-
-    filePathIndexRef.current[targetRelativePath] = targetAbsolutePath;
-    setFiles((prev) => ({
-      ...prev,
-      [targetRelativePath]: {
-        path: targetRelativePath,
-        name: uniqueFileName,
-        type: /\.(mp4|webm|mov)$/i.test(extension) ? "unknown" : "image",
-        content: "",
-      },
-    }));
-
-    try {
-      await loadFileContent(targetRelativePath, { persistToState: true });
-    } catch {
-      // Ignore preview cache warmup failures; the HTML patch below is the source of truth.
-    }
-
-    const nextLiveSrc =
-      typeof binaryAssetUrlCacheRef.current[targetRelativePath] === "string" &&
-      binaryAssetUrlCacheRef.current[targetRelativePath].length > 0
-        ? binaryAssetUrlCacheRef.current[targetRelativePath]
-        : resolvePreviewAssetUrl(uniqueFileName) || uniqueFileName;
-
-    await applyPreviewContentUpdate({
-      src: uniqueFileName,
-      liveSrc: nextLiveSrc,
-    });
-    return true;
-  }, [
+  const {
     applyPreviewContentUpdate,
-    ensureDirectoryForFileStable,
-    loadFileContent,
-    previewSelectedElement,
-    previewSelectedPath,
-    projectPath,
-    selectedPreviewHtml,
-  ]);
-  const sanitizeQuickEditDocument = useCallback((doc: Document) => {
-    const editables = doc.querySelectorAll<HTMLElement>("[contenteditable]");
-    editables.forEach((el) => el.removeAttribute("contenteditable"));
-    if (
-      doc.documentElement?.getAttribute("data-nx-mounted-preview-bridge") ===
-      "1"
-    ) {
-      doc.documentElement.removeAttribute("data-nx-mounted-preview-bridge");
-    }
-    const previewClasses = doc.querySelectorAll<HTMLElement>(
-      ".__nx-preview-editing, .__nx-preview-selected, .__nx-preview-dirty",
-    );
-    previewClasses.forEach((el) => {
-      el.classList.remove("__nx-preview-editing");
-      el.classList.remove("__nx-preview-selected");
-      el.classList.remove("__nx-preview-dirty");
-    });
-    const overlays = doc.querySelectorAll<HTMLElement>(
-      "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft]",
-    );
-    overlays.forEach((el) => el.remove());
-  }, []);
-  useEffect(() => {
-    if (previewSelectionMode !== "image") {
-      lastAutoAssetReplaceKeyRef.current = null;
-      return;
-    }
-    if (
-      interactionMode !== "preview" ||
-      !previewSelectedElement ||
-      !previewSelectedPath ||
-      !Array.isArray(previewSelectedPath)
-    ) {
-      return;
-    }
-    const assetSource = extractAssetSourceFromElement(previewSelectedElement);
-    if (!assetSource) return;
-    const selectionKey = previewSelectedPath.join(".");
-    if (lastAutoAssetReplaceKeyRef.current === selectionKey) return;
-    lastAutoAssetReplaceKeyRef.current = selectionKey;
-    void handleReplacePreviewAsset();
-  }, [
-    handleReplacePreviewAsset,
-    interactionMode,
-    previewSelectedElement,
-    previewSelectedPath,
-    previewSelectionMode,
-  ]);
-  const applyQuickTextWrapTag = useCallback(
-    async (tagName: "sup" | "sub") => {
-      const frame = previewFrameRef.current;
-      const win = frame?.contentWindow;
-      const doc = frame?.contentDocument;
-      if (!win || !doc) return;
-      if (!selectedPreviewHtml) return;
-      const selection = win.getSelection?.();
-      const activeRange =
-        selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-      const range =
-        activeRange && !activeRange.collapsed
-          ? activeRange
-          : quickTextRangeRef.current;
-      if (!range || range.collapsed) return;
-
-      const workingRange = range.cloneRange();
-      const ancestor =
-        workingRange.commonAncestorContainer instanceof Element
-          ? workingRange.commonAncestorContainer
-          : workingRange.commonAncestorContainer?.parentElement;
-      const existing = ancestor?.closest?.(tagName) || null;
-      let updatedNode: Element | null = null;
-
-      if (existing && existing.parentElement) {
-        const parent = existing.parentElement;
-        while (existing.firstChild) {
-          parent.insertBefore(existing.firstChild, existing);
-        }
-        parent.removeChild(existing);
-        updatedNode = parent;
-      } else {
-        const wrapper = doc.createElement(tagName);
-        try {
-          workingRange.surroundContents(wrapper);
-        } catch {
-          const frag = workingRange.extractContents();
-          wrapper.appendChild(frag);
-          workingRange.insertNode(wrapper);
-        }
-        updatedNode = wrapper;
-      }
-
-      const liveTarget =
-        previewSelectedPath && Array.isArray(previewSelectedPath)
-          ? getLivePreviewSelectedElement(previewSelectedPath)
-          : null;
-      if (liveTarget instanceof HTMLElement) {
-        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
-      } else if (doc.documentElement) {
-        sanitizeQuickEditDocument(doc);
-        const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-        });
-      }
-
-      if (selection) {
-        selection.removeAllRanges();
-        const nextRange = doc.createRange();
-        if (updatedNode) {
-          nextRange.selectNodeContents(updatedNode);
-        } else {
-          nextRange.selectNodeContents(doc.body);
-        }
-        selection.addRange(nextRange);
-        quickTextRangeRef.current = nextRange.cloneRange();
-      }
-    },
-    [
-      applyPreviewContentUpdate,
-      getLivePreviewSelectedElement,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      sanitizeQuickEditDocument,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewTagUpdate = useCallback(
-    async (nextTag: string) => {
-      if (
-        !selectedPreviewHtml ||
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-      const safeTag = String(nextTag || "").toLowerCase();
-      if (!safeTag) return;
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, previewSelectedPath);
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-
-      const replaceTag = (node: Element, tagName: string) => {
-        if (!node || !node.ownerDocument) return null;
-        const doc = node.ownerDocument;
-        const next = doc.createElement(tagName);
-        for (const attr of Array.from(node.attributes)) {
-          next.setAttribute(attr.name, attr.value);
-        }
-        while (node.firstChild) {
-          next.appendChild(node.firstChild);
-        }
-        node.replaceWith(next);
-        return next;
-      };
-
-      let didChange = false;
-      if (target instanceof HTMLElement) {
-        const currentTag = target.tagName.toLowerCase();
-        if (currentTag !== safeTag) {
-          replaceTag(target, safeTag);
-          didChange = true;
-        }
-      }
-      if (liveTarget instanceof HTMLElement) {
-        const currentTag = liveTarget.tagName.toLowerCase();
-        if (currentTag !== safeTag) {
-          replaceTag(liveTarget, safeTag);
-        }
-      }
-
-      if (didChange) {
-        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-          refreshPreviewDoc: false,
-          elementPath: previewSelectedPath,
-        });
-        setPreviewSelectedElement((prev) =>
-          prev
-            ? {
-                ...prev,
-                type: safeTag,
-                name: safeTag.toUpperCase(),
-              }
-            : prev,
-        );
-      }
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewDeleteSelected = useCallback(async () => {
-    if (
-      !selectedPreviewHtml ||
-      !previewSelectedPath ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      return;
-    }
-
-    const loaded = await loadFileContent(selectedPreviewHtml);
-    const sourceHtml =
-      typeof loaded === "string" && loaded.length > 0
-        ? loaded
-        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-          ? (filesRef.current[selectedPreviewHtml]?.content as string)
-          : "";
-    if (!sourceHtml) return;
-
-    const parser = new DOMParser();
-    const parsed = parser.parseFromString(sourceHtml, "text/html");
-    const target = readElementByPath(parsed.body, previewSelectedPath);
-    if (!target || !target.parentElement) return;
-
-    target.parentElement.removeChild(target);
-
-    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-    if (liveTarget && liveTarget.parentElement) {
-      liveTarget.parentElement.removeChild(liveTarget);
-    }
-
-    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-    const parentPath = previewSelectedPath.slice(0, -1);
-    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-      refreshPreviewDoc: false,
-      ...(parentPath.length > 0 ? { elementPath: parentPath } : {}),
-    });
-
-    setPreviewSelectedPath(null);
-    setPreviewSelectedElement(null);
-    setPreviewSelectedComputedStyles(null);
-    setSelectedId(null);
-  }, [
+    applyPreviewInlineEdit,
+    applyPreviewInlineEditDraft,
+    applyPreviewStyleUpdateAtPath,
+    queuePreviewStyleUpdate,
+    syncPreviewSelectionSnapshotFromLiveElement,
+  } = usePreviewContentEditing({
+    dirtyFilesRef,
+    filesRef,
+    flushPendingPreviewSaves,
     getLivePreviewSelectedElement,
+    getStablePreviewElementId,
+    invalidatePreviewDocCache,
+    isMountedPreview,
     loadFileContent,
+    markPreviewPathDirty,
+    pendingPreviewWritesRef,
     persistPreviewHtmlContent,
+    postPreviewPatchToFrame,
+    previewDependencyIndexRef,
+    previewSelectedElement,
     previewSelectedPath,
+    previewStyleDraftPendingRef,
+    previewStyleDraftTimerRef,
+    pushPreviewHistory,
+    resolvePreviewAssetUrl,
+    schedulePreviewAutoSave,
     selectedPreviewHtml,
-  ]);
-  const handlePreviewDuplicateSelected = useCallback(async () => {
-    if (
-      !selectedPreviewHtml ||
-      !previewSelectedPath ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      return;
-    }
-
-    const loaded = await loadFileContent(selectedPreviewHtml);
-    const sourceHtml =
-      typeof loaded === "string" && loaded.length > 0
-        ? loaded
-        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-          ? (filesRef.current[selectedPreviewHtml]?.content as string)
-          : "";
-    if (!sourceHtml) return;
-
-    const parser = new DOMParser();
-    const parsed = parser.parseFromString(sourceHtml, "text/html");
-    const target = readElementByPath(parsed.body, previewSelectedPath);
-    if (!(target instanceof HTMLElement) || !target.parentElement) return;
-
-    const duplicate = target.cloneNode(true) as HTMLElement;
-    if (duplicate.id) {
-      duplicate.id = `${duplicate.id}-copy-${Date.now()}`;
-    }
-    target.parentElement.insertBefore(duplicate, target.nextSibling);
-    const newPath = [...previewSelectedPath];
-    newPath[newPath.length - 1] = newPath[newPath.length - 1] + 1;
-
-    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-    if (liveTarget instanceof HTMLElement && liveTarget.parentElement) {
-      const liveDuplicate = liveTarget.cloneNode(true) as HTMLElement;
-      if (liveDuplicate.id) {
-        liveDuplicate.id = `${liveDuplicate.id}-copy-${Date.now()}`;
-      }
-      liveTarget.parentElement.insertBefore(
-        liveDuplicate,
-        liveTarget.nextSibling,
-      );
-    }
-
-    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-      refreshPreviewDoc: false,
-      saveNow: false,
-      skipAutoSave: true,
-      elementPath: newPath,
-    });
-    if (selectedPreviewSrc && parsed.body) {
-      postPreviewPatchToFrame({
-        type: "PREVIEW_APPLY_HTML",
-        html: parsed.body.innerHTML,
-      });
-    }
-    selectPreviewElementAtPath(newPath);
-    setIsCodePanelOpen(false);
-    setIsRightPanelOpen(true);
-    setSidebarToolMode("edit");
-    setPreviewMode("edit");
-    setInteractionMode("preview");
-  }, [
+    setDirtyFiles,
+    setFiles,
+    setPreviewRefreshNonce,
+    setPreviewSelectedComputedStyles,
+    setPreviewSelectedElement,
+    setPreviewSelectedMatchedCssRules,
+    setPreviewSelectedPath,
+    setSelectedPreviewDoc,
+    textFileCacheRef,
+  });
+  const {
+    applyPreviewDeleteSelected,
+    applyPreviewTagUpdate,
+    applyQuickTextWrapTag,
+    handlePreviewDuplicateSelected,
+    handleReplacePreviewAsset,
+  } = usePreviewElementActions({
+    applyPreviewContentUpdate,
+    binaryAssetUrlCacheRef,
+    extractAssetSourceFromElement,
+    filePathIndexRef,
+    filesRef,
     getLivePreviewSelectedElement,
     loadFileContent,
     persistPreviewHtmlContent,
     postPreviewPatchToFrame,
+    previewFrameRef,
+    previewSelectedElement,
     previewSelectedPath,
-    selectPreviewElementAtPath,
+    projectPath,
+    quickTextRangeRef,
+    resolvePreviewAssetUrl,
     selectedPreviewHtml,
     selectedPreviewSrc,
-  ]);
-  const handlePreviewNudgeZIndex = useCallback(
-    (delta: number) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-      const styleValue =
-        previewSelectedElement?.styles?.zIndex ??
-        previewSelectedComputedStyles?.zIndex ??
-        (liveTarget instanceof HTMLElement
-          ? liveTarget.style.zIndex ||
-            liveTarget.ownerDocument.defaultView
-              ?.getComputedStyle(liveTarget)
-              .getPropertyValue("z-index")
-          : "");
-      const current = parseNumericCssValue(styleValue) ?? 0;
-      const next = Math.max(0, Math.round(current + delta));
-      void applyPreviewStyleUpdateAtPath(
-        previewSelectedPath,
-        { zIndex: String(next) },
-        { syncSelectedElement: true },
-      );
-    },
-    [
-      applyPreviewStyleUpdateAtPath,
-      getLivePreviewSelectedElement,
-      previewSelectedComputedStyles?.zIndex,
-      previewSelectedElement?.styles?.zIndex,
-      previewSelectedPath,
-    ],
-  );
-  const handlePreviewResizeNudge = useCallback(
-    (axis: "width" | "height", delta: number) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
-      const liveRect =
-        liveTarget instanceof HTMLElement
-          ? liveTarget.getBoundingClientRect()
-          : null;
-      const fallbackBase = axis === "width" ? 120 : 48;
-      const styleValue =
-        axis === "width"
-          ? (previewSelectedElement?.styles?.width ??
-            previewSelectedComputedStyles?.width)
-          : (previewSelectedElement?.styles?.height ??
-            previewSelectedComputedStyles?.height);
-      const parsedStyle = parseNumericCssValue(styleValue);
-      const liveValue =
-        axis === "width"
-          ? (liveRect?.width ?? null)
-          : (liveRect?.height ?? null);
-      const base = parsedStyle ?? liveValue ?? fallbackBase;
-      const next = Math.max(16, Math.round(base + delta));
-      const stylePatch: Partial<React.CSSProperties> =
-        axis === "width" ? { width: `${next}px` } : { height: `${next}px` };
-      void applyPreviewStyleUpdateAtPath(previewSelectedPath, stylePatch, {
-        syncSelectedElement: true,
-      });
-    },
-    [
-      applyPreviewStyleUpdateAtPath,
-      getLivePreviewSelectedElement,
-      previewSelectedComputedStyles?.height,
-      previewSelectedComputedStyles?.width,
-      previewSelectedElement?.styles?.height,
-      previewSelectedElement?.styles?.width,
-      previewSelectedPath,
-    ],
-  );
-  const updatePreviewSelectionBox = useCallback(() => {
-    if (
-      interactionMode !== "preview" ||
-      previewMode !== "edit" ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      setPreviewSelectionBox(null);
-      return;
-    }
-    const stage = previewStageRef.current;
-    const frame = previewFrameRef.current;
-    const frameDocument =
-      frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
-    if (!stage || !frame || !frameDocument?.body) {
-      setPreviewSelectionBox(null);
-      return;
-    }
-    const target = readElementByPath(frameDocument.body, previewSelectedPath);
-    if (!(target instanceof HTMLElement)) {
-      setPreviewSelectionBox(null);
-      return;
-    }
-    const stageRect = stage.getBoundingClientRect();
-    const targetRect = target.getBoundingClientRect();
-    const left = targetRect.left - stageRect.left;
-    const top = targetRect.top - stageRect.top;
-    const width = targetRect.width;
-    const height = targetRect.height;
-    if (
-      !Number.isFinite(left) ||
-      !Number.isFinite(top) ||
-      !Number.isFinite(width) ||
-      !Number.isFinite(height) ||
-      width <= 0 ||
-      height <= 0
-    ) {
-      setPreviewSelectionBox(null);
-      return;
-    }
-    setPreviewSelectionBox({
-      left: Math.round(left),
-      top: Math.round(top),
-      width: Math.round(width),
-      height: Math.round(height),
-    });
-  }, [interactionMode, previewMode, previewSelectedPath]);
-  const handlePreviewResizeHandleMouseDown = useCallback(
-    (
-      direction: "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
-      event: React.MouseEvent<HTMLButtonElement>,
-    ) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-      const frame = previewFrameRef.current;
-      const frameDocument =
-        frame?.contentDocument ?? frame?.contentWindow?.document ?? null;
-      if (!frame || !frameDocument?.body) return;
-      const target = readElementByPath(frameDocument.body, previewSelectedPath);
-      if (!(target instanceof HTMLElement)) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      const frameRect = frame.getBoundingClientRect();
-      const frameClientWidth = Math.max(1, frame.clientWidth || 0);
-      const frameClientHeight = Math.max(1, frame.clientHeight || 0);
-      const scaleX = frameRect.width / frameClientWidth;
-      const scaleY = frameRect.height / frameClientHeight;
-      const targetRect = target.getBoundingClientRect();
-      const startWidth = Math.max(16, Math.round(targetRect.width));
-      const startHeight = Math.max(16, Math.round(targetRect.height));
-      const computedStyle =
-        target.ownerDocument.defaultView?.getComputedStyle(target);
-      const startLeft =
-        parseNumericCssValue(target.style.left) ??
-        parseNumericCssValue(computedStyle?.left) ??
-        0;
-      const startTop =
-        parseNumericCssValue(target.style.top) ??
-        parseNumericCssValue(computedStyle?.top) ??
-        0;
-      const positionMode = String(computedStyle?.position || "")
-        .trim()
-        .toLowerCase();
-      const canMoveLeft =
-        positionMode === "absolute" ||
-        positionMode === "fixed" ||
-        positionMode === "relative" ||
-        positionMode === "sticky";
-      const canMoveTop = canMoveLeft;
-
-      previewResizeDragRef.current = {
-        path: [...previewSelectedPath],
-        target,
-        direction,
-        startX: event.clientX,
-        startY: event.clientY,
-        startLeft,
-        startTop,
-        startWidth,
-        startHeight,
-        scaleX: Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1,
-        scaleY: Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1,
-        canMoveLeft,
-        canMoveTop,
-      };
-      setIsPreviewResizing(true);
-
-      const onMove = (moveEvent: MouseEvent) => {
-        const drag = previewResizeDragRef.current;
-        if (!drag) return;
-        const deltaX = (moveEvent.clientX - drag.startX) / drag.scaleX;
-        const deltaY = (moveEvent.clientY - drag.startY) / drag.scaleY;
-        const affectsEast = drag.direction.includes("e");
-        const affectsWest = drag.direction.includes("w");
-        const affectsSouth = drag.direction.includes("s");
-        const affectsNorth = drag.direction.includes("n");
-        const widthDelta = affectsWest ? -deltaX : affectsEast ? deltaX : 0;
-        const heightDelta = affectsNorth ? -deltaY : affectsSouth ? deltaY : 0;
-        const width = Math.max(16, Math.round(drag.startWidth + widthDelta));
-        const height = Math.max(16, Math.round(drag.startHeight + heightDelta));
-        const consumedLeftDelta = affectsWest ? drag.startWidth - width : 0;
-        const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
-        const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
-        const nextTop = Math.round(drag.startTop + consumedTopDelta);
-        const widthValue = normalizePresentationCssValue("width", `${width}px`);
-        const heightValue = normalizePresentationCssValue(
-          "height",
-          `${height}px`,
-        );
-        const nextLeftValue = normalizePresentationCssValue(
-          "left",
-          `${nextLeft}px`,
-        );
-        const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
-        drag.target.style.setProperty("width", widthValue);
-        drag.target.style.setProperty("height", heightValue);
-        if (affectsWest && drag.canMoveLeft) {
-          drag.target.style.setProperty("left", nextLeftValue);
-        }
-        if (affectsNorth && drag.canMoveTop) {
-          drag.target.style.setProperty("top", nextTopValue);
-        }
-        setPreviewSelectedElement((prev) =>
-          prev
-            ? {
-                ...prev,
-                styles: {
-                  ...prev.styles,
-                  width: widthValue,
-                  height: heightValue,
-                  ...(affectsWest && drag.canMoveLeft
-                    ? { left: nextLeftValue }
-                    : {}),
-                  ...(affectsNorth && drag.canMoveTop
-                    ? { top: nextTopValue }
-                    : {}),
-                },
-              }
-            : prev,
-        );
-        updatePreviewSelectionBox();
-      };
-      const onUp = () => {
-        const drag = previewResizeDragRef.current;
-        previewResizeDragRef.current = null;
-        setIsPreviewResizing(false);
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        if (!drag) return;
-        const stylePatch: Partial<React.CSSProperties> = {
-          width: drag.target.style.getPropertyValue("width"),
-          height: drag.target.style.getPropertyValue("height"),
-        };
-        if (drag.direction.includes("w") && drag.canMoveLeft) {
-          stylePatch.left = drag.target.style.getPropertyValue("left");
-        }
-        if (drag.direction.includes("n") && drag.canMoveTop) {
-          stylePatch.top = drag.target.style.getPropertyValue("top");
-        }
-        void applyPreviewLocalCssPatchAtPath(drag.path, stylePatch, {
-          syncSelectedElement: true,
-        });
-      };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-    },
-    [previewSelectedPath, updatePreviewSelectionBox],
-  );
-  useEffect(() => {
-    if (
-      interactionMode !== "preview" ||
-      previewMode !== "edit" ||
-      !Array.isArray(previewSelectedPath) ||
-      previewSelectedPath.length === 0
-    ) {
-      setPreviewSelectionBox(null);
-      return;
-    }
-    let rafId = 0;
-    const tick = () => {
-      updatePreviewSelectionBox();
-      rafId = window.requestAnimationFrame(tick);
-    };
-    tick();
-    return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
-    };
-  }, [
+    selectPreviewElementAtPath,
+    setFiles,
+    setInteractionMode,
+    setIsCodePanelOpen,
+    setIsRightPanelOpen,
+    setPreviewMode,
+    setPreviewSelectedComputedStyles,
+    setPreviewSelectedElement,
+    setPreviewSelectedPath,
+    setSelectedId,
+    setSidebarToolMode,
+    textFileCacheRef,
+  });
+  const {
+    applyPreviewLocalCssPatchAtPath,
+    handleImmediatePreviewStyle,
+    handlePreviewMatchedRulePropertyAdd,
+    resolvePreviewMatchedRuleSourcePath,
+  } = usePreviewCssMutation({
+    dirtyFilesRef,
+    ensureDirectoryTreeStable,
+    extractMountRelativePath,
+    filePathIndexRef,
+    filesRef,
+    getLivePreviewSelectedElement,
+    invalidatePreviewDocsForDependency,
+    loadFileContent,
+    pendingPreviewWritesRef,
+    persistPreviewHtmlContent,
+    postPreviewPatchToFrame,
+    previewFrameRef,
+    previewLocalCssDraftPendingRef,
+    previewLocalCssDraftTimerRef,
+    previewSelectedElement,
+    previewSelectedPath,
+    resolveVirtualPathFromMountRelative,
+    schedulePreviewAutoSave,
+    selectedPreviewHtml,
+    selectedPreviewHtmlRef,
+    setDirtyFiles,
+    setFiles,
+    setPreviewSelectedElement,
+    setPreviewSelectedMatchedCssRules,
+    syncPreviewSelectionSnapshotFromLiveElement,
+    textFileCacheRef,
+  });
+  const {
+    handlePreviewNudgeZIndex,
+    handlePreviewResizeHandleMouseDown,
+    handlePreviewResizeNudge,
+    isPreviewResizing,
+    previewSelectionBox,
+    updatePreviewSelectionBox,
+  } = usePreviewGeometry({
+    applyPreviewLocalCssPatchAtPath,
+    applyPreviewStyleUpdateAtPath,
+    getLivePreviewSelectedElement,
     interactionMode,
+    previewFrameRef,
     previewMode,
     previewRefreshNonce,
+    previewSelectedComputedStyles,
+    previewSelectedElement,
     previewSelectedPath,
-    updatePreviewSelectionBox,
-  ]);
-  const applyPreviewAnimationUpdate = useCallback(
-    async (animation: string) => {
-      if (!selectedPreviewHtml || !Array.isArray(previewSelectedPath)) return;
-      const nextAnimation =
-        typeof animation === "string" ? animation.trim() : "";
-      await applyPreviewStyleUpdateAtPath(
-        previewSelectedPath,
-        { animation: nextAnimation },
-        { syncSelectedElement: true },
-      );
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, previewSelectedPath);
-      if (!(target instanceof HTMLElement)) return;
-
-      const htmlDirVirtual = selectedPreviewHtml.includes("/")
-        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
-        : "";
-      const cssLocalVirtualPath = normalizeProjectRelative(
-        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
-      );
-      const jsLocalVirtualPath = normalizeProjectRelative(
-        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
-      );
-      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
-        if (doc.head) return doc.head;
-        const head = doc.createElement("head");
-        if (doc.documentElement) {
-          doc.documentElement.insertBefore(head, doc.body || null);
-        }
-        return head;
-      };
-      const ensureAssetLinkInHead = (
-        doc: Document,
-        htmlPath: string,
-        assetVirtualPath: string,
-        tag: "link" | "script",
-      ) => {
-        const hasAssetRef = Array.from(
-          doc.querySelectorAll<HTMLElement>(
-            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
-          ),
-        ).some((node) => {
-          const refValue =
-            tag === "link"
-              ? (node.getAttribute("href") ?? "")
-              : (node.getAttribute("src") ?? "");
-          const resolved = resolveProjectRelativePath(htmlPath, refValue);
-          return (
-            normalizeProjectRelative(resolved || "") ===
-            normalizeProjectRelative(assetVirtualPath)
-          );
-        });
-        if (hasAssetRef) return;
-        const head = ensureHeadElement(doc);
-        const refPath = relativePathBetweenVirtualFiles(
-          htmlPath,
-          assetVirtualPath,
-        );
-        if (!refPath) return;
-        if (tag === "link") {
-          const link = doc.createElement("link");
-          link.setAttribute("rel", "stylesheet");
-          link.setAttribute("href", refPath);
-          head.appendChild(link);
-        } else {
-          const script = doc.createElement("script");
-          script.setAttribute("src", refPath);
-          head.appendChild(script);
-        }
-      };
-      const replaceMarkerBlock = (
-        source: string,
-        markerStart: string,
-        markerEnd: string,
-        blockContent: string,
-      ): string => {
-        const safeSource = source || "";
-        const start = safeSource.indexOf(markerStart);
-        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
-        const prefix =
-          start >= 0 ? safeSource.slice(0, start) : safeSource.trimEnd();
-        const suffix =
-          start >= 0 && endStart >= 0
-            ? safeSource.slice(endStart + markerEnd.length).trimStart()
-            : "";
-        if (!blockContent) {
-          return [prefix.trimEnd(), suffix].filter(Boolean).join("\n\n");
-        }
-        const block = `${markerStart}\n${blockContent}\n${markerEnd}`;
-        return [prefix.trimEnd(), block, suffix].filter(Boolean).join("\n\n");
-      };
-
-      ensureAssetLinkInHead(
-        parsed,
-        selectedPreviewHtml,
-        cssLocalVirtualPath,
-        "link",
-      );
-      ensureAssetLinkInHead(
-        parsed,
-        selectedPreviewHtml,
-        jsLocalVirtualPath,
-        "script",
-      );
-
-      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
-      const absoluteHtmlDir = absoluteHtmlPath
-        ? getParentPath(absoluteHtmlPath)
-        : null;
-      const assetDefs = [
-        {
-          path: cssLocalVirtualPath,
-          relativePath: "css/local.css",
-          defaultContent: "",
-        },
-        {
-          path: jsLocalVirtualPath,
-          relativePath: "js/local.js",
-          defaultContent: "// local page interactions\n",
-        },
-      ] as const;
-
-      const upsertedAssets: Record<string, ProjectFile> = {};
-      for (const asset of assetDefs) {
-        const absoluteAssetPath = absoluteHtmlDir
-          ? normalizePath(joinPath(absoluteHtmlDir, asset.relativePath))
-          : null;
-        if (absoluteAssetPath) {
-          const absoluteParent = getParentPath(absoluteAssetPath);
-          if (absoluteParent) {
-            await ensureDirectoryTreeStable(absoluteParent);
-          }
-          filePathIndexRef.current[asset.path] = absoluteAssetPath;
-        }
-        let content =
-          typeof filesRef.current[asset.path]?.content === "string"
-            ? (filesRef.current[asset.path].content as string)
-            : asset.defaultContent;
-        if (!content && absoluteAssetPath) {
-          try {
-            content = await (Neutralino as any).filesystem.readFile(
-              absoluteAssetPath,
-            );
-          } catch {
-            content = asset.defaultContent;
-          }
-        }
-        if (absoluteAssetPath) {
-          await (Neutralino as any).filesystem.writeFile(
-            absoluteAssetPath,
-            content,
-          );
-        }
-        upsertedAssets[asset.path] = {
-          path: asset.path,
-          name: asset.path.split("/").slice(-1)[0],
-          type: asset.path.endsWith(".js") ? "js" : "css",
-          content,
-        } as ProjectFile;
-      }
-
-      const animationClassBase =
-        target.id ||
-        previewSelectedElement?.id ||
-        previewSelectedPath.join("-");
-      const animationClassName = `nx-local-anim-${String(animationClassBase)
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "-")}`;
-      const classTokens = new Set(
-        String(target.getAttribute("class") || "")
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(Boolean),
-      );
-      if (nextAnimation) {
-        classTokens.add(animationClassName);
-      } else {
-        classTokens.delete(animationClassName);
-      }
-      if (classTokens.size > 0) {
-        target.setAttribute("class", Array.from(classTokens).join(" "));
-      } else {
-        target.removeAttribute("class");
-      }
-      target.style.removeProperty("animation");
-      if (!target.getAttribute("style")?.trim()) {
-        target.removeAttribute("style");
-      }
-      const cssMarkerStart = `/* nocodex-local-animation:${animationClassName}:start */`;
-      const cssMarkerEnd = `/* nocodex-local-animation:${animationClassName}:end */`;
-      const cssRule = nextAnimation
-        ? `.${animationClassName} {\n  animation: ${nextAnimation};\n}`
-        : "";
-      const currentCss =
-        typeof upsertedAssets[cssLocalVirtualPath]?.content === "string"
-          ? (upsertedAssets[cssLocalVirtualPath].content as string)
-          : "";
-      const nextCss = replaceMarkerBlock(
-        currentCss,
-        cssMarkerStart,
-        cssMarkerEnd,
-        cssRule,
-      );
-      upsertedAssets[cssLocalVirtualPath] = {
-        ...upsertedAssets[cssLocalVirtualPath],
-        content: nextCss,
-      } as ProjectFile;
-      const absoluteCssPath = filePathIndexRef.current[cssLocalVirtualPath];
-      if (absoluteCssPath) {
-        await (Neutralino as any).filesystem.writeFile(
-          absoluteCssPath,
-          nextCss,
-        );
-      }
-      setFiles((prev) => ({
-        ...prev,
-        ...upsertedAssets,
-      }));
-
-      const serialized = parsed.documentElement.outerHTML;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-      });
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              animation: nextAnimation,
-              styles: {
-                ...prev.styles,
-                ...Object.fromEntries(
-                  Object.entries(prev.styles || {}).filter(
-                    ([key]) => key !== "animation",
-                  ),
-                ),
-              },
-              className: nextAnimation
-                ? Array.from(
-                    new Set(
-                      `${prev.className || ""} ${animationClassName}`
-                        .trim()
-                        .split(/\s+/)
-                        .filter(Boolean),
-                    ),
-                  ).join(" ")
-                : String(prev.className || "")
-                    .split(/\s+/)
-                    .filter((token) => token && token !== animationClassName)
-                    .join(" "),
-            }
-          : prev,
-      );
-    },
-    [
+    previewStageRef,
+    setPreviewSelectedElement,
+  });
+  const {
+    applyPreviewDrawCreate,
+    applyPreviewDropCreate,
+    handlePreviewStageDrop,
+  } = usePreviewCreation({
+    ensureDirectoryTreeStable,
+    filePathIndexRef,
+    filesRef,
+    getStablePreviewElementId,
+    loadFileContent,
+    pendingPreviewWritesRef,
+    persistPreviewHtmlContent,
+    postPreviewPatchToFrame,
+    previewFrameRef,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
+    setFiles,
+    setInteractionMode,
+    setIsCodePanelOpen,
+    setIsRightPanelOpen,
+    setIsToolboxDragging,
+    setPreviewMode,
+    setPreviewSelectedComputedStyles,
+    setPreviewSelectedElement,
+    setPreviewSelectedMatchedCssRules,
+    setPreviewSelectedPath,
+    setSelectedId,
+    setSidebarToolMode,
+    textFileCacheRef,
+    toolboxDragTypeRef,
+  });
+  const { applyPreviewAnimationUpdate, resolveInspectorAssetPreviewUrl } =
+    usePreviewInspectorRuntime({
       applyPreviewStyleUpdateAtPath,
       ensureDirectoryTreeStable,
+      filePathIndexRef,
+      filesRef,
+      handleReplacePreviewAsset,
+      interactionMode,
       loadFileContent,
       persistPreviewHtmlContent,
-      previewSelectedElement?.id,
-      previewSelectedPath,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewLocalCssPatchAtPath = useCallback(
-    async (
-      elementPath: number[],
-      styles: Partial<React.CSSProperties>,
-      options?: { syncSelectedElement?: boolean },
-    ) => {
-      if (
-        !selectedPreviewHtml ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return;
-      }
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
-      const liveTarget = getLivePreviewSelectedElement(elementPath);
-      if (
-        !(target instanceof HTMLElement) &&
-        !(liveTarget instanceof HTMLElement)
-      ) {
-        return;
-      }
-      console.log("[NoCodeX CSS] nx-local-style fallback patch", {
-        selectedPreviewHtml,
-        elementPath,
-        styles,
-      });
-
-      const htmlDirVirtual = selectedPreviewHtml.includes("/")
-        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
-        : "";
-      const cssLocalVirtualPath = normalizeProjectRelative(
-        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
-      );
-      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
-        if (doc.head) return doc.head;
-        const head = doc.createElement("head");
-        if (doc.documentElement) {
-          doc.documentElement.insertBefore(head, doc.body || null);
-        }
-        return head;
-      };
-      const ensureCssLinkInHead = (doc: Document, htmlPath: string) => {
-        const hasAssetRef = Array.from(
-          doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]'),
-        ).some((node) => {
-          const resolved = resolveProjectRelativePath(
-            htmlPath,
-            node.getAttribute("href") ?? "",
-          );
-          return (
-            normalizeProjectRelative(resolved || "") ===
-            normalizeProjectRelative(cssLocalVirtualPath)
-          );
-        });
-        if (hasAssetRef) return;
-        const head = ensureHeadElement(doc);
-        const refPath = relativePathBetweenVirtualFiles(
-          htmlPath,
-          cssLocalVirtualPath,
-        );
-        if (!refPath) return;
-        const link = doc.createElement("link");
-        link.setAttribute("rel", "stylesheet");
-        link.setAttribute("href", refPath);
-        head.appendChild(link);
-      };
-      const replaceMarkerBlock = (
-        source: string,
-        markerStart: string,
-        markerEnd: string,
-        blockContent: string,
-      ): string => {
-        const safeSource = source || "";
-        const start = safeSource.indexOf(markerStart);
-        const endStart = start >= 0 ? safeSource.indexOf(markerEnd, start) : -1;
-        const prefix =
-          start >= 0
-            ? safeSource.slice(0, start).trimEnd()
-            : safeSource.trimEnd();
-        const suffix =
-          start >= 0 && endStart >= 0
-            ? safeSource.slice(endStart + markerEnd.length).trimStart()
-            : "";
-        const block = blockContent
-          ? `${markerStart}\n${blockContent}\n${markerEnd}`
-          : "";
-        return [prefix, block, suffix].filter(Boolean).join("\n\n");
-      };
-      const parseRuleBlock = (source: string): Record<string, string> => {
-        const match = source.match(/\{([\s\S]*)\}/);
-        if (!match) return {};
-        return match[1]
-          .split(";")
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-          .reduce<Record<string, string>>((acc, entry) => {
-            const colonIndex = entry.indexOf(":");
-            if (colonIndex <= 0) return acc;
-            const key = entry.slice(0, colonIndex).trim();
-            const value = entry.slice(colonIndex + 1).trim();
-            if (key) acc[key] = value;
-            return acc;
-          }, {});
-      };
-      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
-      const absoluteHtmlDir = absoluteHtmlPath
-        ? getParentPath(absoluteHtmlPath)
-        : null;
-      const absoluteCssPath = absoluteHtmlDir
-        ? normalizePath(joinPath(absoluteHtmlDir, "css/local.css"))
-        : null;
-      if (absoluteCssPath) {
-        const absoluteParent = getParentPath(absoluteCssPath);
-        if (absoluteParent) {
-          await ensureDirectoryTreeStable(absoluteParent);
-        }
-        filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
-      }
-
-      let cssContent =
-        typeof filesRef.current[cssLocalVirtualPath]?.content === "string"
-          ? (filesRef.current[cssLocalVirtualPath].content as string)
-          : "";
-      if (!cssContent && absoluteCssPath) {
-        try {
-          cssContent = await (Neutralino as any).filesystem.readFile(
-            absoluteCssPath,
-          );
-        } catch {
-          cssContent = "";
-        }
-      }
-
-      ensureCssLinkInHead(parsed, selectedPreviewHtml);
-      const classBase =
-        (target instanceof HTMLElement && target.id) ||
-        (liveTarget instanceof HTMLElement && liveTarget.id) ||
-        previewSelectedElement?.id ||
-        elementPath.join("-");
-      const className = `nx-local-style-${String(classBase)
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "-")}`;
-      const markerStart = `/* nocodex-local-style:${className}:start */`;
-      const markerEnd = `/* nocodex-local-style:${className}:end */`;
-      const existingStart = cssContent.indexOf(markerStart);
-      const existingEnd =
-        existingStart >= 0 ? cssContent.indexOf(markerEnd, existingStart) : -1;
-      const existingBlock =
-        existingStart >= 0 && existingEnd >= 0
-          ? cssContent.slice(existingStart + markerStart.length, existingEnd)
-          : "";
-      const mergedRules = parseRuleBlock(existingBlock);
-      for (const [key, rawValue] of Object.entries(styles)) {
-        const cssKey = toCssPropertyName(key);
-        const value = normalizePresentationCssValue(cssKey, rawValue);
-        if (value) {
-          mergedRules[cssKey] = value;
-        } else {
-          delete mergedRules[cssKey];
-        }
-        if (target instanceof HTMLElement) {
-          target.style.removeProperty(cssKey);
-        }
-        if (liveTarget instanceof HTMLElement) {
-          liveTarget.style.removeProperty(cssKey);
-        }
-      }
-      const classTokens = new Set(
-        String(
-          (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
-            (liveTarget instanceof HTMLElement
-              ? liveTarget.getAttribute("class")
-              : "") ||
-            "",
-        )
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(Boolean),
-      );
-      classTokens.add(className);
-      const nextClassName = Array.from(classTokens).join(" ");
-      if (target instanceof HTMLElement) {
-        target.setAttribute("class", nextClassName);
-        if (!target.getAttribute("style")?.trim())
-          target.removeAttribute("style");
-      }
-      if (liveTarget instanceof HTMLElement) {
-        liveTarget.setAttribute("class", nextClassName);
-        if (!liveTarget.getAttribute("style")?.trim()) {
-          liveTarget.removeAttribute("style");
-        }
-      }
-      const cssRuleEntries = Object.entries(mergedRules);
-      const cssRuleBlock =
-        cssRuleEntries.length > 0
-          ? `.${className} {\n  ${cssRuleEntries
-              .map(([key, value]) => `${key}: ${value}`)
-              .join(";\n  ")};\n}`
-          : "";
-      const nextCssContent = replaceMarkerBlock(
-        cssContent,
-        markerStart,
-        markerEnd,
-        cssRuleBlock,
-      );
-      textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
-      const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
-        ? {
-            ...filesRef.current[cssLocalVirtualPath],
-            content: nextCssContent,
-            type: "css",
-          }
-        : {
-            path: cssLocalVirtualPath,
-            name: "local.css",
-            type: "css",
-            content: nextCssContent,
-          };
-      filesRef.current = {
-        ...filesRef.current,
-        [cssLocalVirtualPath]: cssFile,
-      };
-      setFiles((prev) => ({
-        ...prev,
-        [cssLocalVirtualPath]: cssFile,
-      }));
-      if (absoluteCssPath) {
-        await (Neutralino as any).filesystem.writeFile(
-          absoluteCssPath,
-          nextCssContent,
-        );
-        delete pendingPreviewWritesRef.current[cssLocalVirtualPath];
-      } else {
-        pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
-      }
-      if (liveTarget instanceof HTMLElement) {
-        const liveDoc = liveTarget.ownerDocument;
-        const liveHead = ensureHeadElement(liveDoc);
-        let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
-          `style[data-nx-local-style="${className}"]`,
-        );
-        if (!runtimeStyle) {
-          runtimeStyle = liveDoc.createElement("style");
-          runtimeStyle.setAttribute("data-nx-local-style", className);
-          liveHead.appendChild(runtimeStyle);
-        }
-        runtimeStyle.textContent = cssRuleBlock;
-      }
-
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath,
-      });
-
-      const pathMatchesSelection =
-        Array.isArray(previewSelectedPath) &&
-        previewSelectedPath.length === elementPath.length &&
-        previewSelectedPath.every(
-          (segment, idx) => segment === elementPath[idx],
-        );
-      const shouldSyncSelected =
-        options?.syncSelectedElement ?? pathMatchesSelection;
-      if (!shouldSyncSelected) return;
-      if (syncPreviewSelectionSnapshotFromLiveElement(elementPath)) return;
-      setPreviewSelectedElement((prev) =>
-        prev
-          ? {
-              ...prev,
-              className: nextClassName,
-              styles: parseInlineStyleText(target?.getAttribute("style") || ""),
-            }
-          : prev,
-      );
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      previewSelectedElement?.id,
-      previewSelectedPath,
-      selectedPreviewHtml,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const applyPreviewDrawCreate = useCallback(
-    async (
-      parentPath: number[],
-      tag: string,
-      rawStyles: Record<string, string>,
-    ) => {
-      if (!selectedPreviewHtml || !Array.isArray(parentPath)) return;
-      const normalizedParentPath = parentPath
-        .map((segment) => Number(segment))
-        .filter((segment) => Number.isFinite(segment))
-        .map((segment) => Math.max(0, Math.trunc(segment)));
-      if (normalizedParentPath.length !== parentPath.length) return;
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      let effectiveParentPath = normalizedParentPath;
-      let parsedParent =
-        effectiveParentPath.length > 0
-          ? readElementByPath(parsed.body, effectiveParentPath)
-          : parsed.body;
-      while (
-        parsedParent instanceof HTMLElement &&
-        parsedParent !== parsed.body &&
-        VOID_HTML_TAGS.has(String(parsedParent.tagName || "").toLowerCase()) &&
-        effectiveParentPath.length > 0
-      ) {
-        effectiveParentPath = effectiveParentPath.slice(0, -1);
-        parsedParent =
-          effectiveParentPath.length > 0
-            ? readElementByPath(parsed.body, effectiveParentPath)
-            : parsed.body;
-      }
-      if (
-        !(parsedParent instanceof HTMLElement) &&
-        !(parsedParent instanceof HTMLBodyElement)
-      ) {
-        return;
-      }
-
-      const drawTag = normalizePreviewDrawTag(tag);
-      const normalizedStyles = {
-        ...normalizePresentationStylePatch(
-          Object.fromEntries(
-            Object.entries(rawStyles || {}).filter(([key]) => Boolean(key)),
-          ),
-        ),
-        // Ensure drawn elements appear on top of existing content
-        zIndex:
-          (rawStyles?.zIndex ?? rawStyles?.["z-index"]) ? undefined : "100",
-      } as Record<string, string>;
-
-      const applyStyleMap = (
-        el: HTMLElement,
-        styleMap: Record<string, string>,
-      ) => {
-        for (const [key, value] of Object.entries(styleMap)) {
-          const cssKey = toCssPropertyName(key);
-          const nextValue = String(value ?? "");
-          if (!nextValue) {
-            el.style.removeProperty(cssKey);
-          } else {
-            el.style.setProperty(cssKey, nextValue);
-          }
-        }
-      };
-
-      const buildDrawElement = (doc: Document): HTMLElement => {
-        const element = doc.createElement(drawTag);
-        applyStyleMap(element, normalizedStyles);
-        if (drawTag === "img") {
-          element.setAttribute("src", "https://picsum.photos/420/260");
-          element.setAttribute("alt", "Image");
-        } else if (
-          drawTag === "p" ||
-          drawTag === "span" ||
-          drawTag === "button" ||
-          drawTag === "h1" ||
-          drawTag === "h2" ||
-          drawTag === "h3"
-        ) {
-          element.textContent = "New Text";
-        } else if (
-          drawTag === "div" ||
-          drawTag === "section" ||
-          drawTag === "article" ||
-          drawTag === "aside" ||
-          drawTag === "main" ||
-          drawTag === "header" ||
-          drawTag === "footer" ||
-          drawTag === "nav"
-        ) {
-          // No default styles saved to HTML — visual highlight is applied via
-          // a temporary CSS class (__nx-draw-new) in the iframe only.
-        }
-        return element;
-      };
-
-      const parsedNewElement = buildDrawElement(parsed);
-      parsedParent.appendChild(parsedNewElement);
-      const newIndex = Math.max(0, parsedParent.children.length - 1);
-      const newPath = [...effectiveParentPath, newIndex];
-
-      // Send PREVIEW_INJECT_ELEMENT into the iframe via postMessage.
-      // This is the correct architecture — the iframe inserts the element itself,
-      // just like how PREVIEW_APPLY_STYLE works. Direct contentDocument mutation
-      // can fail in sandboxed/mounted-preview contexts and causes index mismatches.
-      postPreviewPatchToFrame({
-        type: "PREVIEW_INJECT_ELEMENT",
-        parentPath: effectiveParentPath,
-        tag: drawTag,
-        styles: normalizedStyles,
-        index: newIndex,
-      });
-
-      // Also update parsedParent positioning in the serialized HTML
-      if (effectiveParentPath.length > 0) {
-        const computedStyleStr = parsedParent.getAttribute("style") || "";
-        if (
-          !computedStyleStr.includes("position") ||
-          computedStyleStr.includes("position: static") ||
-          computedStyleStr.includes("position:static")
-        ) {
-          parsedParent.style.position = "relative";
-        }
-      }
-
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        // Do NOT pass elementPath here — that triggers markPreviewPathDirty which
-        // adds the orange __nx-preview-dirty overlay. A freshly drawn element is
-        // already committed so it should not appear as unsaved.
-      });
-
-      // Set optimistic React state immediately so the right panel opens.
-      // The iframe will send back PREVIEW_SELECT shortly which will fully sync the state.
-      const optimisticInlineStyles = parseInlineStyleText(
-        parsedNewElement.getAttribute("style") || "",
-      );
-      const mergedStyles: React.CSSProperties = {
-        ...optimisticInlineStyles,
-      };
-
-      const isContainerTag = [
-        "div",
-        "section",
-        "article",
-        "aside",
-        "main",
-        "header",
-        "footer",
-        "nav",
-      ].includes(drawTag);
-      const nextElement: VirtualElement = {
-        id: getStablePreviewElementId(newPath),
-        type: drawTag,
-        name: drawTag.toUpperCase(),
-        content:
-          drawTag === "img" ? undefined : isContainerTag ? "" : "New Text",
-        ...(drawTag === "img" ? { src: "https://picsum.photos/420/260" } : {}),
-        styles: mergedStyles,
-        children: [],
-      };
-
-      setPreviewSelectedPath(newPath);
-      setPreviewSelectedElement(nextElement);
-      setPreviewSelectedComputedStyles(null);
-      setSelectedId(null);
-      setIsCodePanelOpen(false);
-      setIsRightPanelOpen(true);
-    },
-    [
-      getStablePreviewElementId,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      postPreviewPatchToFrame,
-      selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewDropCreate = useCallback(
-    async (rawType: string, clientX: number, clientY: number) => {
-      const dropType = String(rawType || "").trim();
-      if (!dropType || !selectedPreviewHtml) return;
-      const isMountedPreviewDrop = Boolean(selectedPreviewSrc);
-
-      const idFor = createPresetIdFactory(dropType);
-      const nextElement =
-        buildPresetElementV2(dropType, idFor) ??
-        buildStandardElement(dropType, idFor("element"));
-
-      const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
-          ? loaded
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!sourceHtml) return;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const parsedNode = materializeVirtualElement(parsed, nextElement);
-      if (!(parsedNode instanceof HTMLElement)) return;
-      const requiresAddToolAssets = ADD_TOOL_COMPONENT_PRESETS.has(dropType);
-      const htmlDirVirtual = selectedPreviewHtml.includes("/")
-        ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
-        : "";
-      const cssLocalVirtualPath = normalizeProjectRelative(
-        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
-      );
-      const jsLocalVirtualPath = normalizeProjectRelative(
-        htmlDirVirtual ? `${htmlDirVirtual}/js/local.js` : "js/local.js",
-      );
-      const ensureHeadElement = (doc: Document): HTMLHeadElement => {
-        if (doc.head) return doc.head;
-        const head = doc.createElement("head");
-        if (doc.documentElement) {
-          doc.documentElement.insertBefore(head, doc.body || null);
-        } else {
-          const html = doc.createElement("html");
-          html.appendChild(head);
-          if (doc.body) {
-            html.appendChild(doc.body);
-          }
-          doc.appendChild(html);
-        }
-        return head;
-      };
-      const ensureAssetLinkInHead = (
-        doc: Document,
-        htmlPath: string,
-        assetVirtualPath: string,
-        tag: "link" | "script",
-      ) => {
-        const hasAssetRef = Array.from(
-          doc.querySelectorAll<HTMLElement>(
-            tag === "link" ? 'link[rel="stylesheet"][href]' : "script[src]",
-          ),
-        ).some((node) => {
-          const refValue =
-            tag === "link"
-              ? (node.getAttribute("href") ?? "")
-              : (node.getAttribute("src") ?? "");
-          const resolved = resolveProjectRelativePath(htmlPath, refValue);
-          return (
-            normalizeProjectRelative(resolved || "") ===
-            normalizeProjectRelative(assetVirtualPath)
-          );
-        });
-        if (hasAssetRef) return;
-        const head = ensureHeadElement(doc);
-        const refPath = relativePathBetweenVirtualFiles(
-          htmlPath,
-          assetVirtualPath,
-        );
-        if (!refPath) return;
-        if (tag === "link") {
-          const link = doc.createElement("link");
-          link.setAttribute("rel", "stylesheet");
-          link.setAttribute("href", refPath);
-          head.appendChild(link);
-        } else {
-          const script = doc.createElement("script");
-          script.setAttribute("src", refPath);
-          head.appendChild(script);
-        }
-      };
-      const mergeMarkerBlock = (
-        source: string,
-        markerStart: string,
-        markerEnd: string,
-        blockContent: string,
-      ): string => {
-        const safeSource = source || "";
-        const block = blockContent
-          ? `${markerStart}\n${blockContent}\n${markerEnd}`
-          : "";
-        if (
-          safeSource.includes(markerStart) &&
-          safeSource.includes(markerEnd)
-        ) {
-          const start = safeSource.indexOf(markerStart);
-          const endStart = safeSource.indexOf(markerEnd, start);
-          const end = endStart >= 0 ? endStart + markerEnd.length : start;
-          const prefix = safeSource.slice(0, start).trimEnd();
-          const suffix = safeSource.slice(end).trimStart();
-          return [prefix, block, suffix].filter(Boolean).join("\n\n");
-        }
-        if (!block) return safeSource;
-        const needsGap = safeSource.length > 0 && !safeSource.endsWith("\n");
-        return `${safeSource}${needsGap ? "\n\n" : ""}${block}\n`;
-      };
-      const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
-      const absoluteHtmlDir = absoluteHtmlPath
-        ? getParentPath(absoluteHtmlPath)
-        : null;
-      const upsertLocalAsset = async (
-        assetVirtualPath: string,
-        relativePath: string,
-        nextContentBuilder: (current: string) => string,
-        defaultContent = "",
-      ): Promise<string> => {
-        const absoluteAssetPath = absoluteHtmlDir
-          ? normalizePath(joinPath(absoluteHtmlDir, relativePath))
-          : null;
-        if (absoluteAssetPath) {
-          const absoluteParent = getParentPath(absoluteAssetPath);
-          if (absoluteParent) {
-            await ensureDirectoryTreeStable(absoluteParent);
-          }
-          filePathIndexRef.current[assetVirtualPath] = absoluteAssetPath;
-        }
-        let existingContent =
-          typeof filesRef.current[assetVirtualPath]?.content === "string"
-            ? (filesRef.current[assetVirtualPath].content as string)
-            : "";
-        if (!existingContent && absoluteAssetPath) {
-          try {
-            existingContent = await (Neutralino as any).filesystem.readFile(
-              absoluteAssetPath,
-            );
-          } catch {
-            existingContent = defaultContent;
-          }
-        }
-        if (!existingContent) existingContent = defaultContent;
-        const nextContent = nextContentBuilder(existingContent);
-        textFileCacheRef.current[assetVirtualPath] = nextContent;
-        const name = assetVirtualPath.includes("/")
-          ? assetVirtualPath.slice(assetVirtualPath.lastIndexOf("/") + 1)
-          : assetVirtualPath;
-        const nextFile: ProjectFile = filesRef.current[assetVirtualPath]
-          ? {
-              ...filesRef.current[assetVirtualPath],
-              content: nextContent,
-              type: inferFileType(name),
-            }
-          : {
-              path: assetVirtualPath,
-              name,
-              type: inferFileType(name),
-              content: nextContent,
-            };
-        filesRef.current = {
-          ...filesRef.current,
-          [assetVirtualPath]: nextFile,
-        };
-        setFiles((prev) => ({
-          ...prev,
-          [assetVirtualPath]: nextFile,
-        }));
-        if (absoluteAssetPath) {
-          await (Neutralino as any).filesystem.writeFile(
-            absoluteAssetPath,
-            nextContent,
-          );
-          delete pendingPreviewWritesRef.current[assetVirtualPath];
-        } else {
-          pendingPreviewWritesRef.current[assetVirtualPath] = nextContent;
-        }
-        return nextContent;
-      };
-
-      ensureAssetLinkInHead(
-        parsed,
-        selectedPreviewHtml,
-        cssLocalVirtualPath,
-        "link",
-      );
-      ensureAssetLinkInHead(
-        parsed,
-        selectedPreviewHtml,
-        jsLocalVirtualPath,
-        "script",
-      );
-
-      if (requiresAddToolAssets) {
-        const removeLegacySharedAssetRefs = (
-          doc: Document,
-          htmlPath: string,
-        ) => {
-          const legacyPaths = new Set([
-            "shared/css/nx-add-tool-components.css",
-            "shared/js/nx-add-tool-components.js",
-            "__nx_add_tool.css",
-            "__nx_add_tool.js",
-          ]);
-          const nodes = Array.from(
-            doc.querySelectorAll<HTMLElement>(
-              'link[rel="stylesheet"][href],script[src]',
-            ),
-          );
-          for (const node of nodes) {
-            const refValue =
-              node.tagName.toLowerCase() === "link"
-                ? (node.getAttribute("href") ?? "")
-                : (node.getAttribute("src") ?? "");
-            const resolved = normalizeProjectRelative(
-              resolveProjectRelativePath(htmlPath, refValue) || "",
-            );
-            if (legacyPaths.has(resolved)) {
-              node.parentElement?.removeChild(node);
-            }
-          }
-          Array.from(
-            doc.querySelectorAll<HTMLElement>(
-              'style[data-nx-add-tool="css"],script[data-nx-add-tool="js"]',
-            ),
-          ).forEach((node) => node.parentElement?.removeChild(node));
-        };
-        removeLegacySharedAssetRefs(parsed, selectedPreviewHtml);
-        const assetDefs = [
-          {
-            path: cssLocalVirtualPath,
-            relativePath: "css/local.css",
-            markerStart: ADD_TOOL_CSS_MARKER_START,
-            markerEnd: ADD_TOOL_CSS_MARKER_END,
-            block: ADD_TOOL_COMPONENTS_CSS_CONTENT,
-          },
-          {
-            path: jsLocalVirtualPath,
-            relativePath: "js/local.js",
-            markerStart: ADD_TOOL_JS_MARKER_START,
-            markerEnd: ADD_TOOL_JS_MARKER_END,
-            block: ADD_TOOL_COMPONENTS_JS_CONTENT,
-          },
-        ] as const;
-        for (const asset of assetDefs) {
-          try {
-            await upsertLocalAsset(
-              asset.path,
-              asset.relativePath,
-              (existingContent) =>
-                mergeMarkerBlock(
-                  existingContent,
-                  asset.markerStart,
-                  asset.markerEnd,
-                  asset.block,
-                ),
-            );
-          } catch (error) {
-            console.warn("Failed writing slide local asset file:", error);
-          }
-        }
-      }
-
-      const pickDropHost = (doc: Document): HTMLElement => {
-        const candidates = [
-          ".maincontainer",
-          ".mainContainer",
-          "#maincontainer",
-          "#mainContainer",
-          "#contentFrame",
-          ".contentFrame",
-          ".mainContent",
-          "#container",
-        ];
-        for (const selector of candidates) {
-          const found = doc.querySelector(selector);
-          if (found instanceof HTMLElement) return found;
-        }
-        return doc.body;
-      };
-      const computePathFromBody = (element: Element | null): number[] => {
-        if (!element) return [];
-        const path: number[] = [];
-        let cursor: Element | null = element;
-        while (cursor && cursor.parentElement) {
-          const parentEl: HTMLElement = cursor.parentElement;
-          const index = Array.from(parentEl.children).indexOf(cursor);
-          if (index < 0) break;
-          path.unshift(index);
-          if (parentEl === element.ownerDocument.body) break;
-          cursor = parentEl;
-        }
-        return path;
-      };
-      const ensurePositionableHost = (host: HTMLElement) => {
-        const computed = host.ownerDocument.defaultView?.getComputedStyle(host);
-        if (!computed) return;
-        if (!computed.position || computed.position === "static") {
-          host.style.setProperty("position", "relative");
-        }
-      };
-
-      const liveDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveWindow = liveDocument?.defaultView ?? null;
-      const frameRect = previewFrameRef.current?.getBoundingClientRect();
-      const parsedDropHost = pickDropHost(parsed);
-      const liveDropHost = liveDocument ? pickDropHost(liveDocument) : null;
-      ensurePositionableHost(parsedDropHost);
-      if (liveDropHost) {
-        ensurePositionableHost(liveDropHost);
-      }
-      const getDocumentOffset = (
-        element: HTMLElement,
-      ): { left: number; top: number } => {
-        let left = 0;
-        let top = 0;
-        let cursor: HTMLElement | null = element;
-        while (cursor) {
-          left += cursor.offsetLeft || 0;
-          top += cursor.offsetTop || 0;
-          cursor = cursor.offsetParent as HTMLElement | null;
-        }
-        return { left, top };
-      };
-
-      let nextLeft = 0;
-      let nextTop = 0;
-      let normalizedDropX: number | null = null;
-      let normalizedDropY: number | null = null;
-      if (frameRect && liveDropHost) {
-        const liveViewportWidth = Math.max(
-          1,
-          previewFrameRef.current?.clientWidth ||
-            liveDocument?.documentElement?.clientWidth ||
-            0,
-        );
-        const liveViewportHeight = Math.max(
-          1,
-          previewFrameRef.current?.clientHeight ||
-            liveDocument?.documentElement?.clientHeight ||
-            0,
-        );
-        const scaleX =
-          liveViewportWidth > 0 ? frameRect.width / liveViewportWidth : 1;
-        const scaleY =
-          liveViewportHeight > 0 ? frameRect.height / liveViewportHeight : 1;
-        normalizedDropX =
-          frameRect.width > 0
-            ? Math.max(
-                0,
-                Math.min(1, (clientX - frameRect.left) / frameRect.width),
-              )
-            : null;
-        normalizedDropY =
-          frameRect.height > 0
-            ? Math.max(
-                0,
-                Math.min(1, (clientY - frameRect.top) / frameRect.height),
-              )
-            : null;
-        const innerClientX = (clientX - frameRect.left) / (scaleX || 1);
-        const innerClientY = (clientY - frameRect.top) / (scaleY || 1);
-        const innerDocX = innerClientX + (liveWindow?.scrollX || 0);
-        const innerDocY = innerClientY + (liveWindow?.scrollY || 0);
-        const hostOffset = getDocumentOffset(liveDropHost);
-        nextLeft = Math.max(0, Math.round(innerDocX - hostOffset.left));
-        nextTop = Math.max(0, Math.round(innerDocY - hostOffset.top));
-      }
-      const hostWidth = Math.max(
-        0,
-        liveDropHost?.scrollWidth ||
-          liveDropHost?.clientWidth ||
-          parsedDropHost.clientWidth ||
-          0,
-      );
-      const hostHeight = Math.max(
-        0,
-        liveDropHost?.scrollHeight ||
-          liveDropHost?.clientHeight ||
-          parsedDropHost.clientHeight ||
-          0,
-      );
-      if (hostWidth > 0) {
-        if (
-          normalizedDropX !== null &&
-          nextLeft === 0 &&
-          normalizedDropX > 0.04
-        ) {
-          nextLeft = Math.round(normalizedDropX * hostWidth);
-        }
-        nextLeft = Math.max(0, Math.min(nextLeft, Math.max(0, hostWidth - 24)));
-      }
-      if (hostHeight > 0) {
-        if (
-          normalizedDropY !== null &&
-          nextTop === 0 &&
-          normalizedDropY > 0.04
-        ) {
-          nextTop = Math.round(normalizedDropY * hostHeight);
-        }
-        nextTop = Math.max(0, Math.min(nextTop, Math.max(0, hostHeight - 24)));
-      }
-      const instanceClassName = `nx-local-drop-${String(
-        nextElement.id || `drop-${Date.now()}`,
-      )
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "-")}`;
-      const nextLeftValue = normalizePresentationCssValue("left", `${nextLeft}px`);
-      const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
-      const styleRules: string[] = [
-        "position: absolute",
-        `left: ${nextLeftValue}`,
-        `top: ${nextTopValue}`,
-      ];
-      for (const [key, value] of Object.entries(nextElement.styles || {})) {
-        if (value === undefined || value === null || value === "") continue;
-        styleRules.push(`${toCssPropertyName(key)}: ${String(value)}`);
-      }
-      if (requiresAddToolAssets) {
-        styleRules.push("max-width: 100%");
-        styleRules.push("box-sizing: border-box");
-      }
-      const dropMarkerStart = `/* nocodex-local-drop:${instanceClassName}:start */`;
-      const dropMarkerEnd = `/* nocodex-local-drop:${instanceClassName}:end */`;
-      const dropCssBlock = `.${instanceClassName} {\n  ${styleRules.join(";\n  ")};\n}`;
-      try {
-        await upsertLocalAsset(
-          cssLocalVirtualPath,
-          "css/local.css",
-          (existingContent) =>
-            mergeMarkerBlock(
-              existingContent,
-              dropMarkerStart,
-              dropMarkerEnd,
-              dropCssBlock,
-            ),
-        );
-        await upsertLocalAsset(
-          jsLocalVirtualPath,
-          "js/local.js",
-          (existingContent) =>
-            existingContent || "// local page interactions\n",
-          "// local page interactions\n",
-        );
-      } catch (error) {
-        console.warn("Failed wiring local drop assets:", error);
-      }
-      const currentClassTokens = new Set(
-        String(parsedNode.getAttribute("class") || "")
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(Boolean),
-      );
-      currentClassTokens.add(instanceClassName);
-      parsedNode.setAttribute(
-        "class",
-        Array.from(currentClassTokens).join(" "),
-      );
-      parsedNode.removeAttribute("style");
-      parsedDropHost.appendChild(parsedNode);
-      const newPath = computePathFromBody(parsedNode);
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-
-      let appliedLive = false;
-      if (liveDocument?.body) {
-        const liveHead = liveDocument.head || liveDocument.documentElement;
-        if (liveHead) {
-          let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
-            `style[data-nx-local-drop="${instanceClassName}"]`,
-          );
-          if (!runtimeStyle) {
-            runtimeStyle = liveDocument.createElement("style");
-            runtimeStyle.setAttribute("data-nx-local-drop", instanceClassName);
-            liveHead.appendChild(runtimeStyle);
-          }
-          runtimeStyle.textContent = dropCssBlock;
-        }
-        const liveNode = materializeVirtualElement(liveDocument, nextElement);
-        if (liveNode instanceof HTMLElement) {
-          const liveDropHost = pickDropHost(liveDocument);
-          ensurePositionableHost(liveDropHost);
-          liveNode.classList.add(instanceClassName);
-          liveNode.style.setProperty("position", "absolute");
-          liveNode.style.setProperty("left", nextLeftValue);
-          liveNode.style.setProperty("top", nextTopValue);
-          if (requiresAddToolAssets) {
-            liveNode.style.setProperty("max-width", "100%");
-            liveNode.style.setProperty("box-sizing", "border-box");
-          }
-          liveDropHost.appendChild(liveNode);
-          appliedLive = true;
-        }
-      }
-
-      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc:
-          needsAssetReload || (!appliedLive && !isMountedPreviewDrop),
-        saveNow: isMountedPreviewDrop,
-        skipAutoSave: !isMountedPreviewDrop,
-        elementPath: newPath,
-      });
-      if (isMountedPreviewDrop && parsed.body && !needsAssetReload) {
-        postPreviewPatchToFrame({
-          type: "PREVIEW_APPLY_HTML",
-          html: parsed.body.innerHTML,
-        });
-      }
-
-      setPreviewSelectedPath(newPath);
-      setPreviewSelectedElement({
-        ...nextElement,
-        className: instanceClassName,
-        styles: {
-          ...nextElement.styles,
-        },
-      });
-      setPreviewSelectedComputedStyles(null);
-      setPreviewSelectedMatchedCssRules([]);
-      setSelectedId(null);
-      setIsCodePanelOpen(false);
-      setIsRightPanelOpen(true);
-      setSidebarToolMode("edit");
-      setPreviewMode("edit");
-      setInteractionMode("preview");
-    },
-    [
-      loadFileContent,
-      postPreviewPatchToFrame,
-      persistPreviewHtmlContent,
-      selectedPreviewHtml,
-      selectedPreviewSrc,
-    ],
-  );
-  useEffect(() => {
-    applyPreviewDropCreateRef.current = applyPreviewDropCreate;
-  }, [applyPreviewDropCreate]);
-  const handlePreviewStageDrop = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      if (!selectedPreviewHtml) return;
-      const payload = (
-        getToolboxDragPayload(event.dataTransfer).trim() ||
-        toolboxDragTypeRef.current
-      ).trim();
-      if (!payload) return;
-      event.preventDefault();
-      setIsToolboxDragging(false);
-      toolboxDragTypeRef.current = "";
-      void applyPreviewDropCreate(payload, event.clientX, event.clientY);
-    },
-    [applyPreviewDropCreate, selectedPreviewHtml],
-  );
-  const handleImmediatePreviewStyle = useCallback(
-    (styles: Partial<React.CSSProperties>) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveTarget = frameDocument?.body
-        ? readElementByPath(frameDocument.body, previewSelectedPath)
-        : null;
-      const previewStylePatch: Record<string, string> = {};
-
-      Object.entries(styles).forEach(([key, rawValue]) => {
-        const cssKey = toCssPropertyName(key);
-        const value = normalizePresentationCssValue(cssKey, rawValue);
-
-        previewStylePatch[key] = value;
-        if (!(liveTarget instanceof HTMLElement)) return;
-        if (!value) {
-          liveTarget.style.removeProperty(cssKey);
-          return;
-        }
-        liveTarget.style.setProperty(
-          cssKey,
-          value,
-          cssKey === "font-family" ? "important" : "",
-        );
-      });
-
-      if (
-        liveTarget instanceof HTMLElement &&
-        !liveTarget.getAttribute("style")?.trim()
-      ) {
-        liveTarget.removeAttribute("style");
-      }
-
-      postPreviewPatchToFrame({
-        type: "PREVIEW_APPLY_STYLE",
-        path: previewSelectedPath,
-        styles: previewStylePatch,
-      });
-      syncPreviewSelectionSnapshotFromLiveElement(previewSelectedPath);
-    },
-    [
-      postPreviewPatchToFrame,
-      previewSelectedPath,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const resolvePreviewMatchedRuleSourcePath = useCallback((source: string) => {
-    if (selectedPreviewHtml) {
-      const selectedHtmlSource =
-        typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-          ? (filesRef.current[selectedPreviewHtml]?.content as string)
-          : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
-            ? textFileCacheRef.current[selectedPreviewHtml]
-            : "";
-      if (selectedHtmlSource) {
-        try {
-          const parsed = new DOMParser().parseFromString(
-            selectedHtmlSource,
-            "text/html",
-          );
-          const linkedCssCandidates = Array.from(
-            parsed.querySelectorAll<HTMLLinkElement>(
-              'link[rel="stylesheet"][href]',
-            ),
-          )
-            .map((node) =>
-              resolveProjectRelativePath(
-                selectedPreviewHtml,
-                node.getAttribute("href") || "",
-              ),
-            )
-            .filter((candidate): candidate is string => Boolean(candidate))
-            .filter((candidate) => filesRef.current[candidate]?.type === "css")
-            .filter((candidate) => cssRuleSourcesMatch(candidate, source));
-          if (linkedCssCandidates.length === 1) {
-            return linkedCssCandidates[0];
-          }
-        } catch {
-          // Ignore malformed HTML and continue to broader lookup.
-        }
-      }
-    }
-
-    const normalizedSource = normalizeProjectRelative(String(source || ""));
-    const exactMatch =
-      findFilePathCaseInsensitive(filesRef.current, normalizedSource) ||
-      (filesRef.current[normalizedSource]?.type === "css"
-        ? normalizedSource
-        : null);
-    if (exactMatch && filesRef.current[exactMatch]?.type === "css") {
-      return exactMatch;
-    }
-
-    const normalizedSuffix = normalizedSource.toLowerCase();
-    const basename = getCssSourceBasename(source).toLowerCase();
-    const candidates = Object.keys(filesRef.current).filter((path) => {
-      if (filesRef.current[path]?.type !== "css") return false;
-      const normalizedPath = normalizeProjectRelative(path).toLowerCase();
-      if (normalizedSuffix && normalizedPath.endsWith(normalizedSuffix)) {
-        return true;
-      }
-      return getCssSourceBasename(path).toLowerCase() === basename;
-    });
-
-    return candidates.length === 1 ? candidates[0] : null;
-  }, [selectedPreviewHtml]);
-  const resolveInspectorAssetPreviewUrl = useCallback(
-    (raw: string, source?: string) => {
-      const cleaned =
-        extractAssetUrlFromCssValue(raw) || String(raw || "").trim();
-      if (!cleaned) return "";
-      if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
-
-      const basePath =
-        source && source.length > 0
-          ? resolvePreviewMatchedRuleSourcePath(source) || selectedPreviewHtml
-          : selectedPreviewHtml;
-      const resolvedVirtual = basePath
-        ? resolveProjectRelativePath(basePath, cleaned) || cleaned
-        : cleaned;
-      const normalizedResolved = normalizeProjectRelative(resolvedVirtual);
-      const absolutePath =
-        filePathIndexRef.current[resolvedVirtual] ||
-        filePathIndexRef.current[normalizedResolved] ||
-        (projectPath
-          ? normalizePath(joinPath(projectPath, normalizedResolved))
-          : null);
-      if (!absolutePath) return cleaned;
-
-      const relativePath = previewMountBasePath
-        ? toMountRelativePath(previewMountBasePath, absolutePath)
-        : null;
-      if (!relativePath) return toFileUrl(absolutePath);
-
-      const nlPort = String((window as any).NL_PORT || "").trim();
-      const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
-      const mountPath = encodeURI(`${PREVIEW_MOUNT_PATH}/${relativePath}`);
-      return previewServerOrigin
-        ? `${previewServerOrigin}${mountPath}`
-        : mountPath;
-    },
-    [
       previewMountBasePath,
+      previewRefreshNonce,
+      previewSelectedElement,
+      previewSelectedMatchedCssRules,
+      previewSelectedPath,
+      previewSelectionMode,
       projectPath,
       resolvePreviewMatchedRuleSourcePath,
       selectedPreviewHtml,
-    ],
-  );
-  const applyPreviewMatchedRuleToLiveStylesheet = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-      elementPath?: number[],
-    ) => {
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      if (!frameDocument) return false;
-      const liveElement =
-        Array.isArray(elementPath) && elementPath.length > 0
-          ? getLivePreviewSelectedElement(elementPath)
-          : null;
-
-      let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
-      const normalizedRuleSelector = normalizeSelectorSignature(rule.selector);
-      const resolvedRuleSource = resolvePreviewMatchedRuleSourcePath(rule.source);
-      const originalCssProperty = rule.originalProperty
-        ? toCssPropertyName(rule.originalProperty)
-        : "";
-      const nextCssKeys = new Set(
-        Object.keys(styles).map((key) =>
-          toCssPropertyName(key).toLowerCase(),
-        ),
-      );
-
-      const applyToRule = (styleRule: CSSStyleRule) => {
-        if (
-          originalCssProperty &&
-          !nextCssKeys.has(originalCssProperty.toLowerCase())
-        ) {
-          styleRule.style.removeProperty(originalCssProperty);
-        }
-        Object.entries(styles).forEach(([key, rawValue]) => {
-          const cssKey = toCssPropertyName(key);
-          const value = normalizePresentationCssValue(cssKey, rawValue);
-          if (!value) {
-            styleRule.style.removeProperty(cssKey);
-            return;
-          }
-          const priority = styleRule.style.getPropertyPriority(cssKey);
-          styleRule.style.setProperty(cssKey, value, priority || "");
-        });
-      };
-
-      if (liveElement instanceof Element) {
-        let remainingLiveOccurrence = Math.max(0, rule.occurrenceIndex || 0);
-        const liveMatchedRule = collectLiveMatchedCssRuleRefsFromElement(
-          liveElement,
-        ).find((candidate) => {
-          if (
-            normalizeSelectorSignature(candidate.selector) !==
-            normalizedRuleSelector
-          ) {
-            return false;
-          }
-          const matchesSource =
-            cssRuleSourcesMatch(candidate.source, rule.source) ||
-            cssRuleSourcesMatch(candidate.source, resolvedRuleSource || "");
-          if (!matchesSource) return false;
-          if (remainingLiveOccurrence > 0) {
-            remainingLiveOccurrence -= 1;
-            return false;
-          }
-          return true;
-        });
-        if (liveMatchedRule) {
-          console.log("[NoCodeX CSS] live-rule-ref patch", {
-            selector: rule.selector,
-            source: rule.source,
-            resolvedSource: resolvedRuleSource,
-            occurrence: rule.occurrenceIndex || 0,
-            styles,
-          });
-          applyToRule(liveMatchedRule.styleRule);
-          syncPreviewSelectionSnapshotFromLiveElement(elementPath || []);
-          return true;
-        }
-      }
-
-      const visitRules = (rules: CSSRuleList | undefined): boolean => {
-        if (!rules) return false;
-        for (const cssRule of Array.from(rules)) {
-          if (cssRule instanceof CSSStyleRule) {
-            if (
-              normalizeSelectorSignature(String(cssRule.selectorText || "")) !==
-              normalizedRuleSelector
-            ) {
-              continue;
-            }
-            if (remainingOccurrence > 0) {
-              remainingOccurrence -= 1;
-              continue;
-            }
-            applyToRule(cssRule);
-            return true;
-          }
-          if (
-            cssRule instanceof CSSMediaRule ||
-            cssRule instanceof CSSSupportsRule ||
-            cssRule instanceof CSSLayerBlockRule
-          ) {
-            if (visitRules(cssRule.cssRules)) return true;
-          }
-        }
-        return false;
-      };
-
-      const selectorOnlyMatches: CSSStyleRule[] = [];
-      const collectSelectorMatches = (rules: CSSRuleList | undefined) => {
-        if (!rules) return;
-        for (const cssRule of Array.from(rules)) {
-          if (cssRule instanceof CSSStyleRule) {
-            const candidateSelector = normalizeSelectorSignature(
-              String(cssRule.selectorText || ""),
-            );
-            if (candidateSelector !== normalizedRuleSelector) {
-              continue;
-            }
-            if (liveElement instanceof Element) {
-              try {
-                if (!liveElement.matches(String(cssRule.selectorText || "").trim())) {
-                  continue;
-                }
-              } catch {
-                continue;
-              }
-            }
-            selectorOnlyMatches.push(cssRule);
-            continue;
-          }
-          if (
-            cssRule instanceof CSSMediaRule ||
-            cssRule instanceof CSSSupportsRule ||
-            cssRule instanceof CSSLayerBlockRule
-          ) {
-            collectSelectorMatches(cssRule.cssRules);
-          }
-        }
-      };
-
-      for (const sheet of Array.from(frameDocument.styleSheets)) {
-        try {
-          const styleSheet = sheet as CSSStyleSheet;
-          const styleSheetCandidates = new Set<string>();
-          const styleSheetSource = getStyleSheetSourceLabel(styleSheet);
-          if (styleSheetSource) {
-            styleSheetCandidates.add(styleSheetSource);
-            styleSheetCandidates.add(normalizeProjectRelative(styleSheetSource));
-          }
-          const styleSheetHref = String(styleSheet.href || "");
-          if (styleSheetHref) {
-            styleSheetCandidates.add(styleSheetHref);
-            styleSheetCandidates.add(normalizeProjectRelative(styleSheetHref));
-            try {
-              const hrefUrl = new URL(styleSheetHref, window.location.href);
-              const mountRelative = extractMountRelativePath(hrefUrl.pathname);
-              if (mountRelative) {
-                styleSheetCandidates.add(mountRelative);
-                const virtualPath =
-                  resolveVirtualPathFromMountRelative(mountRelative);
-                if (virtualPath) {
-                  styleSheetCandidates.add(virtualPath);
-                  styleSheetCandidates.add(normalizeProjectRelative(virtualPath));
-                }
-              }
-            } catch {
-              // Ignore malformed stylesheet URLs.
-            }
-          }
-          const matchesSource = Array.from(styleSheetCandidates).some(
-            (candidate) =>
-              cssRuleSourcesMatch(candidate, rule.source) ||
-              cssRuleSourcesMatch(candidate, resolvedRuleSource || ""),
-          );
-          if (!matchesSource) {
-            collectSelectorMatches(styleSheet.cssRules);
-            continue;
-          }
-          if (visitRules(styleSheet.cssRules)) {
-            console.log("[NoCodeX CSS] stylesheet-rules patch", {
-              selector: rule.selector,
-              source: rule.source,
-              resolvedSource: resolvedRuleSource,
-              styleSheetSource,
-              occurrence: rule.occurrenceIndex || 0,
-              styles,
-            });
-            if (elementPath && elementPath.length > 0) {
-              syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-            }
-            return true;
-          }
-          collectSelectorMatches(styleSheet.cssRules);
-        } catch {
-          // Ignore inaccessible stylesheets.
-        }
-      }
-
-      if (selectorOnlyMatches.length > 0) {
-        const fallbackRule =
-          selectorOnlyMatches[
-            Math.min(remainingOccurrence, selectorOnlyMatches.length - 1)
-          ];
-        if (fallbackRule) {
-          console.log("[NoCodeX CSS] selector-only fallback patch", {
-            selector: rule.selector,
-            source: rule.source,
-            resolvedSource: resolvedRuleSource,
-            occurrence: rule.occurrenceIndex || 0,
-            styles,
-          });
-          applyToRule(fallbackRule);
-          if (elementPath && elementPath.length > 0) {
-            syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-          }
-          return true;
-        }
-      }
-
-      return false;
-    },
-    [
-      getLivePreviewSelectedElement,
-      extractMountRelativePath,
-      resolveVirtualPathFromMountRelative,
-      resolvePreviewMatchedRuleSourcePath,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const applyPreviewMatchedRuleOptimisticState = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-      elementPath?: number[],
-    ) => {
-      const targetPath =
-        Array.isArray(elementPath) && elementPath.length > 0
-          ? elementPath
-          : previewSelectedPath;
-      const liveElement =
-        Array.isArray(targetPath) && targetPath.length > 0
-          ? getLivePreviewSelectedElement(targetPath)
-          : null;
-
-      setPreviewSelectedMatchedCssRules((current) => {
-        let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
-        let didPatchRule = false;
-        const nextRules = current.map((currentRule) => {
-          if (
-            !cssRuleSourcesMatch(currentRule.source, rule.source) ||
-            normalizeSelectorSignature(currentRule.selector) !==
-              normalizeSelectorSignature(rule.selector)
-          ) {
-            return currentRule;
-          }
-          if (remainingOccurrence > 0) {
-            remainingOccurrence -= 1;
-            return currentRule;
-          }
-          didPatchRule = true;
-          return {
-            ...currentRule,
-            declarations: applyPatchToDeclarationEntries(
-              currentRule.declarations,
-              rule,
-              styles,
-            ),
-          };
-        });
-
-        if (!didPatchRule) return current;
-        if (!(liveElement instanceof Element)) {
-          return nextRules;
-        }
-        return annotateMatchedCssRuleActivity(liveElement, nextRules);
-      });
-    },
-    [getLivePreviewSelectedElement, previewSelectedPath],
-  );
-  const updatePreviewLiveStylesheetContent = useCallback(
-    (
-      sourcePath: string,
-      cssContent: string,
-      elementPath?: number[],
-    ) => {
-      const frameDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      if (!frameDocument || !sourcePath) return false;
-
-      const normalizedSourcePath = normalizeProjectRelative(sourcePath);
-      const nextCssText = rewriteInlineAssetRefs(
-        cssContent,
-        normalizedSourcePath,
-        filesRef.current,
-      );
-      let didUpdate = false;
-      const styleNodes = Array.from(
-        frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
-      );
-      styleNodes.forEach((styleNode) => {
-        const nodeSource = normalizeProjectRelative(
-          styleNode.getAttribute("data-source") || "",
-        );
-        if (!cssRuleSourcesMatch(nodeSource, normalizedSourcePath)) return;
-        styleNode.textContent = nextCssText;
-        console.log("[NoCodeX CSS] data-source style override", {
-          sourcePath: normalizedSourcePath,
-          nodeSource,
-        });
-        didUpdate = true;
-      });
-
-      if (!didUpdate) {
-        const stylesheetLinks = Array.from(
-          frameDocument.querySelectorAll<HTMLLinkElement>(
-            'link[rel="stylesheet"][href]',
-          ),
-        );
-        stylesheetLinks.forEach((linkNode) => {
-          const hrefValue = String(linkNode.getAttribute("href") || "").trim();
-          if (!hrefValue) return;
-          const resolvedHref =
-            selectedPreviewHtmlRef.current &&
-            !/^(https?:|data:|blob:)/i.test(hrefValue)
-              ? resolveProjectRelativePath(
-                  selectedPreviewHtmlRef.current,
-                  hrefValue,
-                ) || hrefValue
-              : hrefValue;
-          const normalizedHref = normalizeProjectRelative(resolvedHref);
-          if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath)) return;
-
-          const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
-          let overrideNode = frameDocument.querySelector<HTMLStyleElement>(
-            overrideSelector,
-          );
-          if (!overrideNode) {
-            overrideNode = frameDocument.createElement("style");
-            overrideNode.setAttribute("data-nx-live-source", normalizedSourcePath);
-            linkNode.insertAdjacentElement("afterend", overrideNode);
-          }
-          overrideNode.textContent = nextCssText;
-          console.log("[NoCodeX CSS] link stylesheet override", {
-            sourcePath: normalizedSourcePath,
-            hrefValue,
-            resolvedHref: normalizedHref,
-          });
-          didUpdate = true;
-        });
-      }
-
-      if (didUpdate && Array.isArray(elementPath) && elementPath.length > 0) {
-        window.setTimeout(() => {
-          syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-        }, 0);
-      }
-      return didUpdate;
-    },
-    [syncPreviewSelectionSnapshotFromLiveElement],
-  );
-  const buildPreviewMatchedRulePatchedSource = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      const sourcePath = resolvePreviewMatchedRuleSourcePath(rule.source);
-      if (!sourcePath) return null;
-      const sourceText =
-        typeof textFileCacheRef.current[sourcePath] === "string"
-          ? textFileCacheRef.current[sourcePath]
-          : typeof filesRef.current[sourcePath]?.content === "string"
-            ? (filesRef.current[sourcePath]?.content as string)
-            : "";
-      if (!sourceText) return null;
-
-      const ruleRange = findCssRuleRange(
-        sourceText,
-        rule.selector,
-        Math.max(0, rule.occurrenceIndex || 0),
-      );
-      if (!ruleRange) return null;
-
-      const declarationHost = document.createElement("div");
-      declarationHost.style.cssText = ruleRange.body;
-      const existingDeclarations: PreviewMatchedCssDeclaration[] = [];
-      Array.from(declarationHost.style).forEach((property) => {
-        const value = declarationHost.style.getPropertyValue(property);
-        if (!property || !value) return;
-        existingDeclarations.push({
-          property,
-          value,
-          important:
-            declarationHost.style.getPropertyPriority(property) === "important",
-        });
-      });
-
-      const nextDeclarations = applyPatchToDeclarationEntries(
-        existingDeclarations,
-        rule,
-        styles,
-      );
-      const nextRuleBlock =
-        nextDeclarations.length > 0
-          ? `${ruleRange.indent}${ruleRange.selectorText} {\n${nextDeclarations
-              .map(
-                (entry) =>
-                  `${ruleRange.indent}  ${entry.property}: ${entry.value}${entry.important ? " !important" : ""};`,
-              )
-              .join("\n")}\n${ruleRange.indent}}`
-          : `${ruleRange.indent}${ruleRange.selectorText} {\n${ruleRange.indent}}`;
-      const nextSourceText =
-        sourceText.slice(0, ruleRange.start) +
-        nextRuleBlock +
-        sourceText.slice(ruleRange.end);
-      return { sourcePath, nextSourceText };
-    },
-    [resolvePreviewMatchedRuleSourcePath],
-  );
-  const persistPreviewMatchedRuleToSourceFile = useCallback(
-    async (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      const patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
-      if (!patchedSource) return false;
-      const { sourcePath, nextSourceText } = patchedSource;
-      console.log("[NoCodeX CSS] persisted matched rule to source", {
-        selector: rule.selector,
-        source: rule.source,
-        sourcePath,
-        occurrence: rule.occurrenceIndex || 0,
-        styles,
-      });
-
-      textFileCacheRef.current[sourcePath] = nextSourceText;
-      const existingFile = filesRef.current[sourcePath];
-      const nextFile: ProjectFile = existingFile
-        ? {
-            ...existingFile,
-            content: nextSourceText,
-            type: "css",
-          }
-        : {
-            path: sourcePath,
-            name: getCssSourceBasename(sourcePath) || "styles.css",
-            type: "css",
-            content: nextSourceText,
-          };
-      filesRef.current = {
-        ...filesRef.current,
-        [sourcePath]: nextFile,
-      };
-      setFiles((prev) => ({
-        ...prev,
-        [sourcePath]: nextFile,
-      }));
-      pendingPreviewWritesRef.current[sourcePath] = nextSourceText;
-      if (!dirtyFilesRef.current.includes(sourcePath)) {
-        dirtyFilesRef.current = [...dirtyFilesRef.current, sourcePath];
-      }
-      setDirtyFiles((prev) =>
-        prev.includes(sourcePath) ? prev : [...prev, sourcePath],
-      );
-      invalidatePreviewDocsForDependency(sourcePath);
-      schedulePreviewAutoSave();
-      return true;
-    },
-    [
-      buildPreviewMatchedRulePatchedSource,
-      invalidatePreviewDocsForDependency,
-      schedulePreviewAutoSave,
-    ],
-  );
-  const removePreviewLocalStyleClassesAtPath = useCallback(
-    async (elementPath: number[]) => {
-      if (
-        !selectedPreviewHtml ||
-        !Array.isArray(elementPath) ||
-        elementPath.length === 0
-      ) {
-        return false;
-      }
-
-      const loadedHtml = await loadFileContent(selectedPreviewHtml, {
-        persistToState: false,
-      });
-      const sourceHtml =
-        typeof loadedHtml === "string" && loadedHtml.length > 0
-          ? loadedHtml
-          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
-            ? (filesRef.current[selectedPreviewHtml]?.content as string)
-            : typeof textFileCacheRef.current[selectedPreviewHtml] === "string"
-              ? textFileCacheRef.current[selectedPreviewHtml]
-              : "";
-      if (!sourceHtml) return false;
-
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(sourceHtml, "text/html");
-      const target = readElementByPath(parsed.body, elementPath);
-      const liveTarget = getLivePreviewSelectedElement(elementPath);
-      const classSource =
-        (target instanceof HTMLElement ? target.getAttribute("class") : "") ||
-        (liveTarget instanceof HTMLElement
-          ? liveTarget.getAttribute("class")
-          : "") ||
-        "";
-      const removableTokens = String(classSource)
-        .split(/\s+/)
-        .map((token) => token.trim())
-        .filter((token) => token.startsWith("nx-local-style-"));
-      if (removableTokens.length === 0) return false;
-
-      const pruneTokens = (value: string | null) => {
-        const nextTokens = String(value || "")
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(
-            (token) => token && !token.startsWith("nx-local-style-"),
-          );
-        return nextTokens.join(" ");
-      };
-
-      if (target instanceof HTMLElement) {
-        const nextClassName = pruneTokens(target.getAttribute("class"));
-        if (nextClassName) {
-          target.setAttribute("class", nextClassName);
-        } else {
-          target.removeAttribute("class");
-        }
-      }
-
-      if (liveTarget instanceof HTMLElement) {
-        const nextClassName = pruneTokens(liveTarget.getAttribute("class"));
-        if (nextClassName) {
-          liveTarget.setAttribute("class", nextClassName);
-        } else {
-          liveTarget.removeAttribute("class");
-        }
-        const liveHead =
-          liveTarget.ownerDocument.head ||
-          liveTarget.ownerDocument.documentElement;
-        removableTokens.forEach((token) => {
-          liveHead
-            ?.querySelector(`style[data-nx-local-style="${token}"]`)
-            ?.remove();
-        });
-      }
-
-      const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: false,
-        elementPath,
-      });
-      syncPreviewSelectionSnapshotFromLiveElement(elementPath);
-      return true;
-    },
-    [
-      getLivePreviewSelectedElement,
-      loadFileContent,
-      persistPreviewHtmlContent,
-      selectedPreviewHtml,
-      syncPreviewSelectionSnapshotFromLiveElement,
-    ],
-  );
-  const queuePreviewLocalCssPatch = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      if (
-        !previewSelectedPath ||
-        !Array.isArray(previewSelectedPath) ||
-        previewSelectedPath.length === 0
-      ) {
-        return;
-      }
-
-      const nextPath = [...previewSelectedPath];
-      applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
-      console.log("[NoCodeX CSS] queue matched rule patch", {
-        selector: rule.selector,
-        source: rule.source,
-        occurrence: rule.occurrenceIndex || 0,
-        isActive: rule.isActive,
-        path: nextPath,
-        styles,
-      });
-      const shouldLivePreview = rule.isActive !== false;
-      const appliedLiveRule = shouldLivePreview
-        ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
-        : false;
-      const patchedSource =
-        shouldLivePreview && !appliedLiveRule
-          ? buildPreviewMatchedRulePatchedSource(rule, styles)
-          : null;
-      const updatedLiveStylesheet =
-        shouldLivePreview && !appliedLiveRule && patchedSource
-          ? updatePreviewLiveStylesheetContent(
-              patchedSource.sourcePath,
-              patchedSource.nextSourceText,
-              nextPath,
-            )
-          : false;
-      if (shouldLivePreview && !appliedLiveRule && !updatedLiveStylesheet) {
-        console.log("[NoCodeX CSS] inline selected-element fallback", {
-          selector: rule.selector,
-          source: rule.source,
-          occurrence: rule.occurrenceIndex || 0,
-          path: nextPath,
-          styles,
-        });
-        handleImmediatePreviewStyle(styles);
-      }
-      const currentPending = previewLocalCssDraftPendingRef.current;
-      const sameTarget =
-        currentPending &&
-        currentPending.rule.selector === rule.selector &&
-        currentPending.rule.source === rule.source &&
-        (currentPending.rule.occurrenceIndex || 0) ===
-          (rule.occurrenceIndex || 0) &&
-        currentPending.elementPath.length === nextPath.length &&
-        currentPending.elementPath.every(
-          (segment, index) => segment === nextPath[index],
-        );
-
-      if (
-        currentPending &&
-        !sameTarget &&
-        currentPending.elementPath.length > 0
-      ) {
-        void (async () => {
-          const persisted = await persistPreviewMatchedRuleToSourceFile(
-            currentPending.rule,
-            currentPending.styles,
-          );
-          if (persisted) {
-            console.log("[NoCodeX CSS] flushed previous pending rule to source", {
-              selector: currentPending.rule.selector,
-              source: currentPending.rule.source,
-              occurrence: currentPending.rule.occurrenceIndex || 0,
-            });
-            await removePreviewLocalStyleClassesAtPath(
-              currentPending.elementPath,
-            );
-            return;
-          }
-          console.log("[NoCodeX CSS] previous pending rule fell back to nx-local-style", {
-            selector: currentPending.rule.selector,
-            source: currentPending.rule.source,
-            occurrence: currentPending.rule.occurrenceIndex || 0,
-          });
-          await applyPreviewLocalCssPatchAtPath(
-            currentPending.elementPath,
-            currentPending.styles,
-            {
-              syncSelectedElement: false,
-            },
-          );
-        })();
-      }
-
-      previewLocalCssDraftPendingRef.current = {
-        elementPath: nextPath,
-        rule,
-        styles: {
-          ...(sameTarget ? currentPending?.styles || {} : {}),
-          ...styles,
-        },
-      };
-
-      if (previewLocalCssDraftTimerRef.current !== null) {
-        window.clearTimeout(previewLocalCssDraftTimerRef.current);
-      }
-      previewLocalCssDraftTimerRef.current = window.setTimeout(() => {
-        previewLocalCssDraftTimerRef.current = null;
-        const pending = previewLocalCssDraftPendingRef.current;
-        previewLocalCssDraftPendingRef.current = null;
-        if (!pending || pending.elementPath.length === 0) return;
-        void (async () => {
-          const persisted = await persistPreviewMatchedRuleToSourceFile(
-            pending.rule,
-            pending.styles,
-          );
-          if (persisted) {
-            console.log("[NoCodeX CSS] timer flush persisted rule", {
-              selector: pending.rule.selector,
-              source: pending.rule.source,
-              occurrence: pending.rule.occurrenceIndex || 0,
-            });
-            await removePreviewLocalStyleClassesAtPath(pending.elementPath);
-            syncPreviewSelectionSnapshotFromLiveElement(pending.elementPath);
-            return;
-          }
-          console.log("[NoCodeX CSS] timer flush fell back to nx-local-style", {
-            selector: pending.rule.selector,
-            source: pending.rule.source,
-            occurrence: pending.rule.occurrenceIndex || 0,
-          });
-          await applyPreviewLocalCssPatchAtPath(
-            pending.elementPath,
-            pending.styles,
-            {
-              syncSelectedElement: true,
-            },
-          );
-        })();
-      }, 120);
-    },
-    [
-      applyPreviewLocalCssPatchAtPath,
-      applyPreviewMatchedRuleOptimisticState,
-      buildPreviewMatchedRulePatchedSource,
-      applyPreviewMatchedRuleToLiveStylesheet,
-      handleImmediatePreviewStyle,
-      persistPreviewMatchedRuleToSourceFile,
-      previewSelectedPath,
-      removePreviewLocalStyleClassesAtPath,
-      syncPreviewSelectionSnapshotFromLiveElement,
-      updatePreviewLiveStylesheetContent,
-    ],
-  );
+      setFiles,
+      setPreviewSelectedComputedStyles,
+      setPreviewSelectedElement,
+      setPreviewSelectedMatchedCssRules,
+    });
+  useEffect(() => {
+    applyPreviewDropCreateRef.current = applyPreviewDropCreate;
+  }, [applyPreviewDropCreate]);
   const handlePreviewStyleUpdateStable = useCallback(
     (styles: Partial<React.CSSProperties>) => {
       queuePreviewStyleUpdate(styles);
@@ -7704,804 +4258,73 @@ const App: React.FC = () => {
   const handlePreviewDeleteStable = useCallback(() => {
     void applyPreviewDeleteSelected();
   }, [applyPreviewDeleteSelected]);
-
-  useEffect(() => {
-    const onPreviewMessage = (event: MessageEvent) => {
-      if (!isActivePreviewMessageSource(event.source)) return;
-      let payload = event.data as
-        | {
-            type?: string;
-            path?: string | number[];
-            level?: PreviewConsoleLevel;
-            message?: string;
-            source?: string;
-            html?: string;
-            tag?: string;
-            id?: string;
-            className?: string;
-            attributes?: Record<string, string>;
-            text?: string;
-            inlineStyle?: string;
-            src?: string;
-            href?: string;
-            dir?: string;
-            key?: string;
-            code?: string;
-            ctrlKey?: boolean;
-            metaKey?: boolean;
-            shiftKey?: boolean;
-            altKey?: boolean;
-            editable?: boolean;
-            computedStyles?: Record<string, string>;
-            matchedCssRules?: Array<{
-              selector?: string;
-              source?: string;
-              declarations?: Array<{
-                property?: string;
-                value?: string;
-                important?: boolean;
-              }>;
-            }>;
-            parentPath?: number[];
-            styles?: Record<string, string | number>;
-          }
-        | undefined;
-      if (typeof payload === "string") {
-        try {
-          payload = JSON.parse(payload);
-        } catch {
-          return;
-        }
-      }
-      if (!payload || !payload.type) return;
-
-      if (payload.type === "PREVIEW_CONSOLE") {
-        const level = payload.level ?? "log";
-        const message =
-          typeof payload.message === "string" ? payload.message : "";
-        if (!message) return;
-        appendPreviewConsole(level, message, payload.source || "preview");
-        return;
-      }
-      if (payload.type === "PREVIEW_HOTKEY") {
-        const key = String(payload.key || "").toLowerCase();
-        const code = String(payload.code || "");
-        if (!key && !code) return;
-        const hasModifier = Boolean(payload.ctrlKey || payload.metaKey);
-        const editableTarget = Boolean(payload.editable);
-        const altKey = Boolean(payload.altKey);
-        const shiftKey = Boolean(payload.shiftKey);
-
-        if (hasModifier && editableTarget) {
-          if (key === "s") {
-            void saveCodeDraftsRef.current?.();
-            void flushPendingPreviewSaves();
-            return;
-          }
-          if (key === "t") {
-            requestPreviewRefreshWithUnsavedGuard();
-            return;
-          }
-          if (key === "p") {
-            requestSwitchToPreviewMode();
-            return;
-          }
-          if (key === "f") {
-            setIsLeftPanelOpen(true);
-            setIsRightPanelOpen(true);
-            setIsCodePanelOpen(false);
-            return;
-          }
-          if (key === "e") {
-            setSidebarToolMode("edit");
-            setInteractionMode("preview");
-            setPreviewMode("edit");
-            return;
-          }
-          return;
-        }
-        if (
-          key === "escape" &&
-          isPageSwitchPromptOpen &&
-          !isPageSwitchPromptBusy
-        ) {
-          closePendingPageSwitchPrompt();
-          return;
-        }
-        if (key === "escape" && isZenMode) {
-          toggleZenMode();
-          return;
-        }
-
-        if (!hasModifier && !altKey && !editableTarget) {
-          if (key === "w") {
-            setIsLeftPanelOpen((prev) => !prev);
-            return;
-          }
-          if (key === "e") {
-            setIsRightPanelOpen((prev) => {
-              const next = !prev;
-              if (next) setIsCodePanelOpen(false);
-              return next;
-            });
-            return;
-          }
-        }
-        if (!hasModifier) return;
-
-        if (key === "f") {
-          setIsLeftPanelOpen(true);
-          setIsRightPanelOpen(true);
-          setIsCodePanelOpen(false);
-          return;
-        }
-        if (key === "p") {
-          requestSwitchToPreviewMode();
-          return;
-        }
-        if (key === "e") {
-          setSidebarToolMode("edit");
-          setInteractionMode("preview");
-          setPreviewMode("edit");
-          return;
-        }
-        if (key === "j") {
-          toggleZenMode();
-          return;
-        }
-        if (key === "s") {
-          void saveCodeDraftsRef.current?.();
-          void flushPendingPreviewSaves();
-          return;
-        }
-        if (key === "t") {
-          requestPreviewRefreshWithUnsavedGuard();
-          return;
-        }
-        if (key === "z" && !shiftKey) {
-          runUndo();
-          return;
-        }
-        if (key === "u" || key === "y" || (key === "z" && shiftKey)) {
-          runRedo();
-        }
-        return;
-      }
-
-      if (payload.type === "PREVIEW_NAVIGATE") {
-        if (
-          !selectedPreviewHtml ||
-          typeof payload.path !== "string" ||
-          !payload.path
-        )
-          return;
-
-        const target = resolvePreviewNavigationPath(
-          selectedPreviewHtml,
-          payload.path,
-          filesRef.current,
-        );
-        if (!target) return;
-
-        if (!shouldProcessPreviewPageSignal(target)) return;
-        if (target === activeFileRef.current) return;
-
-        syncPreviewActiveFile(target, "navigate");
-        return;
-      }
-
-      if (payload.type === "PREVIEW_SWIPE_DIR") {
-        const currentPath =
-          selectedPreviewHtmlRef.current || activeFileRef.current;
-        if (!currentPath) return;
-        const dir = payload.dir === "prev" ? "prev" : "next";
-        const nextPath = resolveAdjacentSlidePath(currentPath, dir);
-        if (!nextPath || nextPath === currentPath) return;
-        (window as any).__explorerNavTime = Date.now();
-        explorerSelectionLockRef.current = nextPath;
-        explorerSelectionLockUntilRef.current =
-          Date.now() + EXPLORER_LOCK_TTL_MS;
-        syncPreviewActiveFile(nextPath, "explorer", {
-          skipUnsavedPrompt: true,
-        });
-        return;
-      }
-
-      if (payload.type === "PREVIEW_PATH_CHANGED") {
-        console.log("[DEBUG] Frame reported PATH_CHANGED:", payload.path);
-        if (typeof payload.path !== "string" || !payload.path) return;
-        const mountRelativePath = extractMountRelativePath(payload.path);
-        if (!mountRelativePath) return;
-        const resolvedVirtualPath =
-          resolveVirtualPathFromMountRelative(mountRelativePath);
-        if (!resolvedVirtualPath) return;
-
-        const lockPath = explorerSelectionLockRef.current;
-        const lockActive =
-          Boolean(lockPath) &&
-          Date.now() <= explorerSelectionLockUntilRef.current;
-        if (lockPath && !lockActive) {
-          explorerSelectionLockRef.current = null;
-          explorerSelectionLockUntilRef.current = 0;
-        }
-        if (lockPath && lockActive) {
-          const resolvedNorm =
-            normalizeProjectRelative(resolvedVirtualPath).toLowerCase();
-          const lockNorm = normalizeProjectRelative(lockPath).toLowerCase();
-          if (resolvedNorm !== lockNorm) {
-            // Frame changed to wrong page — redirect back.
-            // Clear lock first to prevent infinite redirect.
-            return;
-          }
-          // Path matches lock — clear so future changes propagate freely.
-          explorerSelectionLockRef.current = null;
-          explorerSelectionLockUntilRef.current = 0;
-        }
-        // THE FIX: Block rogue automated path changes during manual navigation transition
-        const lockAge = Date.now() - ((window as any).__explorerNavTime || 0);
-        if (lockAge < 2500 && resolvedVirtualPath !== activeFileRef.current) {
-          return;
-        }
-        const resolvedFile = filesRef.current[resolvedVirtualPath];
-        if (!resolvedFile || resolvedFile.type !== "html") return;
-        if (resolvedVirtualPath === activeFileRef.current) return;
-        if (!shouldProcessPreviewPageSignal(resolvedVirtualPath)) return;
-        console.log("[Preview] Current page:", resolvedVirtualPath);
-        syncPreviewActiveFile(resolvedVirtualPath, "path_changed");
-        return;
-      }
-
-      if (payload.type === "PREVIEW_INLINE_EDIT") {
-        const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath) return;
-        void applyPreviewInlineEdit(
-          nextPath,
-          typeof payload.html === "string" ? payload.html : "",
-        );
-        return;
-      }
-      if (payload.type === "PREVIEW_INLINE_EDIT_DRAFT") {
-        const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath) return;
-        const draftHtml = typeof payload.html === "string" ? payload.html : "";
-        const draftFile = selectedPreviewHtmlRef.current;
-        if (draftFile) {
-          setDirtyFiles((prev) =>
-            prev.includes(draftFile) ? prev : [...prev, draftFile],
-          );
-          inlineEditDraftPendingRef.current = {
-            filePath: draftFile,
-            elementPath: nextPath,
-            html: draftHtml,
-          };
-          if (inlineEditDraftTimerRef.current !== null) {
-            window.clearTimeout(inlineEditDraftTimerRef.current);
-          }
-          inlineEditDraftTimerRef.current = window.setTimeout(() => {
-            inlineEditDraftTimerRef.current = null;
-            const pending = inlineEditDraftPendingRef.current;
-            inlineEditDraftPendingRef.current = null;
-            if (!pending) return;
-            void applyPreviewInlineEditDraft(
-              pending.filePath,
-              pending.elementPath,
-              pending.html,
-            );
-          }, 180);
-        }
-        const liveElement = getLivePreviewSelectedElement(nextPath);
-        const draftText = normalizeEditorMultilineText(
-          liveElement
-            ? extractTextWithBreaks(liveElement)
-            : extractTextFromHtmlFragment(draftHtml),
-        );
-        setPreviewSelectedPath(nextPath);
-        if (!(liveElement instanceof HTMLElement)) {
-          setPreviewSelectedElement((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  content: draftText,
-                  html: draftHtml,
-                }
-              : prev,
-          );
-          return;
-        }
-        const computedStyles =
-          extractComputedStylesFromElement(liveElement) || null;
-        const inlineStyles = parseInlineStyleText(
-          liveElement.getAttribute("style") || "",
-        );
-        const liveAttributes =
-          extractCustomAttributesFromElement(liveElement) || undefined;
-        const liveSrc = liveElement.getAttribute("src") || "";
-        const liveHref = liveElement.getAttribute("href") || "";
-        const liveTag = String(liveElement.tagName || "div").toLowerCase();
-        const inlineAnimation =
-          typeof inlineStyles.animation === "string"
-            ? inlineStyles.animation.trim()
-            : "";
-        const computedAnimationCandidate =
-          computedStyles && typeof computedStyles.animation === "string"
-            ? computedStyles.animation.trim()
-            : "";
-        const resolvedAnimation =
-          inlineAnimation ||
-          (computedAnimationCandidate &&
-          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
-            ? computedAnimationCandidate
-            : "");
-        setPreviewSelectedComputedStyles(computedStyles);
-        setPreviewSelectedElement((prev) => ({
-          id: getStablePreviewElementId(nextPath, liveElement.id, prev?.id),
-          type: liveTag,
-          name: liveTag.toUpperCase(),
-          content: draftText,
-          html: draftHtml || liveElement.innerHTML || prev?.html || "",
-          ...(liveSrc ? { src: liveSrc } : {}),
-          ...(liveHref ? { href: liveHref } : {}),
-          ...(liveElement.className
-            ? { className: liveElement.className }
-            : {}),
-          ...(liveAttributes ? { attributes: liveAttributes } : {}),
-          ...(resolvedAnimation ? { animation: resolvedAnimation } : {}),
-          styles: inlineStyles,
-          children: [],
-        }));
-        return;
-      }
-
-      if (payload.type === "PREVIEW_MOVE_COMMIT") {
-        const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath) return;
-        if (!payload.styles || typeof payload.styles !== "object") return;
-        const stylePatch = normalizePresentationStylePatch(
-          Object.entries(payload.styles).map(([key, value]) => [
-            key,
-            value == null ? "" : String(value),
-          ]).reduce<Record<string, string>>((acc, [key, value]) => {
-            acc[key] = value;
-            return acc;
-          }, {}),
-        ) as Partial<React.CSSProperties>;
-        void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
-          syncSelectedElement: true,
-        });
-        return;
-      }
-
-      if (payload.type === "PREVIEW_DRAW_CREATE") {
-        const nextParentPath = normalizePreviewPath(payload.parentPath || []);
-        if (!nextParentPath) return;
-        if (typeof payload.tag !== "string" || !payload.tag.trim()) return;
-        const stylePatch = normalizePresentationStylePatch(
-          Object.entries(payload.styles || {}).map(([key, value]) => [
-            key,
-            value == null ? "" : String(value),
-          ]).reduce<Record<string, string>>((acc, [key, value]) => {
-            acc[key] = value;
-            return acc;
-          }, {}),
-        ) as Record<string, string>;
-        void applyPreviewDrawCreate(nextParentPath, payload.tag, stylePatch);
-        return;
-      }
-
-      if (payload.type === "PREVIEW_SELECT") {
-        console.log("DEBUG: Iframe reported selection:", payload);
-
-        // 1. Correctly sanitize and validate the path from the iframe
-        const nextPath = normalizePreviewPath(payload.path);
-        if (!nextPath || nextPath.length === 0) {
-          console.warn("DEBUG: Selection ignored - invalid or empty path");
-          return;
-        }
-
-        // 2. Prepare data parsing
-        const tag = (payload.tag || "div").toLowerCase();
-        const sameSelectedPath =
-          Array.isArray(previewSelectedPath) &&
-          previewSelectedPath.length === nextPath.length &&
-          previewSelectedPath.every(
-            (segment, index) => segment === nextPath[index],
-          );
-        const inlineStyles = parseInlineStyleText(
-          typeof payload.inlineStyle === "string" ? payload.inlineStyle : "",
-        );
-
-        const payloadComputedStyles =
-          payload.computedStyles && typeof payload.computedStyles === "object"
-            ? (payload.computedStyles as React.CSSProperties)
-            : null;
-
-        const payloadMatchedCssRules = Array.isArray(payload.matchedCssRules)
-          ? (payload.matchedCssRules
-              .map((rule) => {
-                if (!rule || typeof rule !== "object") return null;
-                const selector =
-                  typeof rule.selector === "string" ? rule.selector : "";
-                const source =
-                  typeof rule.source === "string" ? rule.source : "stylesheet";
-                const declarations = Array.isArray(rule.declarations)
-                  ? (rule.declarations
-                      .map((declaration) => {
-                        if (!declaration || typeof declaration !== "object")
-                          return null;
-                        return typeof declaration.property === "string" &&
-                          typeof declaration.value === "string"
-                          ? {
-                              property: declaration.property,
-                              value: declaration.value,
-                              important: Boolean(declaration.important),
-                              active:
-                                !("active" in declaration) ||
-                                (declaration as { active?: unknown }).active ===
-                                  undefined
-                                  ? undefined
-                                  : Boolean(
-                                      (declaration as { active?: unknown })
-                                        .active,
-                                    ),
-                            }
-                          : null;
-                      })
-                      .filter(Boolean) as PreviewMatchedCssDeclaration[])
-                  : [];
-                if (!selector || declarations.length === 0) return null;
-                return { selector, source, declarations };
-              })
-              .filter(Boolean) as PreviewMatchedCssRule[])
-          : [];
-        const liveElement = getLivePreviewSelectedElement(nextPath);
-        const id = getStablePreviewElementId(
-          nextPath,
-          payload.id ? String(payload.id) : liveElement?.id || "",
-          sameSelectedPath ? previewSelectedElement?.id : "",
-        );
-        const computedStyles =
-          payloadComputedStyles ||
-          extractComputedStylesFromElement(liveElement);
-        const liveMatchedCssRules = liveElement
-          ? collectMatchedCssRulesFromElement(liveElement)
-          : [];
-        const matchedCssRules =
-          liveMatchedCssRules.length > 0
-            ? liveMatchedCssRules
-            : payloadMatchedCssRules;
-
-        const payloadText =
-          typeof payload.text === "string" ? payload.text.trim() : "";
-        const payloadHtml =
-          typeof payload.html === "string" ? payload.html : "";
-        const liveText = liveElement ? extractTextWithBreaks(liveElement) : "";
-        const liveHtml =
-          liveElement instanceof HTMLElement ? liveElement.innerHTML || "" : "";
-
-        const payloadAttributes =
-          payload.attributes && typeof payload.attributes === "object"
-            ? (Object.fromEntries(
-                Object.entries(payload.attributes).filter(
-                  ([key, value]) => Boolean(key) && typeof value === "string",
-                ),
-              ) as Record<string, string>)
-            : {};
-        const liveAttributes =
-          extractCustomAttributesFromElement(liveElement) || {};
-
-        let savedHtmlText = "";
-        let savedHtmlMarkup = "";
-        let savedHtmlAttributes: Record<string, string> = {};
-
-        if (
-          ((!payloadText && !liveText) || (!payloadHtml && !liveHtml)) &&
-          selectedPreviewHtml &&
-          nextPath.length > 0
-        ) {
-          try {
-            const savedHtmlContent =
-              filesRef.current[selectedPreviewHtml]?.content;
-            if (
-              typeof savedHtmlContent === "string" &&
-              savedHtmlContent.length > 0
-            ) {
-              const tempParser = new DOMParser();
-              const tempDoc = tempParser.parseFromString(
-                savedHtmlContent,
-                "text/html",
-              );
-              const savedEl = readElementByPath(tempDoc.body, nextPath);
-              if (savedEl) {
-                savedHtmlText = extractTextWithBreaks(savedEl);
-                savedHtmlMarkup = savedEl.innerHTML || "";
-                savedHtmlAttributes =
-                  extractCustomAttributesFromElement(savedEl) || {};
-              }
-            }
-          } catch (err) {
-            console.error("DEBUG: Failed to parse saved HTML", err);
-          }
-        }
-
-        const editableText = normalizeEditorMultilineText(
-          payloadText || liveText || savedHtmlText,
-        );
-        const editableHtml = payloadHtml || liveHtml || savedHtmlMarkup;
-        const payloadSrc =
-          typeof payload.src === "string" && payload.src.trim().length > 0
-            ? payload.src.trim()
-            : "";
-        const payloadHref =
-          typeof payload.href === "string" && payload.href.trim().length > 0
-            ? payload.href.trim()
-            : "";
-        const liveSrc =
-          liveElement instanceof HTMLElement
-            ? liveElement.getAttribute("src") || ""
-            : "";
-        const liveHref =
-          liveElement instanceof HTMLElement
-            ? liveElement.getAttribute("href") || ""
-            : "";
-
-        const resolvedSrc = payloadSrc || liveSrc || undefined;
-        const resolvedHref = payloadHref || liveHref || undefined;
-        const mergedAttributes = {
-          ...savedHtmlAttributes,
-          ...liveAttributes,
-          ...payloadAttributes,
-        };
-        const resolvedAttributes =
-          Object.keys(mergedAttributes).length > 0
-            ? mergedAttributes
-            : undefined;
-
-        const inlineAnimation =
-          typeof inlineStyles.animation === "string"
-            ? inlineStyles.animation.trim()
-            : "";
-        const computedAnimationCandidate =
-          computedStyles && typeof computedStyles.animation === "string"
-            ? computedStyles.animation.trim()
-            : "";
-        const resolvedAnimation =
-          inlineAnimation ||
-          (computedAnimationCandidate &&
-          !/^none(?:\s|$)/i.test(computedAnimationCandidate)
-            ? computedAnimationCandidate
-            : "");
-
-        // 3. Construct the VirtualElement with the PATH included
-        const nextElement: VirtualElement = {
-          id,
-          type: tag as any,
-          name: tag.toUpperCase(),
-          content: editableText,
-          html: editableHtml,
-          src: resolvedSrc,
-          href: resolvedHref,
-          className:
-            typeof payload.className === "string" &&
-            payload.className.length > 0
-              ? payload.className
-              : undefined,
-          attributes: resolvedAttributes,
-          styles: inlineStyles,
-          animation: resolvedAnimation || undefined,
-          children: [],
-          path: nextPath, // <--- CRITICAL: This allows handleImmediatePreviewStyle to work
-        };
-
-        console.log(
-          "DEBUG: Setting active inspector element with path:",
-          nextPath,
-        );
-
-        // 4. Update all relevant states
-        setPreviewSelectedPath(nextPath);
-        setPreviewSelectedElement(nextElement);
-        setPreviewSelectedComputedStyles(computedStyles);
-        setPreviewSelectedMatchedCssRules(matchedCssRules);
-
-        // These ensure the right panel actually opens and focuses the element
-        setSelectedId(null);
-        setIsCodePanelOpen(false);
-        setIsRightPanelOpen(true);
-      }
-    };
-
-    window.addEventListener("message", onPreviewMessage);
-    return () => window.removeEventListener("message", onPreviewMessage);
-  }, [
-    applyPreviewDrawCreate,
-    applyPreviewLocalCssPatchAtPath,
-    applyPreviewStyleUpdateAtPath,
+  usePreviewFrameMessages({
+    EXPLORER_LOCK_TTL_MS,
+    activeFileRef,
     appendPreviewConsole,
+    applyPreviewDrawCreate,
+    applyPreviewInlineEdit,
+    applyPreviewInlineEditDraft,
+    applyPreviewLocalCssPatchAtPath,
     closePendingPageSwitchPrompt,
-    getLivePreviewSelectedElement,
+    explorerSelectionLockRef,
+    explorerSelectionLockUntilRef,
+    extractMountRelativePath,
+    filesRef,
     flushPendingPreviewSaves,
+    getLivePreviewSelectedElement,
+    getStablePreviewElementId,
+    inlineEditDraftPendingRef,
+    inlineEditDraftTimerRef,
     isActivePreviewMessageSource,
     isMountedPreview,
     isPageSwitchPromptBusy,
     isPageSwitchPromptOpen,
     isZenMode,
-    extractMountRelativePath,
+    previewSelectedElement,
+    previewSelectedPath,
+    previewSyncedFile,
     requestPreviewRefreshWithUnsavedGuard,
     requestSwitchToPreviewMode,
     resolveAdjacentSlidePath,
-    previewSyncedFile,
     resolveVirtualPathFromMountRelative,
     runRedo,
     runUndo,
+    saveCodeDraftsRef,
     selectedPreviewHtml,
+    selectedPreviewHtmlRef,
+    setDirtyFiles,
+    setInteractionMode,
+    setIsCodePanelOpen,
+    setIsLeftPanelOpen,
+    setIsRightPanelOpen,
+    setPreviewMode,
+    setPreviewSelectedComputedStyles,
+    setPreviewSelectedElement,
+    setPreviewSelectedMatchedCssRules,
+    setPreviewSelectedPath,
+    setSelectedId,
+    setSidebarToolMode,
     shouldProcessPreviewPageSignal,
     syncPreviewActiveFile,
     toggleZenMode,
-    applyPreviewInlineEditDraft,
-    applyPreviewInlineEdit,
-    getStablePreviewElementId,
-    previewSelectedElement?.id,
-    previewSelectedPath,
-    EXPLORER_LOCK_TTL_MS,
-  ]);
+  });
+  usePreviewDocumentLoader({
+    cachePreviewDoc,
+    filePathIndexRef,
+    filesRef,
+    loadFileContent,
+    previewDependencyIndexRef,
+    previewDocCacheRef,
+    previewHistoryRef,
+    selectedPreviewHtml,
+    setSelectedPreviewDoc,
+    shouldPrepareEditPreviewDoc,
+  });
   useEffect(() => {
     if (!activeFile) return;
     void loadFileContent(activeFile);
   }, [activeFile, loadFileContent]);
-
-  useEffect(() => {
-    if (!shouldPrepareEditPreviewDoc) {
-      setSelectedPreviewDoc("");
-      return;
-    }
-    if (!selectedPreviewHtml) {
-      setSelectedPreviewDoc("");
-      return;
-    }
-    const cachedDoc = previewDocCacheRef.current[selectedPreviewHtml];
-    if (cachedDoc) {
-      setSelectedPreviewDoc(cachedDoc);
-      return;
-    }
-
-    let canceled = false;
-    const preloadPreviewDependencies = async () => {
-      const htmlContent = await loadFileContent(selectedPreviewHtml);
-      const fileMapSnapshot: FileMap = { ...filesRef.current };
-      let html =
-        typeof htmlContent === "string" && htmlContent.length > 0
-          ? htmlContent
-          : typeof fileMapSnapshot[selectedPreviewHtml]?.content === "string"
-            ? (fileMapSnapshot[selectedPreviewHtml]?.content as string)
-            : "";
-      if (!html) {
-        const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
-        if (absoluteHtmlPath) {
-          try {
-            const directHtml = await (Neutralino as any).filesystem.readFile(
-              absoluteHtmlPath,
-            );
-            if (typeof directHtml === "string" && directHtml.length > 0) {
-              html = directHtml;
-            }
-          } catch {
-            // Keep empty html; caller handles as unavailable preview.
-          }
-        }
-      }
-      if (!html) return;
-
-      if (!previewHistoryRef.current[selectedPreviewHtml]) {
-        previewHistoryRef.current[selectedPreviewHtml] = {
-          past: [],
-          present: html,
-          future: [],
-        };
-      }
-
-      if (fileMapSnapshot[selectedPreviewHtml]) {
-        fileMapSnapshot[selectedPreviewHtml] = {
-          ...fileMapSnapshot[selectedPreviewHtml],
-          content: html,
-        };
-      }
-
-      const dependencyPaths = new Set<string>();
-
-      html.replace(
-        /<link\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi,
-        (full, _beforeHref, hrefValue) => {
-          if (!/rel=["']stylesheet["']/i.test(full)) return full;
-          const resolved = resolveProjectRelativePath(
-            selectedPreviewHtml,
-            hrefValue,
-          );
-          if (resolved && fileMapSnapshot[resolved])
-            dependencyPaths.add(resolved);
-          return full;
-        },
-      );
-
-      html.replace(
-        /<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi,
-        (_full, _beforeSrc, srcValue) => {
-          const resolved = resolveProjectRelativePath(
-            selectedPreviewHtml,
-            srcValue,
-          );
-          if (resolved && fileMapSnapshot[resolved])
-            dependencyPaths.add(resolved);
-          return _full;
-        },
-      );
-
-      html.replace(/\b(src|href)=["']([^"']+)["']/gi, (_full, _attr, raw) => {
-        const resolved = resolveProjectRelativePath(selectedPreviewHtml, raw);
-        if (resolved && fileMapSnapshot[resolved])
-          dependencyPaths.add(resolved);
-        return _full;
-      });
-
-      // Legacy projects often request shared HTML fragments dynamically.
-      // Keep preload intentionally narrow; avoid eager icon/font loading.
-      for (const path of Object.keys(fileMapSnapshot)) {
-        const lowerPath = path.toLowerCase();
-        if (
-          (lowerPath.includes("shared/media/content/") ||
-            lowerPath.includes("/shared/media/content/")) &&
-          (lowerPath.endsWith(".html") || lowerPath.endsWith(".htm"))
-        ) {
-          dependencyPaths.add(path);
-        }
-      }
-
-      const loaded = await Promise.all(
-        Array.from(dependencyPaths).map(async (path) => {
-          const content = await loadFileContent(path, {
-            persistToState: false,
-          });
-          return { path, content };
-        }),
-      );
-
-      for (const item of loaded) {
-        if (
-          item &&
-          fileMapSnapshot[item.path] &&
-          typeof item.content === "string" &&
-          item.content.length > 0
-        ) {
-          fileMapSnapshot[item.path] = {
-            ...fileMapSnapshot[item.path],
-            content: item.content,
-          };
-        }
-      }
-
-      if (canceled) return;
-      previewDependencyIndexRef.current[selectedPreviewHtml] = [
-        selectedPreviewHtml,
-        ...Array.from(dependencyPaths),
-      ];
-      const doc = createPreviewDocument(
-        fileMapSnapshot,
-        selectedPreviewHtml,
-        previewDependencyIndexRef.current[selectedPreviewHtml],
-      );
-      cachePreviewDoc(selectedPreviewHtml, doc);
-      setSelectedPreviewDoc(doc);
-    };
-
-    void preloadPreviewDependencies();
-    return () => {
-      canceled = true;
-    };
-  }, [
-    cachePreviewDoc,
-    loadFileContent,
-    selectedPreviewHtml,
-    shouldPrepareEditPreviewDoc,
-  ]);
   useEffect(() => {
     if (!selectedPreviewHtml) return;
     const keys = dirtyPathKeysByFile[selectedPreviewHtml] || [];
@@ -8526,263 +4349,43 @@ const App: React.FC = () => {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [dirtyPathKeysByFile, selectedPreviewDoc, selectedPreviewHtml]);
-  const activeCodeFilePath = useMemo(() => {
-    const candidate =
-      activeFile &&
-      files[activeFile] &&
-      isCodeEditableFile(activeFile, files[activeFile].type)
-        ? activeFile
-        : selectedPreviewHtml &&
-            files[selectedPreviewHtml] &&
-            isCodeEditableFile(
-              selectedPreviewHtml,
-              files[selectedPreviewHtml].type,
-            )
-          ? selectedPreviewHtml
-          : null;
-    if (candidate) return candidate;
-    const firstText = Object.keys(files).find((path) =>
-      isCodeEditableFile(path, files[path].type),
-    );
-    return firstText ?? null;
-  }, [activeFile, files, selectedPreviewHtml]);
-  const activeCodeContent = useMemo(() => {
-    if (!activeCodeFilePath) return "";
-    if (typeof codeDraftByPath[activeCodeFilePath] === "string") {
-      return codeDraftByPath[activeCodeFilePath];
-    }
-    const raw = files[activeCodeFilePath]?.content;
-    return typeof raw === "string" ? raw : "";
-  }, [activeCodeFilePath, codeDraftByPath, files]);
-  const activeDetachedEditorFilePath = useMemo(() => {
-    if (activeFile && files[activeFile]) return activeFile;
-    if (selectedPreviewHtml && files[selectedPreviewHtml])
-      return selectedPreviewHtml;
-    return Object.keys(files).sort((a, b) => a.localeCompare(b))[0] ?? null;
-  }, [activeFile, files, selectedPreviewHtml]);
-  const activeDetachedEditorFileType: ProjectFile["type"] | null =
-    activeDetachedEditorFilePath
-      ? (files[activeDetachedEditorFilePath]?.type ?? null)
-      : null;
-  const activeDetachedEditorContent = useMemo(() => {
-    if (!activeDetachedEditorFilePath) return "";
-    if (
-      typeof codeDraftByPath[activeDetachedEditorFilePath] === "string" &&
-      files[activeDetachedEditorFilePath] &&
-      isCodeEditableFile(
-        activeDetachedEditorFilePath,
-        files[activeDetachedEditorFilePath].type,
-      )
-    ) {
-      return codeDraftByPath[activeDetachedEditorFilePath];
-    }
-    const raw = files[activeDetachedEditorFilePath]?.content;
-    return typeof raw === "string" ? raw : "";
-  }, [activeDetachedEditorFilePath, codeDraftByPath, files]);
-  const activeDetachedEditorIsDirty = activeDetachedEditorFilePath
-    ? Boolean(codeDirtyPathSet[activeDetachedEditorFilePath])
-    : false;
-  const detachedEditorIsTextEditable = Boolean(
-    activeDetachedEditorFilePath &&
-    activeDetachedEditorFileType &&
-    isCodeEditableFile(
-      activeDetachedEditorFilePath,
-      activeDetachedEditorFileType,
-    ),
-  );
-  const handleDetachedEditorSelectFile = useCallback(
-    (path: string) => {
-      if (!path || !files[path]) return;
-      setActiveFileStable(path);
-      if (files[path]?.type === "html") {
-        setPreviewSyncedFile((prev) => (prev === path ? prev : path));
-        setPreviewNavigationFile((prev) => (prev === path ? prev : path));
-      }
-      if (isSvgPath(path)) {
-        const absolutePath = filePathIndexRef.current[path];
-        if (!absolutePath) return;
-        void (async () => {
-          try {
-            const raw = await (Neutralino as any).filesystem.readFile(
-              absolutePath,
-            );
-            textFileCacheRef.current[path] = raw;
-            setFiles((prev) => {
-              const existing = prev[path];
-              if (!existing) return prev;
-              return {
-                ...prev,
-                [path]: {
-                  ...existing,
-                  content: raw,
-                },
-              };
-            });
-          } catch (error) {
-            console.warn(`Failed reading SVG source ${path}:`, error);
-          }
-        })();
-        return;
-      }
-      void loadFileContent(path, { persistToState: true });
-    },
-    [files, loadFileContent, setActiveFileStable],
-  );
-  const saveCodeDraftAtPath = useCallback(
-    async (path: string) => {
-      const draft = codeDraftByPathRef.current[path];
-      if (typeof draft !== "string") return;
-      const file = filesRef.current[path];
-      if (!file || !isCodeEditableFile(path, file.type)) return;
-      try {
-        if (file.type === "html") {
-          await persistPreviewHtmlContent(path, draft, {
-            refreshPreviewDoc: path === selectedPreviewHtmlRef.current,
-            saveNow: true,
-            pushToHistory: true,
-          });
-          if (path === selectedPreviewHtmlRef.current) {
-            setPreviewNavigationFile((prev) => (prev === path ? prev : path));
-            setPreviewRefreshNonce((prev) => prev + 1);
-          }
-        } else {
-          const absolutePath = filePathIndexRef.current[path];
-          if (!absolutePath) return;
-          await (Neutralino as any).filesystem.writeFile(absolutePath, draft);
-          textFileCacheRef.current[path] = draft;
-          setFiles((prev) => {
-            const existing = prev[path];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [path]: {
-                ...existing,
-                content: draft,
-              },
-            };
-          });
-          const currentPreview = selectedPreviewHtmlRef.current;
-          if (currentPreview) {
-            setPreviewNavigationFile((prev) =>
-              prev === currentPreview ? prev : currentPreview,
-            );
-          }
-          setPreviewRefreshNonce((prev) => prev + 1);
-        }
-        delete codeDraftByPathRef.current[path];
-        delete codeDirtyPathSetRef.current[path];
-        dirtyFilesRef.current = dirtyFilesRef.current.filter(
-          (entry) => entry !== path,
-        );
-        setCodeDraftByPath((prev) => {
-          const next = { ...prev };
-          delete next[path];
-          return next;
-        });
-        setCodeDirtyPathSet((prev) => {
-          const next = { ...prev };
-          delete next[path];
-          return next;
-        });
-        setDirtyFiles((prev) => prev.filter((entry) => entry !== path));
-      } catch (error) {
-        console.warn(`Failed saving code file ${path}:`, error);
-      }
-    },
-    [persistPreviewHtmlContent],
-  );
-  const saveAllCodeDrafts = useCallback(async () => {
-    const dirtyPaths = Object.keys(codeDirtyPathSetRef.current);
-    for (const path of dirtyPaths) {
-      await saveCodeDraftAtPath(path);
-    }
-  }, [saveCodeDraftAtPath]);
-  useEffect(() => {
-    saveCodeDraftsRef.current = saveAllCodeDrafts;
-    return () => {
-      if (saveCodeDraftsRef.current === saveAllCodeDrafts) {
-        saveCodeDraftsRef.current = null;
-      }
-    };
-  }, [saveAllCodeDrafts]);
-  const handleCodeDraftChange = useCallback(
-    (nextValue: string | undefined) => {
-      if (!activeCodeFilePath) return;
-      const value = nextValue ?? "";
-      codeDraftByPathRef.current = {
-        ...codeDraftByPathRef.current,
-        [activeCodeFilePath]: value,
-      };
-      codeDirtyPathSetRef.current = {
-        ...codeDirtyPathSetRef.current,
-        [activeCodeFilePath]: true,
-      };
-      if (!dirtyFilesRef.current.includes(activeCodeFilePath)) {
-        dirtyFilesRef.current = [...dirtyFilesRef.current, activeCodeFilePath];
-      }
-      setCodeDraftByPath((prev) => ({
-        ...prev,
-        [activeCodeFilePath]: value,
-      }));
-      setCodeDirtyPathSet((prev) => ({
-        ...prev,
-        [activeCodeFilePath]: true,
-      }));
-      setDirtyFiles((prev) =>
-        prev.includes(activeCodeFilePath)
-          ? prev
-          : [...prev, activeCodeFilePath],
-      );
-    },
-    [activeCodeFilePath],
-  );
-  const handleDetachedEditorChange = useCallback(
-    (nextValue: string) => {
-      if (!activeDetachedEditorFilePath || !activeDetachedEditorFileType)
-        return;
-      if (
-        !isCodeEditableFile(
-          activeDetachedEditorFilePath,
-          activeDetachedEditorFileType,
-        )
-      ) {
-        return;
-      }
-      codeDraftByPathRef.current = {
-        ...codeDraftByPathRef.current,
-        [activeDetachedEditorFilePath]: nextValue,
-      };
-      codeDirtyPathSetRef.current = {
-        ...codeDirtyPathSetRef.current,
-        [activeDetachedEditorFilePath]: true,
-      };
-      if (!dirtyFilesRef.current.includes(activeDetachedEditorFilePath)) {
-        dirtyFilesRef.current = [
-          ...dirtyFilesRef.current,
-          activeDetachedEditorFilePath,
-        ];
-      }
-      setCodeDraftByPath((prev) => ({
-        ...prev,
-        [activeDetachedEditorFilePath]: nextValue,
-      }));
-      setCodeDirtyPathSet((prev) => ({
-        ...prev,
-        [activeDetachedEditorFilePath]: true,
-      }));
-      setDirtyFiles((prev) =>
-        prev.includes(activeDetachedEditorFilePath)
-          ? prev
-          : [...prev, activeDetachedEditorFilePath],
-      );
-    },
-    [activeDetachedEditorFilePath, activeDetachedEditorFileType],
-  );
-  useEffect(() => {
-    if (!isCodePanelOpen) return;
-    if (!activeCodeFilePath) return;
-    void loadFileContent(activeCodeFilePath, { persistToState: true });
-  }, [activeCodeFilePath, isCodePanelOpen, loadFileContent]);
+  const {
+    activeCodeContent,
+    activeCodeFilePath,
+    activeDetachedEditorContent,
+    activeDetachedEditorFilePath,
+    activeDetachedEditorIsDirty,
+    detachedEditorIsTextEditable,
+    handleCodeDraftChange,
+    handleDetachedEditorChange,
+    handleDetachedEditorSelectFile,
+    saveCodeDraftAtPath,
+  } = useCodeEditorState({
+    activeFile,
+    codeDraftByPath,
+    codeDraftByPathRef,
+    codeDirtyPathSet,
+    codeDirtyPathSetRef,
+    dirtyFilesRef,
+    files,
+    filesRef,
+    isCodePanelOpen,
+    loadFileContent,
+    filePathIndexRef,
+    persistPreviewHtmlContent,
+    selectedPreviewHtml,
+    selectedPreviewHtmlRef,
+    setActiveFileStable,
+    setCodeDraftByPath,
+    setCodeDirtyPathSet,
+    setDirtyFiles,
+    setFiles,
+    setPreviewNavigationFile,
+    setPreviewRefreshNonce,
+    setPreviewSyncedFile,
+    textFileCacheRef,
+    saveCodeDraftsRef,
+  });
 
   const tabletMetrics = useMemo(() => {
     const base =
@@ -9016,16 +4619,6 @@ const App: React.FC = () => {
     },
     [applyPreviewIdentityUpdate],
   );
-  const handlePreviewMatchedRulePropertyAdd = useCallback(
-    (
-      rule: PreviewMatchedRuleMutation,
-      styles: Partial<React.CSSProperties>,
-    ) => {
-      if (!previewSelectedPath || !Array.isArray(previewSelectedPath)) return;
-      queuePreviewLocalCssPatch(rule, styles);
-    },
-    [previewSelectedPath, queuePreviewLocalCssPatch],
-  );
   const showDeviceFrameToolbar = true;
 
   useEffect(() => {
@@ -9091,14 +4684,6 @@ const App: React.FC = () => {
   }, [rightPanelWidth]);
 
   useEffect(() => {
-    if (!isCompactConsoleOpening) return;
-    const timer = window.setTimeout(() => {
-      setIsCompactConsoleOpening(false);
-    }, 520);
-    return () => window.clearTimeout(timer);
-  }, [isCompactConsoleOpening]);
-
-  useEffect(() => {
     const targetZoom: 75 | 100 = currentDevicePixelRatio >= 1.5 ? 75 : 100;
     const previousAuto = lastAutoDprZoomRef.current;
     if (previousAuto === targetZoom) return;
@@ -9107,149 +4692,6 @@ const App: React.FC = () => {
     setFrameZoom(targetZoom);
   }, [currentDevicePixelRatio, deviceMode]);
 
-  useEffect(() => {
-    if (bottomPanelTab !== "console") {
-      setBottomPanelTab("console");
-    }
-  }, [bottomPanelTab]);
-
-  const renderDetachedConsoleWindow = useCallback(() => {
-    const detachedWindow = detachedConsoleWindowRef.current;
-    if (!detachedWindow || detachedWindow.closed) {
-      detachedConsoleWindowRef.current = null;
-      return;
-    }
-
-    renderDetachedConsoleWindowHelper({
-      detachedWindow,
-      entries: previewConsoleEntries,
-      warnCount: previewConsoleWarnCount,
-      errorCount: previewConsoleErrorCount,
-      theme,
-    });
-    return;
-
-    const rows =
-      previewConsoleEntries.length === 0
-        ? `<div class="empty">No project logs yet</div>`
-        : previewConsoleEntries
-            .map((entry) => {
-              const levelClass =
-                entry.level === "error"
-                  ? "error"
-                  : entry.level === "warn"
-                    ? "warn"
-                    : "info";
-              return `<div class="row ${levelClass}">
-  <div class="meta">${escapeConsoleHtml(entry.level.toUpperCase())} • ${escapeConsoleHtml(entry.source || "preview")}</div>
-  <div class="message">${escapeConsoleHtml(entry.message)}</div>
-</div>`;
-            })
-            .join("");
-
-    detachedWindow.document.open();
-    detachedWindow.document.write(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>NoCodeX Console</title>
-  <style>
-    :root { color-scheme: ${theme === "dark" ? "dark" : "light"}; }
-    body {
-      margin: 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: ${theme === "dark" ? "#020617" : "#f8fafc"};
-      color: ${theme === "dark" ? "#e2e8f0" : "#0f172a"};
-    }
-    .shell { display: flex; flex-direction: column; height: 100vh; }
-    .header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 14px; border-bottom: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.25)" : "rgba(148,163,184,0.2)"};
-      background: ${theme === "dark" ? "rgba(15,23,42,0.96)" : "rgba(255,255,255,0.96)"};
-      position: sticky; top: 0;
-    }
-    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
-    .badge {
-      font-size: 11px; padding: 4px 8px; border-radius: 999px;
-      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
-      background: ${theme === "dark" ? "rgba(30,41,59,0.7)" : "rgba(241,245,249,0.95)"};
-    }
-    .body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .row {
-      border-radius: 12px; padding: 10px 12px;
-      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.18)"};
-      background: ${theme === "dark" ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.95)"};
-      white-space: pre-wrap; word-break: break-word;
-    }
-    .row.warn { border-color: rgba(245,158,11,0.35); }
-    .row.error { border-color: rgba(239,68,68,0.35); }
-    .meta { font-size: 10px; opacity: 0.7; margin-bottom: 6px; }
-    .message { font-size: 12px; line-height: 1.45; }
-    .empty {
-      flex: 1; display: flex; align-items: center; justify-content: center;
-      border: 1px dashed ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
-      border-radius: 16px; min-height: 160px; font-size: 12px; opacity: 0.75;
-    }
-    button {
-      border: 1px solid ${theme === "dark" ? "rgba(148,163,184,0.3)" : "rgba(148,163,184,0.25)"};
-      background: transparent; color: inherit; border-radius: 10px; padding: 8px 10px; cursor: pointer;
-    }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <div class="header">
-      <div class="badges">
-        <span class="badge">Logs ${previewConsoleEntries.length}</span>
-        <span class="badge">Warn ${previewConsoleWarnCount}</span>
-        <span class="badge">Error ${previewConsoleErrorCount}</span>
-      </div>
-      <button onclick="window.close()">Close</button>
-    </div>
-    <div class="body">${rows}</div>
-  </div>
-</body>
-</html>`);
-    detachedWindow.document.close();
-  }, [
-    previewConsoleEntries,
-    previewConsoleWarnCount,
-    previewConsoleErrorCount,
-    theme,
-  ]);
-
-  const handleDetachConsoleWindow = useCallback(() => {
-    const existingWindow = detachedConsoleWindowRef.current;
-    if (existingWindow && !existingWindow.closed) {
-      existingWindow.focus();
-      return;
-    }
-    const nextWindow = window.open(
-      "",
-      "nocodex-console-window",
-      "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes",
-    );
-    if (!nextWindow) return;
-    detachedConsoleWindowRef.current = nextWindow;
-    window.setTimeout(() => {
-      renderDetachedConsoleWindow();
-    }, 0);
-  }, [renderDetachedConsoleWindow]);
-
-  useEffect(() => {
-    renderDetachedConsoleWindow();
-  }, [renderDetachedConsoleWindow]);
-
-  useEffect(() => {
-    return () => {
-      if (
-        detachedConsoleWindowRef.current &&
-        !detachedConsoleWindowRef.current.closed
-      ) {
-        detachedConsoleWindowRef.current.close();
-      }
-    };
-  }, []);
   useEffect(() => {
     if (interactionMode !== "preview" || !quickTextEdit.open) return;
     const viewportWidth =
@@ -9465,7 +4907,7 @@ const App: React.FC = () => {
                 theme === "dark"
                   ? "0 10px 24px rgba(2,6,23,0.34)"
                   : "0 10px 24px rgba(15,23,42,0.10)",
-              backdropFilter: "blur(14px)",
+            backdropFilter: "none",
             }}
           >
             {null}
@@ -9659,7 +5101,7 @@ const App: React.FC = () => {
                 theme === "dark"
                   ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
                   : "linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(248,250,252,0.74) 100%)",
-              backdropFilter: "blur(14px)",
+              backdropFilter: "none",
             }}
           >
             <div className="min-h-0 flex-1">
@@ -9797,8 +5239,8 @@ const App: React.FC = () => {
             {/* Dynamic Background */}
             <div className="fixed inset-0 pointer-events-none z-0">
               <div className="absolute inset-0 bg-[linear-gradient(var(--border-color)_1px,transparent_1px),linear-gradient(90deg,var(--border-color)_1px,transparent_1px)] bg-[size:32px_32px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)]"></div>
-              <div className="absolute top-[-20%] left-[20%] w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[120px] mix-blend-screen animate-pulse duration-[10s]"></div>
-              <div className="absolute bottom-[-10%] right-[10%] w-[400px] h-[400px] bg-purple-500/10 rounded-full blur-[100px] mix-blend-screen animate-pulse duration-[7s]"></div>
+              <div className="absolute top-[-18%] left-[18%] h-[380px] w-[380px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.12)_0%,rgba(99,102,241,0.05)_38%,transparent_72%)] opacity-80"></div>
+              <div className="absolute bottom-[-8%] right-[12%] h-[320px] w-[320px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.12)_0%,rgba(168,85,247,0.05)_36%,transparent_72%)] opacity-75"></div>
             </div>
 
             {/* Content wrapper — adds padding when both panels overlay so scroll reveals content behind panels */}
@@ -9868,7 +5310,7 @@ const App: React.FC = () => {
                             theme === "dark"
                               ? "0 10px 24px rgba(2,6,23,0.34)"
                               : "0 10px 24px rgba(15,23,42,0.10)",
-                          backdropFilter: "blur(14px)",
+                          backdropFilter: "none",
                           borderBottomWidth: 0,
                         }}
                       >
@@ -10054,7 +5496,7 @@ const App: React.FC = () => {
                                   theme === "dark"
                                     ? "0 10px 24px rgba(2,6,23,0.34)"
                                     : "0 10px 24px rgba(15,23,42,0.10)",
-                                backdropFilter: "blur(14px)",
+                                backdropFilter: "none",
                                 borderBottomWidth: 0,
                               }}
                             >
@@ -10128,7 +5570,7 @@ const App: React.FC = () => {
                                 theme === "dark"
                                   ? "0 10px 24px rgba(2,6,23,0.34)"
                                   : "0 10px 24px rgba(15,23,42,0.10)",
-                              backdropFilter: "blur(14px)",
+                              backdropFilter: "none",
                               borderBottomWidth: 0,
                             }}
                           >
@@ -10443,7 +5885,7 @@ const App: React.FC = () => {
                                   "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
                                 borderColor: "rgba(15,23,42,0.12)",
                                 color: "#0f172a",
-                                backdropFilter: "blur(16px)",
+                                backdropFilter: "none",
                               }}
                             >
                               <div
@@ -10775,7 +6217,7 @@ const App: React.FC = () => {
                           (previewSelectedPath?.length ?? 0) > 0 &&
                           previewSelectedElement && (
                             <div
-                              className="absolute right-4 top-4 z-40 rounded-2xl border shadow-2xl backdrop-blur-md p-3 flex flex-col gap-2 min-w-[230px]"
+                              className="absolute right-4 top-4 z-40 rounded-2xl border shadow-2xl p-3 flex flex-col gap-2 min-w-[230px]"
                               style={{
                                 borderColor:
                                   theme === "dark"
@@ -10932,7 +6374,7 @@ const App: React.FC = () => {
                   theme === "dark"
                     ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
                     : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
-                backdropFilter: "blur(14px)",
+                backdropFilter: "none",
                 borderTopLeftRadius: "28px",
                 borderBottomLeftRadius: "28px",
               }}
@@ -11262,9 +6704,8 @@ const App: React.FC = () => {
         rightPanelMode={rightPanelMode}
         setRightPanelMode={setRightPanelMode}
         isCompactConsoleOpening={isCompactConsoleOpening}
-        setIsCompactConsoleOpening={setIsCompactConsoleOpening}
         previewConsoleErrorCount={previewConsoleErrorCount}
-        handleDetachConsoleWindow={handleDetachConsoleWindow}
+        handleOpenDetachedConsole={handleOpenDetachedConsole}
         isConfigModalOpen={isConfigModalOpen}
         setIsConfigModalOpen={setIsConfigModalOpen}
         configModalInitialTab={configModalInitialTab}
@@ -11315,3 +6756,4 @@ const AppRoot: React.FC = () => (
 );
 
 export default AppRoot;
+

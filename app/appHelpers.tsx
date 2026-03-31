@@ -3138,6 +3138,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   var __previewSelectedEl = null;
   var __previewEditingEl = null;
   var __previewHoverEl = null;
+  var __previewHoverPendingEl = null;
+  var __previewHoverPendingTarget = null;
   var __previewHoverBadge = null;
   var __previewHoverOutline = null;
   var __previewHoverRaf = 0;
@@ -3255,6 +3257,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
 
   function clearPreviewHover() {
     __previewHoverEl = null;
+    __previewHoverPendingEl = null;
+    __previewHoverPendingTarget = null;
     if (__previewHoverRaf) {
       cancelAnimationFrame(__previewHoverRaf);
       __previewHoverRaf = 0;
@@ -3770,6 +3774,19 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     }
     __previewHoverEl = el || null;
     updateHoverBadgePosition();
+  }
+
+  function schedulePreviewHover(el, rawTarget) {
+    __previewHoverPendingEl = el || null;
+    __previewHoverPendingTarget = rawTarget || null;
+    if (__previewHoverRaf) return;
+    __previewHoverRaf = requestAnimationFrame(function() {
+      __previewHoverRaf = 0;
+      var nextHover = __previewHoverPendingEl;
+      __previewHoverPendingEl = null;
+      __previewHoverPendingTarget = null;
+      setPreviewHover(nextHover || null);
+    });
   }
 
   function requestHoverUpdate() {
@@ -4635,8 +4652,11 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
     if (__previewEditingEl) return;
     var target = event && event.target;
+    if (target && target === __previewHoverPendingTarget && __previewHoverEl) {
+      return;
+    }
     var hovered = getPreviewSelectableTarget(target, event);
-    setPreviewHover(hovered || null);
+    schedulePreviewHover(hovered || null, target);
   }, true);
 
   document.addEventListener('mouseleave', function() {

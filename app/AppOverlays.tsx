@@ -24,9 +24,8 @@ type AppOverlaysProps = {
     React.SetStateAction<"inspector" | "gallery">
   >;
   isCompactConsoleOpening: boolean;
-  setIsCompactConsoleOpening: React.Dispatch<React.SetStateAction<boolean>>;
   previewConsoleErrorCount: number;
-  handleDetachConsoleWindow: () => void;
+  handleOpenDetachedConsole: () => void;
   isConfigModalOpen: boolean;
   setIsConfigModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   configModalInitialTab: "references" | "slides" | "configRaw" | "general";
@@ -99,9 +98,8 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
   rightPanelMode,
   setRightPanelMode,
   isCompactConsoleOpening,
-  setIsCompactConsoleOpening,
   previewConsoleErrorCount,
-  handleDetachConsoleWindow,
+  handleOpenDetachedConsole,
   isConfigModalOpen,
   setIsConfigModalOpen,
   configModalInitialTab,
@@ -171,7 +169,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               theme === "dark"
                 ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
                 : "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(248,250,252,0.82) 100%)",
-            backdropFilter: "blur(14px)",
+            backdropFilter: "none",
           }}
         >
           <div
@@ -281,7 +279,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         >
           <button
             type="button"
-            className="h-12 px-3 rounded-2xl border backdrop-blur-xl flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+            className="h-12 px-3 rounded-2xl border flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
             style={{
               background:
                 theme === "light"
@@ -324,7 +322,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
       >
         <button
           type="button"
-          className={`relative z-10 h-14 w-14 rounded-full backdrop-blur-xl transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
+          className={`relative z-10 h-14 w-14 rounded-full transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
           style={{
             background:
               theme === "light"
@@ -335,8 +333,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
             color: "var(--text-muted)",
           }}
           onClick={() => {
-            setIsCompactConsoleOpening(true);
-            handleDetachConsoleWindow();
+            handleOpenDetachedConsole();
           }}
           title="Open console in a separate window"
         >
