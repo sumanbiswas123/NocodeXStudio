@@ -2521,7 +2521,7 @@ export const buildPreviewRuntimeScript = (
       var matches = [];
       if (!el || !el.matches || !document.styleSheets) return matches;
 
-      function visitRules(ruleList, sourceLabel) {
+      function visitRules(ruleList, sourceLabel, sourcePath) {
         if (!ruleList) return;
         for (var i = 0; i < ruleList.length; i++) {
           var rule = ruleList[i];
@@ -2553,13 +2553,14 @@ export const buildPreviewRuntimeScript = (
                 matches.push({
                   selector: selectorText,
                   source: sourceLabel,
+                  sourcePath: sourcePath || '',
                   declarations: declarations
                 });
               }
               continue;
             }
             if (rule.cssRules && rule.cssRules.length) {
-              visitRules(rule.cssRules, sourceLabel);
+              visitRules(rule.cssRules, sourceLabel, sourcePath);
             }
           } catch (ruleError) {}
         }
@@ -2570,7 +2571,19 @@ export const buildPreviewRuntimeScript = (
         if (!sheet) continue;
         if (isPreviewLiveOverrideStylesheet(sheet)) continue;
         try {
-          visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+          var sourcePath = '';
+          try {
+            if (sheet.href) {
+              sourcePath = String(sheet.href).split('?')[0].split('#')[0];
+            } else if (sheet.ownerNode && sheet.ownerNode.getAttribute) {
+              sourcePath =
+                sheet.ownerNode.getAttribute('data-source') ||
+                sheet.ownerNode.getAttribute('data-href') ||
+                sheet.ownerNode.getAttribute('data-nx-live-source') ||
+                '';
+            }
+          } catch (sourcePathError) {}
+          visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet), sourcePath);
         } catch (sheetError) {}
       }
 
@@ -3640,7 +3653,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     var matches = [];
     if (!el || !el.matches || !document.styleSheets) return matches;
 
-    function visitRules(ruleList, sourceLabel) {
+    function visitRules(ruleList, sourceLabel, sourcePath) {
       if (!ruleList) return;
       for (var i = 0; i < ruleList.length; i++) {
         var rule = ruleList[i];
@@ -3672,13 +3685,14 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
               matches.push({
                 selector: selectorText,
                 source: sourceLabel,
+                sourcePath: sourcePath || '',
                 declarations: declarations
               });
             }
             continue;
           }
           if (rule.cssRules && rule.cssRules.length) {
-            visitRules(rule.cssRules, sourceLabel);
+            visitRules(rule.cssRules, sourceLabel, sourcePath);
           }
         } catch (ruleError) {}
       }
@@ -3689,7 +3703,19 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (!sheet) continue;
       if (isPreviewLiveOverrideStylesheet(sheet)) continue;
       try {
-        visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
+        var sourcePath = '';
+        try {
+          if (sheet.href) {
+            sourcePath = String(sheet.href).split('?')[0].split('#')[0];
+          } else if (sheet.ownerNode && sheet.ownerNode.getAttribute) {
+            sourcePath =
+              sheet.ownerNode.getAttribute('data-source') ||
+              sheet.ownerNode.getAttribute('data-href') ||
+              sheet.ownerNode.getAttribute('data-nx-live-source') ||
+              '';
+          }
+        } catch (sourcePathError) {}
+        visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet), sourcePath);
       } catch (sheetError) {}
     }
 

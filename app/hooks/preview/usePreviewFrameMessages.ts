@@ -628,6 +628,25 @@ export const usePreviewFrameMessages = ({
             : liveHasStableSources || !payloadHasStableSources
               ? liveMatchedCssRules
               : payloadMatchedCssRules;
+      if (typeof window !== "undefined" && (window as any).__NX_DEBUG_PREVIEW_CSS !== false) {
+        console.log("[PreviewCSSDebug] PREVIEW_SELECT matched rule sources", {
+          path: nextPath,
+          payloadMatchedCssRules: payloadMatchedCssRules.map((rule) => ({
+            selector: rule.selector,
+            source: rule.source,
+            sourcePath: rule.sourcePath || "",
+            declarations: rule.declarations.length,
+          })),
+          liveMatchedCssRules: liveMatchedCssRules.map((rule) => ({
+            selector: rule.selector,
+            source: rule.source,
+            sourcePath: rule.sourcePath || "",
+            declarations: rule.declarations.length,
+          })),
+          selectedMatchedCssRulesWinner:
+            matchedCssRules === liveMatchedCssRules ? "live" : "payload",
+        });
+      }
 
       const payloadText =
         typeof payload.text === "string" ? payload.text.trim() : "";

@@ -119,6 +119,7 @@ export const usePreviewCssMutation = ({
     payload: Record<string, unknown>,
   ) => {
     if (!isPreviewCssDebugEnabled()) return;
+    console.log(`[PreviewCSSDebug] ${label}`, payload);
     console.groupCollapsed(`[PreviewCSSDebug] ${label}`);
     Object.entries(payload).forEach(([key, value]) => {
       console.log(key, value);
@@ -209,9 +210,24 @@ export const usePreviewCssMutation = ({
 
   const resolvePreviewMatchedRuleSourcePath = useCallback(
     (source: string) => {
-      const directSourcePathCandidate = normalizeProjectRelative(
-        String(source || ""),
-      );
+      const rawSource = String(source || "").trim();
+      let directSourcePathCandidate = normalizeProjectRelative(rawSource);
+      if (rawSource) {
+        try {
+          const parsedUrl = new URL(rawSource, window.location.href);
+          const mountRelative = extractMountRelativePath(parsedUrl.pathname);
+          if (mountRelative) {
+            const virtualPath =
+              resolveVirtualPathFromMountRelative(mountRelative) ||
+              mountRelative;
+            if (virtualPath) {
+              directSourcePathCandidate = normalizeProjectRelative(virtualPath);
+            }
+          }
+        } catch {
+          // Ignore non-URL sources and continue with normalized input.
+        }
+      }
       const normalizedSource = normalizeProjectRelative(String(source || ""));
       const sourceBasename = getCssSourceBasename(source).toLowerCase();
 
@@ -320,6 +336,59 @@ export const usePreviewCssMutation = ({
       return null;
     },
     [filesRef, selectedPreviewHtml, textFileCacheRef],
+  );
+
+  const ensurePreviewMatchedRuleSourceLoaded = useCallback(
+    async (rule: PreviewMatchedRuleMutation) => {
+      const sourcePath = resolvePreviewMatchedRuleSourcePath(
+        rule.sourcePath || rule.source,
+      );
+      if (!sourcePath) return null;
+
+      const sourceText =
+        typeof textFileCacheRef.current[sourcePath] === "string"
+          ? textFileCacheRef.current[sourcePath]
+          : typeof filesRef.current[sourcePath]?.content === "string"
+            ? (filesRef.current[sourcePath]?.content as string)
+            : "";
+      if (sourceText) return sourcePath;
+
+      try {
+        const loaded = await loadFileContent(sourcePath, {
+          persistToState: false,
+        });
+        if (typeof loaded === "string" && loaded.length > 0) {
+          textFileCacheRef.current[sourcePath] = loaded;
+          return sourcePath;
+        }
+      } catch {
+        // Ignore helper load failures and fall through to direct filesystem access.
+      }
+
+      const absolutePath = filePathIndexRef.current[sourcePath];
+      if (absolutePath) {
+        try {
+          const loaded = await (Neutralino as any).filesystem.readFile(
+            absolutePath,
+          );
+          if (typeof loaded === "string" && loaded.length > 0) {
+            textFileCacheRef.current[sourcePath] = loaded;
+            return sourcePath;
+          }
+        } catch {
+          // Ignore direct filesystem access failures.
+        }
+      }
+
+      return null;
+    },
+    [
+      filePathIndexRef,
+      filesRef,
+      loadFileContent,
+      resolvePreviewMatchedRuleSourcePath,
+      textFileCacheRef,
+    ],
   );
 
   const applyPreviewMatchedRuleToLiveStylesheet = useCallback(
@@ -728,9 +797,15 @@ export const usePreviewCssMutation = ({
           syncPreviewSelectionSnapshotFromLiveElement(elementPath);
         }, 0);
       }
+      debugPreviewCssMutation("updatePreviewLiveStylesheetContent", {
+        sourcePath: normalizedSourcePath,
+        didUpdate,
+        elementPath: Array.isArray(elementPath) ? elementPath : [],
+      });
       return didUpdate;
     },
     [
+      debugPreviewCssMutation,
       filesRef,
       previewFrameRef,
       selectedPreviewHtmlRef,
@@ -746,21 +821,57 @@ export const usePreviewCssMutation = ({
       const sourcePath = resolvePreviewMatchedRuleSourcePath(
         rule.sourcePath || rule.source,
       );
-      if (!sourcePath) return null;
+      if (!sourcePath) {
+        debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
+          selector: rule.selector,
+          source: rule.source,
+          sourcePath: rule.sourcePath || "",
+          occurrenceIndex: rule.occurrenceIndex ?? 0,
+          styles,
+          resolvedSourcePath: "",
+          sourceTextFound: false,
+          ruleRangeFound: false,
+        });
+        return null;
+      }
       const sourceText =
         typeof textFileCacheRef.current[sourcePath] === "string"
           ? textFileCacheRef.current[sourcePath]
           : typeof filesRef.current[sourcePath]?.content === "string"
             ? (filesRef.current[sourcePath]?.content as string)
             : "";
-      if (!sourceText) return null;
+      if (!sourceText) {
+        debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
+          selector: rule.selector,
+          source: rule.source,
+          sourcePath: rule.sourcePath || "",
+          occurrenceIndex: rule.occurrenceIndex ?? 0,
+          styles,
+          resolvedSourcePath: sourcePath,
+          sourceTextFound: false,
+          ruleRangeFound: false,
+        });
+        return null;
+      }
 
       const ruleRange = findCssRuleRange(
         sourceText,
         rule.selector,
         Math.max(0, rule.occurrenceIndex || 0),
       );
-      if (!ruleRange) return null;
+      if (!ruleRange) {
+        debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
+          selector: rule.selector,
+          source: rule.source,
+          sourcePath: rule.sourcePath || "",
+          occurrenceIndex: rule.occurrenceIndex ?? 0,
+          styles,
+          resolvedSourcePath: sourcePath,
+          sourceTextFound: true,
+          ruleRangeFound: false,
+        });
+        return null;
+      }
 
       const declarationHost = document.createElement("div");
       declarationHost.style.cssText = ruleRange.body;
@@ -794,9 +905,25 @@ export const usePreviewCssMutation = ({
         sourceText.slice(0, ruleRange.start) +
         nextRuleBlock +
         sourceText.slice(ruleRange.end);
+      debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        occurrenceIndex: rule.occurrenceIndex ?? 0,
+        styles,
+        resolvedSourcePath: sourcePath,
+        sourceTextFound: true,
+        ruleRangeFound: true,
+        ruleHeader: ruleRange.selectorText,
+      });
       return { sourcePath, nextSourceText };
     },
-    [filesRef, resolvePreviewMatchedRuleSourcePath, textFileCacheRef],
+    [
+      debugPreviewCssMutation,
+      filesRef,
+      resolvePreviewMatchedRuleSourcePath,
+      textFileCacheRef,
+    ],
   );
 
   const persistPreviewMatchedRuleToSourceFile = useCallback(
@@ -804,7 +931,11 @@ export const usePreviewCssMutation = ({
       rule: PreviewMatchedRuleMutation,
       styles: Partial<React.CSSProperties>,
     ) => {
-      const patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
+      let patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
+      if (!patchedSource) {
+        await ensurePreviewMatchedRuleSourceLoaded(rule);
+        patchedSource = buildPreviewMatchedRulePatchedSource(rule, styles);
+      }
       if (!patchedSource) return false;
       const { sourcePath, nextSourceText } = patchedSource;
 
@@ -844,6 +975,7 @@ export const usePreviewCssMutation = ({
     [
       buildPreviewMatchedRulePatchedSource,
       dirtyFilesRef,
+      ensurePreviewMatchedRuleSourceLoaded,
       filesRef,
       invalidatePreviewDocsForDependency,
       pendingPreviewWritesRef,
@@ -1260,11 +1392,29 @@ export const usePreviewCssMutation = ({
 
       const nextPath = [...previewSelectedPath];
       applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
-      const shouldLivePreview = rule.isActive !== false;
+      const shouldLivePreview = true;
       const patchedSource =
         shouldLivePreview
           ? buildPreviewMatchedRulePatchedSource(rule, styles)
           : null;
+      if (shouldLivePreview && !patchedSource) {
+        void (async () => {
+          const loadedSourcePath = await ensurePreviewMatchedRuleSourceLoaded(
+            rule,
+          );
+          if (!loadedSourcePath) return;
+          const retriedPatchedSource = buildPreviewMatchedRulePatchedSource(
+            rule,
+            styles,
+          );
+          if (!retriedPatchedSource) return;
+          updatePreviewLiveStylesheetContent(
+            retriedPatchedSource.sourcePath,
+            retriedPatchedSource.nextSourceText,
+            nextPath,
+          );
+        })();
+      }
       const updatedLiveStylesheet =
         shouldLivePreview && patchedSource
           ? updatePreviewLiveStylesheetContent(
@@ -1400,6 +1550,7 @@ export const usePreviewCssMutation = ({
       applyPreviewMatchedRuleOptimisticState,
       applyPreviewMatchedRuleToLiveStylesheet,
       buildPreviewMatchedRulePatchedSource,
+      ensurePreviewMatchedRuleSourceLoaded,
       persistPreviewMatchedRuleToSourceFile,
       previewLocalCssDraftPendingRef,
       previewLocalCssDraftTimerRef,

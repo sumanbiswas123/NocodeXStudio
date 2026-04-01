@@ -2186,7 +2186,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               (declaration) => getDeclarationActiveState(declaration),
             ).length;
             const isRuleInactive =
-              hasResolvedActivity && activeDeclarationCount === 0;
+              hasResolvedActivity &&
+              activeDeclarationCount === 0 &&
+              isTemporaryMatchedRuleSource(rule.source);
             return (
               <div
                 key={`${rule.selector}-${rule.source}-${ruleIndex}`}
