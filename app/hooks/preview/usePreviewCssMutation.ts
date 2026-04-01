@@ -59,6 +59,14 @@ type UsePreviewCssMutationOptions = {
     styles: Partial<React.CSSProperties>;
   } | null>;
   previewLocalCssDraftTimerRef: MutableRefObject<number | null>;
+  previewMatchedRuleEditAtRef: MutableRefObject<number>;
+  previewMatchedRuleEditRef: MutableRefObject<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>;
   previewSelectedElement: VirtualElement | null;
   previewSelectedPath: number[] | null;
   resolveVirtualPathFromMountRelative: (
@@ -94,6 +102,8 @@ export const usePreviewCssMutation = ({
   previewFrameRef,
   previewLocalCssDraftPendingRef,
   previewLocalCssDraftTimerRef,
+  previewMatchedRuleEditAtRef,
+  previewMatchedRuleEditRef,
   previewSelectedElement,
   previewSelectedPath,
   resolveVirtualPathFromMountRelative,
@@ -107,6 +117,38 @@ export const usePreviewCssMutation = ({
   syncPreviewSelectionSnapshotFromLiveElement,
   textFileCacheRef,
 }: UsePreviewCssMutationOptions) => {
+  const debugMatchedRuleWrite = (
+    sourceLabel: string,
+    nextRules: PreviewMatchedCssRule[],
+  ) => {
+    if (typeof window === "undefined") return;
+    if ((window as any).__NX_DEBUG_PREVIEW_CSS === false) return;
+    console.log("[PreviewCSSDebug] matched-rule-write", {
+      source: sourceLabel,
+      ruleCount: nextRules.length,
+      rules: nextRules.map((rule) => ({
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        activeCount: rule.declarations.filter(
+          (declaration) => declaration.active === true,
+        ).length,
+        declarationCount: rule.declarations.length,
+      })),
+    });
+  };
+  const matchedRuleSourceIdentityMatches = (
+    left: { source: string; sourcePath?: string },
+    right: { source: string; sourcePath?: string },
+  ) => {
+    const leftPath = String(left.sourcePath || "").trim();
+    const rightPath = String(right.sourcePath || "").trim();
+    if (leftPath || rightPath) {
+      return cssRuleSourcesMatch(leftPath || left.source, rightPath || right.source);
+    }
+    return cssRuleSourcesMatch(left.source, right.source);
+  };
+
   const isPreviewCssDebugEnabled = () => {
     if (typeof window === "undefined") return false;
     const explicit = (window as any).__NX_DEBUG_PREVIEW_CSS;
@@ -450,8 +492,11 @@ export const usePreviewCssMutation = ({
             return false;
           }
           const matchesSource =
-            cssRuleSourcesMatch(candidate.source, rule.source) ||
-            cssRuleSourcesMatch(candidate.source, resolvedRuleSource || "");
+            matchedRuleSourceIdentityMatches(candidate, rule) ||
+            matchedRuleSourceIdentityMatches(candidate, {
+              source: resolvedRuleSource || "",
+              sourcePath: resolvedRuleSource || "",
+            });
           if (!matchesSource) return false;
           if (remainingLiveOccurrence > 0) {
             remainingLiveOccurrence -= 1;
@@ -573,8 +618,17 @@ export const usePreviewCssMutation = ({
           }
           const matchesSource = Array.from(styleSheetCandidates).some(
             (candidate) =>
-              cssRuleSourcesMatch(candidate, rule.source) ||
-              cssRuleSourcesMatch(candidate, resolvedRuleSource || ""),
+              matchedRuleSourceIdentityMatches(
+                { source: candidate, sourcePath: candidate },
+                rule,
+              ) ||
+              matchedRuleSourceIdentityMatches(
+                { source: candidate, sourcePath: candidate },
+                {
+                  source: resolvedRuleSource || "",
+                  sourcePath: resolvedRuleSource || "",
+                },
+              ),
           );
           if (!matchesSource) {
             collectSelectorMatches(styleSheet.cssRules);
@@ -636,7 +690,7 @@ export const usePreviewCssMutation = ({
       setPreviewSelectedMatchedCssRules((current) => {
         const beforeRuleSnapshot = current.find(
           (currentRule) =>
-            cssRuleSourcesMatch(currentRule.source, rule.source) &&
+            matchedRuleSourceIdentityMatches(currentRule, rule) &&
             normalizeSelectorSignature(currentRule.selector) ===
               normalizeSelectorSignature(rule.selector),
         );
@@ -644,7 +698,7 @@ export const usePreviewCssMutation = ({
         let didPatchRule = false;
         const nextRules = current.map((currentRule) => {
           if (
-            !cssRuleSourcesMatch(currentRule.source, rule.source) ||
+            !matchedRuleSourceIdentityMatches(currentRule, rule) ||
             normalizeSelectorSignature(currentRule.selector) !==
               normalizeSelectorSignature(rule.selector)
           ) {
@@ -667,7 +721,7 @@ export const usePreviewCssMutation = ({
 
         const afterRuleSnapshot = nextRules.find(
           (currentRule) =>
-            cssRuleSourcesMatch(currentRule.source, rule.source) &&
+            matchedRuleSourceIdentityMatches(currentRule, rule) &&
             normalizeSelectorSignature(currentRule.selector) ===
               normalizeSelectorSignature(rule.selector),
         );
@@ -684,10 +738,8 @@ export const usePreviewCssMutation = ({
         });
 
         if (!didPatchRule) return current;
-        if (!(liveElement instanceof Element)) {
-          return nextRules;
-        }
-        return annotateMatchedCssRuleActivity(liveElement, nextRules);
+        debugMatchedRuleWrite("OPTIMISTIC_EDIT:apply-next", nextRules);
+        return nextRules;
       });
     },
     [
@@ -716,6 +768,7 @@ export const usePreviewCssMutation = ({
       const styleNodes = Array.from(
         frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
       );
+      let updatedBaseInlineSheet = false;
       styleNodes.forEach((styleNode) => {
         const nodeSource = normalizeProjectRelative(
           styleNode.getAttribute("data-source") || "",
@@ -723,7 +776,20 @@ export const usePreviewCssMutation = ({
         if (!cssRuleSourcesMatch(nodeSource, normalizedSourcePath)) return;
         styleNode.textContent = nextCssText;
         didUpdate = true;
+        if (!styleNode.hasAttribute("data-nx-live-source")) {
+          updatedBaseInlineSheet = true;
+        }
       });
+
+      if (updatedBaseInlineSheet) {
+        Array.from(
+          frameDocument.querySelectorAll<HTMLStyleElement>(
+            `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`,
+          ),
+        ).forEach((overrideNode) => {
+          overrideNode.remove();
+        });
+      }
 
       if (!didUpdate) {
         const stylesheetLinks = Array.from(
@@ -1391,6 +1457,14 @@ export const usePreviewCssMutation = ({
       }
 
       const nextPath = [...previewSelectedPath];
+      previewMatchedRuleEditAtRef.current = Date.now();
+      previewMatchedRuleEditRef.current = {
+        at: previewMatchedRuleEditAtRef.current,
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath,
+        occurrenceIndex: Math.max(0, rule.occurrenceIndex || 0),
+      };
       applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
       const shouldLivePreview = true;
       const patchedSource =
@@ -1554,6 +1628,8 @@ export const usePreviewCssMutation = ({
       persistPreviewMatchedRuleToSourceFile,
       previewLocalCssDraftPendingRef,
       previewLocalCssDraftTimerRef,
+      previewMatchedRuleEditAtRef,
+      previewMatchedRuleEditRef,
       previewSelectedPath,
       clearPreviewInlineStylePropertiesAtPath,
       removePreviewLocalStyleClassesAtPath,

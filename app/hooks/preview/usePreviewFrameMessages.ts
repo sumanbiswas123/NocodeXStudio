@@ -20,7 +20,9 @@ import type {
   PreviewMatchedCssRule,
 } from "../../helpers/previewCssHelpers";
 import {
+  canonicalizeEquivalentMatchedCssRules,
   collectMatchedCssRulesFromElement,
+  annotateMatchedCssRuleActivity,
   normalizePresentationStylePatch,
 } from "../../helpers/previewCssHelpers";
 
@@ -120,6 +122,13 @@ type UsePreviewFrameMessagesOptions = {
   isPageSwitchPromptBusy: boolean;
   isPageSwitchPromptOpen: boolean;
   previewSelectedElement: VirtualElement | null;
+  previewMatchedRuleEditRef: MutableRefObject<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>;
   previewSelectedPath: number[] | null;
   previewSyncedFile: string | null;
   requestPreviewRefreshWithUnsavedGuard: () => void;
@@ -186,6 +195,7 @@ export const usePreviewFrameMessages = ({
   isMountedPreview,
   isPageSwitchPromptBusy,
   isPageSwitchPromptOpen,
+  previewMatchedRuleEditRef,
   previewSelectedElement,
   previewSelectedPath,
   previewSyncedFile,
@@ -213,6 +223,27 @@ export const usePreviewFrameMessages = ({
   shouldProcessPreviewPageSignal,
   syncPreviewActiveFile,
 }: UsePreviewFrameMessagesOptions) => {
+  const RECENT_MATCHED_RULE_EDIT_MS = 1500;
+  const debugMatchedRuleWrite = (
+    sourceLabel: string,
+    nextRules: PreviewMatchedCssRule[],
+  ) => {
+    if (typeof window === "undefined") return;
+    if ((window as any).__NX_DEBUG_PREVIEW_CSS === false) return;
+    console.log("[PreviewCSSDebug] matched-rule-write", {
+      source: sourceLabel,
+      ruleCount: nextRules.length,
+      rules: nextRules.map((rule) => ({
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        activeCount: rule.declarations.filter(
+          (declaration) => declaration.active === true,
+        ).length,
+        declarationCount: rule.declarations.length,
+      })),
+    });
+  };
   useEffect(() => {
     const onPreviewMessage = (event: MessageEvent) => {
       if (!isActivePreviewMessageSource(event.source)) return;
@@ -612,7 +643,9 @@ export const usePreviewFrameMessages = ({
       const computedStyles =
         payloadComputedStyles || extractComputedStylesFromElement(liveElement);
       const liveMatchedCssRules = liveElement
-        ? collectMatchedCssRulesFromElement(liveElement)
+        ? canonicalizeEquivalentMatchedCssRules(
+            collectMatchedCssRulesFromElement(liveElement),
+          )
         : [];
       const liveHasStableSources = liveMatchedCssRules.some(
         (rule) => !isTemporaryMatchedRuleSource(rule.source),
@@ -620,14 +653,20 @@ export const usePreviewFrameMessages = ({
       const payloadHasStableSources = payloadMatchedCssRules.some(
         (rule) => !isTemporaryMatchedRuleSource(rule.source),
       );
+      const payloadMatchedCssRulesAnnotated =
+        liveElement && payloadMatchedCssRules.length > 0
+          ? canonicalizeEquivalentMatchedCssRules(
+              annotateMatchedCssRuleActivity(liveElement, payloadMatchedCssRules),
+            )
+          : canonicalizeEquivalentMatchedCssRules(payloadMatchedCssRules);
       const matchedCssRules =
         liveMatchedCssRules.length === 0
-          ? payloadMatchedCssRules
+          ? payloadMatchedCssRulesAnnotated
           : payloadMatchedCssRules.length === 0
             ? liveMatchedCssRules
             : liveHasStableSources || !payloadHasStableSources
               ? liveMatchedCssRules
-              : payloadMatchedCssRules;
+              : payloadMatchedCssRulesAnnotated;
       if (typeof window !== "undefined" && (window as any).__NX_DEBUG_PREVIEW_CSS !== false) {
         console.log("[PreviewCSSDebug] PREVIEW_SELECT matched rule sources", {
           path: nextPath,
@@ -636,6 +675,15 @@ export const usePreviewFrameMessages = ({
             source: rule.source,
             sourcePath: rule.sourcePath || "",
             declarations: rule.declarations.length,
+          })),
+          payloadMatchedCssRulesAnnotated: payloadMatchedCssRulesAnnotated.map((rule) => ({
+            selector: rule.selector,
+            source: rule.source,
+            sourcePath: rule.sourcePath || "",
+            declarations: rule.declarations.length,
+            activeCount: rule.declarations.filter(
+              (declaration) => declaration.active === true,
+            ).length,
           })),
           liveMatchedCssRules: liveMatchedCssRules.map((rule) => ({
             selector: rule.selector,
@@ -764,7 +812,26 @@ export const usePreviewFrameMessages = ({
       setPreviewSelectedPath(nextPath);
       setPreviewSelectedElement(nextElement);
       setPreviewSelectedComputedStyles(computedStyles);
-      setPreviewSelectedMatchedCssRules(matchedCssRules);
+      setPreviewSelectedMatchedCssRules((current) => {
+        const recentlyEditedMatchedRule = Boolean(
+          previewMatchedRuleEditRef.current &&
+            Date.now() - previewMatchedRuleEditRef.current.at <
+              RECENT_MATCHED_RULE_EDIT_MS,
+        );
+        const currentHasStableSources = current.some(
+          (rule) => !isTemporaryMatchedRuleSource(rule.source),
+        );
+        if (
+          recentlyEditedMatchedRule &&
+          sameSelectedPath &&
+          currentHasStableSources
+        ) {
+          debugMatchedRuleWrite("PREVIEW_SELECT:keep-current", current);
+          return current;
+        }
+        debugMatchedRuleWrite("PREVIEW_SELECT:apply-next", matchedCssRules);
+        return matchedCssRules;
+      });
       setSelectedId(null);
       setIsCodePanelOpen(false);
       setIsRightPanelOpen(true);
@@ -795,6 +862,7 @@ export const usePreviewFrameMessages = ({
     isPageSwitchPromptBusy,
     isPageSwitchPromptOpen,
     previewSelectedElement?.id,
+    previewMatchedRuleEditRef,
     previewSelectedPath,
     previewSyncedFile,
     requestPreviewRefreshWithUnsavedGuard,

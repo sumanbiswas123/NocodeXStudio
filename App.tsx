@@ -345,6 +345,14 @@ const App: React.FC = () => {
     rule: PreviewMatchedRuleMutation;
     styles: Partial<React.CSSProperties>;
   } | null>(null);
+  const previewMatchedRuleEditAtRef = useRef<number>(0);
+  const previewMatchedRuleEditRef = useRef<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>(null);
   const applyPreviewDropCreateRef = useRef<
     ((type: string, clientX: number, clientY: number) => Promise<void>) | null
   >(null);
@@ -1151,6 +1159,7 @@ const App: React.FC = () => {
     previewDependencyIndexRef,
     previewSelectedElement,
     previewSelectedPath,
+    previewMatchedRuleEditRef,
     previewStyleDraftPendingRef,
     previewStyleDraftTimerRef,
     pushPreviewHistory,
@@ -1220,6 +1229,8 @@ const App: React.FC = () => {
     previewFrameRef,
     previewLocalCssDraftPendingRef,
     previewLocalCssDraftTimerRef,
+    previewMatchedRuleEditAtRef,
+    previewMatchedRuleEditRef,
     previewSelectedElement,
     previewSelectedPath,
     resolveVirtualPathFromMountRelative,
@@ -1292,6 +1303,8 @@ const App: React.FC = () => {
       loadFileContent,
       persistPreviewHtmlContent,
       previewMountBasePath,
+      previewMatchedRuleEditAtRef,
+      previewMatchedRuleEditRef,
       previewRefreshNonce,
       previewSelectedElement,
       previewSelectedMatchedCssRules,
@@ -1353,6 +1366,7 @@ const App: React.FC = () => {
     isMountedPreview,
     isPageSwitchPromptBusy,
     isPageSwitchPromptOpen,
+    previewMatchedRuleEditRef,
     previewSelectedElement,
     previewSelectedPath,
     previewSyncedFile,

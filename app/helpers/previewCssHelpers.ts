@@ -97,6 +97,44 @@ export type CdpInspectSelectedResponse = {
 const normalizeMatchedCssProperty = (property: string) =>
   String(property || "").trim().toLowerCase();
 
+const isElementLike = (value: unknown): value is Element =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { nodeType?: unknown }).nodeType === 1 &&
+      typeof (value as { matches?: unknown }).matches === "function",
+  );
+
+const isStyleHostLike = (
+  value: unknown,
+): value is Element & { style: CSSStyleDeclaration } =>
+  isElementLike(value) &&
+  typeof (value as { style?: unknown }).style === "object" &&
+  value !== null;
+
+const isCssStyleRuleLike = (
+  value: unknown,
+): value is CSSStyleRule & {
+  selectorText: string;
+  style: CSSStyleDeclaration;
+} =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === 1 &&
+      typeof (value as { selectorText?: unknown }).selectorText === "string" &&
+      typeof (value as { style?: unknown }).style === "object",
+  );
+
+const hasNestedCssRules = (
+  value: unknown,
+): value is CSSRule & { cssRules: CSSRuleList } =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { cssRules?: unknown }).cssRules === "object",
+  );
+
 const isPreviewCssDebugEnabled = () => {
   if (typeof window === "undefined") return false;
   const explicit = (window as any).__NX_DEBUG_PREVIEW_CSS;
@@ -273,10 +311,12 @@ export const annotateMatchedCssRuleActivity = (
   element: Element,
   rules: PreviewMatchedCssRule[],
 ): PreviewMatchedCssRule[] => {
-  const normalizedRules = rules.map((rule) => ({
-    ...rule,
-    declarations: dedupeExactRuleDeclarations(rule.declarations),
-  }));
+  const normalizedRules = dedupeExactMatchedCssRules(
+    rules.map((rule) => ({
+      ...rule,
+      declarations: dedupeExactRuleDeclarations(rule.declarations),
+    })),
+  );
   type Winner = {
     important: boolean;
     specificity: CssSpecificity;
@@ -332,7 +372,7 @@ export const annotateMatchedCssRuleActivity = (
     });
   });
 
-  if (element instanceof HTMLElement) {
+  if (isStyleHostLike(element)) {
     const inlineStyle = element.style;
     Array.from(inlineStyle).forEach((property) => {
       const normalized = normalizeMatchedCssProperty(property);
@@ -365,12 +405,16 @@ export const annotateMatchedCssRuleActivity = (
   }));
 };
 
+type InternalCollectedMatchedCssRule = PreviewMatchedCssRule & {
+  __fromLiveOverride?: boolean;
+};
+
 export const collectMatchedCssRulesFromElement = (
   element: Element | null,
 ): PreviewMatchedCssRule[] => {
   if (
     !element ||
-    !(element instanceof Element) ||
+    !isElementLike(element) ||
     typeof element.matches !== "function"
   ) {
     return [];
@@ -386,7 +430,7 @@ export const collectMatchedCssRulesFromElement = (
       };
     }
     const ownerNode = sheet.ownerNode;
-    if (ownerNode instanceof Element) {
+    if (isElementLike(ownerNode)) {
       const source =
         ownerNode.getAttribute("data-source") ||
         ownerNode.getAttribute("data-href") ||
@@ -407,12 +451,13 @@ export const collectMatchedCssRulesFromElement = (
     };
   };
 
-  const results: PreviewMatchedCssRule[] = [];
+  const results: InternalCollectedMatchedCssRule[] = [];
 
   const visitRules = (
     rules: CSSRuleList | undefined,
     source: string,
     sourcePath?: string,
+    fromLiveOverride?: boolean,
   ) => {
     if (!rules) return;
     Array.from(rules).forEach((rule) => {
@@ -422,7 +467,7 @@ export const collectMatchedCssRulesFromElement = (
           style?: CSSStyleDeclaration;
           cssRules?: CSSRuleList;
         };
-        if (rule.type === 1 && candidateRule.selectorText) {
+        if (isCssStyleRuleLike(candidateRule)) {
           const selector = String(candidateRule.selectorText || "").trim();
           if (!selector) return;
           try {
@@ -443,13 +488,24 @@ export const collectMatchedCssRulesFromElement = (
             });
           });
           if (declarations.length) {
-            results.push({ selector, source, sourcePath, declarations });
+            results.push({
+              selector,
+              source,
+              sourcePath,
+              declarations,
+              __fromLiveOverride: Boolean(fromLiveOverride),
+            });
           }
           return;
         }
 
-        if (candidateRule.cssRules) {
-          visitRules(candidateRule.cssRules, source, sourcePath);
+        if (hasNestedCssRules(candidateRule)) {
+          visitRules(
+            candidateRule.cssRules,
+            source,
+            sourcePath,
+            fromLiveOverride,
+          );
         }
       } catch {
         // Ignore inaccessible or unsupported rules.
@@ -468,15 +524,22 @@ export const collectMatchedCssRulesFromElement = (
     try {
       if (hasLiveOverrideForStyleSheet(sheet, styleSheets)) return;
       const sourceMeta = getSourceMeta(sheet);
-      visitRules(sheet.cssRules, sourceMeta.source, sourceMeta.sourcePath);
+      visitRules(
+        sheet.cssRules,
+        sourceMeta.source,
+        sourceMeta.sourcePath,
+        isPreviewLiveOverrideStylesheet(sheet),
+      );
     } catch {
       // Ignore inaccessible stylesheet rules.
     }
   });
 
+  const canonicalResults = collapseLiveOverrideMatchedCssRules(results);
+
   return annotateMatchedCssRuleActivity(
     element,
-    filterRedundantMatchedCssRules(results),
+    filterRedundantMatchedCssRules(canonicalResults),
   );
 };
 
@@ -757,7 +820,7 @@ export const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
     return parts[parts.length - 1] || cleanHref || "stylesheet";
   }
   const ownerNode = sheet.ownerNode;
-  if (ownerNode instanceof Element) {
+  if (isElementLike(ownerNode)) {
     const source =
       ownerNode.getAttribute("data-source") ||
       ownerNode.getAttribute("data-href") ||
@@ -775,7 +838,7 @@ export const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
 const isPreviewLiveOverrideStylesheet = (sheet: CSSStyleSheet) => {
   const ownerNode = sheet.ownerNode;
   return (
-    ownerNode instanceof Element &&
+    isElementLike(ownerNode) &&
     ownerNode.hasAttribute("data-nx-live-source")
   );
 };
@@ -820,7 +883,7 @@ const collectStyleSheetSourceCandidates = (sheet: CSSStyleSheet): string[] => {
 
   pushCandidate(sheet.href || "");
   const ownerNode = sheet.ownerNode;
-  if (ownerNode instanceof Element) {
+  if (isElementLike(ownerNode)) {
     pushCandidate(ownerNode.getAttribute("data-source"));
     pushCandidate(ownerNode.getAttribute("data-href"));
     pushCandidate(ownerNode.getAttribute("data-nx-live-source"));
@@ -872,6 +935,108 @@ const buildMatchedRuleDeclarationSignature = (
     )
     .join("|");
 
+const buildMatchedRulePropertySignature = (
+  declarations: PreviewMatchedCssDeclaration[],
+) =>
+  declarations
+    .map((declaration) => normalizeMatchedCssProperty(declaration.property))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+const buildExactMatchedRuleKey = (rule: PreviewMatchedCssRule) =>
+  [
+    normalizeProjectRelative(String(rule.sourcePath || rule.source || "")),
+    normalizeSelectorSignature(rule.selector),
+    buildMatchedRuleDeclarationSignature(rule.declarations),
+  ].join("::");
+
+export const dedupeExactMatchedCssRules = (
+  rules: PreviewMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  const seen = new Set<string>();
+  const result: PreviewMatchedCssRule[] = [];
+  rules.forEach((rule) => {
+    const key = buildExactMatchedRuleKey(rule);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    result.push(rule);
+  });
+  return result;
+};
+
+export const canonicalizeEquivalentMatchedCssRules = (
+  rules: PreviewMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  const grouped = new Map<string, PreviewMatchedCssRule[]>();
+  const orderedKeys: string[] = [];
+
+  rules.forEach((rule) => {
+    const key = [
+      normalizeProjectRelative(String(rule.sourcePath || rule.source || "")),
+      normalizeSelectorSignature(rule.selector),
+      buildMatchedRulePropertySignature(rule.declarations),
+    ].join("::");
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+      orderedKeys.push(key);
+    }
+    grouped.get(key)?.push(rule);
+  });
+
+  return orderedKeys.map((key) => {
+    const bucket = grouped.get(key) || [];
+    if (bucket.length <= 1) return bucket[0];
+    return bucket.reduce((best, candidate) => {
+      const bestActiveCount = best.declarations.filter(
+        (declaration) => declaration.active === true,
+      ).length;
+      const candidateActiveCount = candidate.declarations.filter(
+        (declaration) => declaration.active === true,
+      ).length;
+      if (candidateActiveCount > bestActiveCount) return candidate;
+      if (candidateActiveCount < bestActiveCount) return best;
+      return candidate;
+    });
+  });
+};
+
+const collapseLiveOverrideMatchedCssRules = (
+  rules: InternalCollectedMatchedCssRule[],
+): PreviewMatchedCssRule[] => {
+  const grouped = new Map<string, InternalCollectedMatchedCssRule[]>();
+  const orderedKeys: string[] = [];
+
+  rules.forEach((rule) => {
+    const key = [
+      normalizeProjectRelative(String(rule.sourcePath || rule.source || "")),
+      normalizeSelectorSignature(rule.selector),
+      buildMatchedRulePropertySignature(rule.declarations),
+    ].join("::");
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+      orderedKeys.push(key);
+    }
+    grouped.get(key)?.push(rule);
+  });
+
+  return orderedKeys.flatMap((key) => {
+    const bucket = grouped.get(key) || [];
+    if (bucket.length <= 1) {
+      return bucket.map(({ __fromLiveOverride: _unused, ...rule }) => rule);
+    }
+    const liveOverrideRule = [...bucket]
+      .reverse()
+      .find((rule) => rule.__fromLiveOverride);
+    if (!liveOverrideRule) {
+      return bucket.map(({ __fromLiveOverride: _unused, ...rule }) => rule);
+    }
+    return [
+      (({ __fromLiveOverride: _unused, ...rule }) => rule)(liveOverrideRule),
+    ];
+  });
+};
+
 export const filterRedundantMatchedCssRules = (
   rules: PreviewMatchedCssRule[],
 ): PreviewMatchedCssRule[] => {
@@ -900,7 +1065,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
 ): LiveMatchedCssRuleRef[] => {
   if (
     !element ||
-    !(element instanceof Element) ||
+    !isElementLike(element) ||
     typeof element.matches !== "function"
   ) {
     return [];
@@ -915,7 +1080,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
     if (!rules) return;
     Array.from(rules).forEach((rule) => {
       try {
-        if (rule instanceof CSSStyleRule) {
+        if (isCssStyleRuleLike(rule)) {
           const selector = String(rule.selectorText || "").trim();
           if (!selector) return;
           try {
@@ -945,7 +1110,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
           return;
         }
         const nestedRule = rule as CSSRule & { cssRules?: CSSRuleList };
-        if (nestedRule.cssRules) {
+        if (hasNestedCssRules(nestedRule)) {
           visitRules(nestedRule.cssRules, source, sourcePath);
         }
       } catch {
@@ -972,7 +1137,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
         );
       } else {
         const ownerNode = sheet.ownerNode;
-        if (ownerNode instanceof Element) {
+        if (isElementLike(ownerNode)) {
           const ownerSource =
             ownerNode.getAttribute("data-source") ||
             ownerNode.getAttribute("data-href") ||

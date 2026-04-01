@@ -6,6 +6,10 @@ import type {
   PreviewMatchedCssRule,
 } from "../../helpers/previewCssHelpers";
 import {
+  cssRuleSourcesMatch,
+  normalizeSelectorSignature,
+} from "../../helpers/previewCssHelpers";
+import {
   applyPreviewInlineEdit as applyPreviewInlineEditHelper,
   applyPreviewInlineEditDraft as applyPreviewInlineEditDraftHelper,
   persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
@@ -53,6 +57,13 @@ type UsePreviewContentEditingOptions = {
   previewDependencyIndexRef: MutableRefObject<Record<string, string[]>>;
   previewSelectedElement: VirtualElement | null;
   previewSelectedPath: number[] | null;
+  previewMatchedRuleEditRef: MutableRefObject<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>;
   previewStyleDraftPendingRef: MutableRefObject<{
     filePath: string;
     elementPath: number[];
@@ -99,6 +110,7 @@ export const usePreviewContentEditing = ({
   previewDependencyIndexRef,
   previewSelectedElement,
   previewSelectedPath,
+  previewMatchedRuleEditRef,
   previewStyleDraftPendingRef,
   previewStyleDraftTimerRef,
   pushPreviewHistory,
@@ -115,6 +127,27 @@ export const usePreviewContentEditing = ({
   setSelectedPreviewDoc,
   textFileCacheRef,
 }: UsePreviewContentEditingOptions) => {
+  const RECENT_MATCHED_RULE_EDIT_MS = 1500;
+  const debugMatchedRuleWrite = (
+    sourceLabel: string,
+    nextRules: PreviewMatchedCssRule[],
+  ) => {
+    if (typeof window === "undefined") return;
+    if ((window as any).__NX_DEBUG_PREVIEW_CSS === false) return;
+    console.log("[PreviewCSSDebug] matched-rule-write", {
+      source: sourceLabel,
+      ruleCount: nextRules.length,
+      rules: nextRules.map((rule) => ({
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        activeCount: rule.declarations.filter(
+          (declaration) => declaration.active === true,
+        ).length,
+        declarationCount: rule.declarations.length,
+      })),
+    });
+  };
   const isTemporaryMatchedRuleSource = (source: string) => {
     const normalized = String(source || "").trim().toLowerCase();
     return (
@@ -122,6 +155,84 @@ export const usePreviewContentEditing = ({
       /^style-sheet-\d+-\d+$/.test(normalized)
     );
   };
+
+  const mergeRecentEditedRuleActivity = useCallback(
+    (
+      incomingRules: PreviewMatchedCssRule[],
+      currentRules: PreviewMatchedCssRule[],
+    ) => {
+      const recentEdit = previewMatchedRuleEditRef.current;
+      if (!recentEdit) return incomingRules;
+      if (Date.now() - recentEdit.at > RECENT_MATCHED_RULE_EDIT_MS) {
+        return incomingRules;
+      }
+
+      const annotateOccurrences = (rules: PreviewMatchedCssRule[]) => {
+        const occurrenceCounter = new Map<string, number>();
+        return rules.map((rule) => {
+          const key = `${rule.sourcePath || rule.source}::${rule.selector}`;
+          const occurrenceIndex = occurrenceCounter.get(key) || 0;
+          occurrenceCounter.set(key, occurrenceIndex + 1);
+          return { rule, occurrenceIndex };
+        });
+      };
+
+      const currentAnnotated = annotateOccurrences(currentRules);
+      const incomingAnnotated = annotateOccurrences(incomingRules);
+      const recentEditSelector = normalizeSelectorSignature(
+        recentEdit.selector,
+      );
+      const recentEditSource = recentEdit.sourcePath || recentEdit.source;
+      const currentMatch = currentAnnotated.find(
+        ({ rule, occurrenceIndex }) =>
+          cssRuleSourcesMatch(
+            rule.sourcePath || rule.source,
+            recentEditSource,
+          ) &&
+          normalizeSelectorSignature(rule.selector) === recentEditSelector &&
+          occurrenceIndex === recentEdit.occurrenceIndex,
+      )?.rule;
+      if (!currentMatch) return incomingRules;
+      const currentHasActive = currentMatch.declarations.some(
+        (declaration) => declaration.active === true,
+      );
+      if (!currentHasActive) return incomingRules;
+
+      return incomingAnnotated.map(({ rule, occurrenceIndex }) => {
+        if (
+          !cssRuleSourcesMatch(
+            rule.sourcePath || rule.source,
+            recentEditSource,
+          ) ||
+          normalizeSelectorSignature(rule.selector) !== recentEditSelector ||
+          occurrenceIndex !== recentEdit.occurrenceIndex
+        ) {
+          return rule;
+        }
+        const incomingHasAnyActive = rule.declarations.some(
+          (declaration) => declaration.active === true,
+        );
+        if (incomingHasAnyActive) return rule;
+        const currentActivityByProperty = new Map(
+          currentMatch.declarations.map((declaration) => [
+            String(declaration.property || "").trim().toLowerCase(),
+            declaration.active,
+          ]),
+        );
+        return {
+          ...rule,
+          declarations: rule.declarations.map((declaration) => ({
+            ...declaration,
+            active:
+              currentActivityByProperty.get(
+                String(declaration.property || "").trim().toLowerCase(),
+              ) ?? declaration.active,
+          })),
+        };
+      });
+    },
+    [previewMatchedRuleEditRef],
+  );
 
   const applyPreviewInlineEditDraft = useCallback(
     async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
@@ -241,18 +352,33 @@ export const usePreviewContentEditing = ({
 
       setPreviewSelectedComputedStyles(snapshot.computedStyles);
       setPreviewSelectedMatchedCssRules((current) => {
+        const recentlyEditedMatchedRule = Boolean(
+          previewMatchedRuleEditRef.current &&
+            Date.now() - previewMatchedRuleEditRef.current.at <
+              RECENT_MATCHED_RULE_EDIT_MS,
+        );
         const snapshotHasStableSources = snapshot.matchedCssRules.some(
           (rule) => !isTemporaryMatchedRuleSource(rule.source),
         );
         const currentHasStableSources = current.some(
           (rule) => !isTemporaryMatchedRuleSource(rule.source),
         );
+        if (recentlyEditedMatchedRule && currentHasStableSources) {
+          debugMatchedRuleWrite("LIVE_SNAPSHOT:keep-current", current);
+          return current;
+        }
         if (
           snapshot.matchedCssRules.length > 0 &&
           (snapshotHasStableSources || !currentHasStableSources)
         ) {
-          return snapshot.matchedCssRules;
+          const nextRules = mergeRecentEditedRuleActivity(
+            snapshot.matchedCssRules,
+            current,
+          );
+          debugMatchedRuleWrite("LIVE_SNAPSHOT:apply-next", nextRules);
+          return nextRules;
         }
+        debugMatchedRuleWrite("LIVE_SNAPSHOT:keep-fallback", current);
         return current;
       });
       setPreviewSelectedElement(snapshot.elementData);
@@ -262,9 +388,11 @@ export const usePreviewContentEditing = ({
       getLivePreviewSelectedElement,
       getStablePreviewElementId,
       previewSelectedElement?.id,
+      previewMatchedRuleEditRef,
       setPreviewSelectedComputedStyles,
       setPreviewSelectedElement,
       setPreviewSelectedMatchedCssRules,
+      mergeRecentEditedRuleActivity,
     ],
   );
 

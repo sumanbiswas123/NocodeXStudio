@@ -4,8 +4,10 @@ import { FileMap, ProjectFile, VirtualElement } from "../../../types";
 import {
   CdpInspectSelectedResponse,
   PreviewMatchedCssRule,
+  cssRuleSourcesMatch,
   derivePreviewMatchedCssRulesFromCdp,
   extractAssetUrlFromCssValue,
+  normalizeSelectorSignature,
   toReactComputedStylesFromCdp,
 } from "../../helpers/previewCssHelpers";
 import {
@@ -46,6 +48,14 @@ type UsePreviewInspectorRuntimeOptions = {
     },
   ) => Promise<void>;
   previewMountBasePath: string | null;
+  previewMatchedRuleEditAtRef: React.MutableRefObject<number>;
+  previewMatchedRuleEditRef: React.MutableRefObject<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>;
   previewRefreshNonce: number;
   previewSelectedElement: VirtualElement | null;
   previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
@@ -81,6 +91,8 @@ export const usePreviewInspectorRuntime = ({
   loadFileContent,
   persistPreviewHtmlContent,
   previewMountBasePath,
+  previewMatchedRuleEditAtRef,
+  previewMatchedRuleEditRef,
   previewRefreshNonce,
   previewSelectedElement,
   previewSelectedMatchedCssRules,
@@ -94,6 +106,27 @@ export const usePreviewInspectorRuntime = ({
   setPreviewSelectedElement,
   setPreviewSelectedMatchedCssRules,
 }: UsePreviewInspectorRuntimeOptions): UsePreviewInspectorRuntimeResult => {
+  const MATCHED_RULE_CDP_COOLDOWN_MS = 1200;
+  const debugMatchedRuleWrite = (
+    sourceLabel: string,
+    nextRules: PreviewMatchedCssRule[],
+  ) => {
+    if (typeof window === "undefined") return;
+    if ((window as any).__NX_DEBUG_PREVIEW_CSS === false) return;
+    console.log("[PreviewCSSDebug] matched-rule-write", {
+      source: sourceLabel,
+      ruleCount: nextRules.length,
+      rules: nextRules.map((rule) => ({
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        activeCount: rule.declarations.filter(
+          (declaration) => declaration.active === true,
+        ).length,
+        declarationCount: rule.declarations.length,
+      })),
+    });
+  };
   const lastAutoAssetReplaceKeyRef = useRef<string | null>(null);
   const latestPreviewSelectedElementRef = useRef<VirtualElement | null>(
     previewSelectedElement,
@@ -108,6 +141,136 @@ export const usePreviewInspectorRuntime = ({
       /^style-sheet-\d+-\d+$/.test(normalized)
     );
   };
+
+  const mergeRecentEditedRuleActivity = useCallback(
+    (
+      incomingRules: PreviewMatchedCssRule[],
+      currentRules: PreviewMatchedCssRule[],
+    ) => {
+      const recentEdit = previewMatchedRuleEditRef.current;
+      if (!recentEdit) return incomingRules;
+      if (Date.now() - recentEdit.at > MATCHED_RULE_CDP_COOLDOWN_MS) {
+        return incomingRules;
+      }
+
+      const annotateOccurrences = (rules: PreviewMatchedCssRule[]) => {
+        const occurrenceCounter = new Map<string, number>();
+        return rules.map((rule) => {
+          const key = `${rule.sourcePath || rule.source}::${rule.selector}`;
+          const occurrenceIndex = occurrenceCounter.get(key) || 0;
+          occurrenceCounter.set(key, occurrenceIndex + 1);
+          return { rule, occurrenceIndex };
+        });
+      };
+
+      const currentAnnotated = annotateOccurrences(currentRules);
+      const incomingAnnotated = annotateOccurrences(incomingRules);
+      const recentEditSelector = normalizeSelectorSignature(
+        recentEdit.selector,
+      );
+      const recentEditSource = recentEdit.sourcePath || recentEdit.source;
+      const currentMatch = currentAnnotated.find(
+        ({ rule, occurrenceIndex }) =>
+          cssRuleSourcesMatch(
+            rule.sourcePath || rule.source,
+            recentEditSource,
+          ) &&
+          normalizeSelectorSignature(rule.selector) === recentEditSelector &&
+          occurrenceIndex === recentEdit.occurrenceIndex,
+      )?.rule;
+      if (!currentMatch) return incomingRules;
+      const currentHasActive = currentMatch.declarations.some(
+        (declaration) => declaration.active === true,
+      );
+      if (!currentHasActive) return incomingRules;
+
+      return incomingAnnotated.map(({ rule, occurrenceIndex }) => {
+        if (
+          !cssRuleSourcesMatch(
+            rule.sourcePath || rule.source,
+            recentEditSource,
+          ) ||
+          normalizeSelectorSignature(rule.selector) !== recentEditSelector ||
+          occurrenceIndex !== recentEdit.occurrenceIndex
+        ) {
+          return rule;
+        }
+        const incomingHasAnyActive = rule.declarations.some(
+          (declaration) => declaration.active === true,
+        );
+        if (incomingHasAnyActive) return rule;
+        const currentActivityByProperty = new Map(
+          currentMatch.declarations.map((declaration) => [
+            String(declaration.property || "").trim().toLowerCase(),
+            declaration.active,
+          ]),
+        );
+        return {
+          ...rule,
+          declarations: rule.declarations.map((declaration) => ({
+            ...declaration,
+            active:
+              currentActivityByProperty.get(
+                String(declaration.property || "").trim().toLowerCase(),
+              ) ?? declaration.active,
+          })),
+        };
+      });
+    },
+    [previewMatchedRuleEditRef],
+  );
+
+  const projectCdpRuleActivityOntoCurrent = useCallback(
+    (
+      currentRules: PreviewMatchedCssRule[],
+      cdpRules: PreviewMatchedCssRule[],
+    ): PreviewMatchedCssRule[] => {
+      const annotateOccurrences = (rules: PreviewMatchedCssRule[]) => {
+        const occurrenceCounter = new Map<string, number>();
+        return rules.map((rule) => {
+          const key = `${rule.sourcePath || rule.source}::${normalizeSelectorSignature(rule.selector)}`;
+          const occurrenceIndex = occurrenceCounter.get(key) || 0;
+          occurrenceCounter.set(key, occurrenceIndex + 1);
+          return { rule, occurrenceIndex };
+        });
+      };
+
+      const cdpAnnotated = annotateOccurrences(cdpRules);
+
+      return annotateOccurrences(currentRules).map(({ rule, occurrenceIndex }) => {
+        const matchingCdpRule = cdpAnnotated.find(
+          ({ rule: cdpRule, occurrenceIndex: cdpOccurrenceIndex }) =>
+            cdpOccurrenceIndex === occurrenceIndex &&
+            cssRuleSourcesMatch(
+              cdpRule.sourcePath || cdpRule.source,
+              rule.sourcePath || rule.source,
+            ) &&
+            normalizeSelectorSignature(cdpRule.selector) ===
+              normalizeSelectorSignature(rule.selector),
+        )?.rule;
+        if (!matchingCdpRule) {
+          return rule;
+        }
+        const activityByProperty = new Map(
+          matchingCdpRule.declarations.map((declaration) => [
+            String(declaration.property || "").trim().toLowerCase(),
+            declaration.active,
+          ]),
+        );
+        return {
+          ...rule,
+          declarations: rule.declarations.map((declaration) => ({
+            ...declaration,
+            active:
+              activityByProperty.get(
+                String(declaration.property || "").trim().toLowerCase(),
+              ) ?? declaration.active,
+          })),
+        };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     latestPreviewSelectedElementRef.current = previewSelectedElement;
@@ -198,9 +361,11 @@ export const usePreviewInspectorRuntime = ({
         const cdpComputedStyles = toReactComputedStylesFromCdp(
           payload.computedStyles,
         );
+        const currentMatchedRules =
+          latestPreviewSelectedMatchedCssRulesRef.current;
         const cdpMatchedCssRules = derivePreviewMatchedCssRulesFromCdp(
           payload.matchedStyles,
-          latestPreviewSelectedMatchedCssRulesRef.current,
+          currentMatchedRules,
           latestPreviewSelectedElement.styles,
         );
 
@@ -209,16 +374,17 @@ export const usePreviewInspectorRuntime = ({
         }
         if (cdpMatchedCssRules.length > 0) {
           setPreviewSelectedMatchedCssRules((current) => {
-            const cdpHasStableSources = cdpMatchedCssRules.some(
-              (rule) => !isTemporaryMatchedRuleSource(rule.source),
+            const projectedRules = projectCdpRuleActivityOntoCurrent(
+              current,
+              cdpMatchedCssRules,
             );
-            const currentHasStableSources = current.some(
-              (rule) => !isTemporaryMatchedRuleSource(rule.source),
-            );
-            if (cdpHasStableSources || !currentHasStableSources) {
-              return cdpMatchedCssRules;
-            }
-            return current;
+            const nextRules =
+              Date.now() - previewMatchedRuleEditAtRef.current <
+              MATCHED_RULE_CDP_COOLDOWN_MS
+                ? mergeRecentEditedRuleActivity(projectedRules, current)
+                : projectedRules;
+            debugMatchedRuleWrite("CDP:project-activity-onto-current", nextRules);
+            return nextRules;
           });
         }
       } catch {
@@ -231,8 +397,10 @@ export const usePreviewInspectorRuntime = ({
       window.clearTimeout(timeoutId);
     };
   }, [
+    projectCdpRuleActivityOntoCurrent,
     previewRefreshNonce,
     previewSelectedPath,
+    mergeRecentEditedRuleActivity,
     setPreviewSelectedComputedStyles,
     setPreviewSelectedMatchedCssRules,
   ]);

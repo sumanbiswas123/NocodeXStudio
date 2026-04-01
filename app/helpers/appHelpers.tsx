@@ -2521,6 +2521,100 @@ export const buildPreviewRuntimeScript = (
       var matches = [];
       if (!el || !el.matches || !document.styleSheets) return matches;
 
+      function normalizeMatchedProperty(prop) {
+        return String(prop || '').trim().toLowerCase();
+      }
+
+      function splitSelectorList(selectorText) {
+        var parts = [];
+        var current = '';
+        var depth = 0;
+        var quote = null;
+        for (var index = 0; index < selectorText.length; index++) {
+          var char = selectorText[index];
+          if (quote) {
+            current += char;
+            if (char === quote && selectorText[index - 1] !== '\\') {
+              quote = null;
+            }
+            continue;
+          }
+          if (char === "'" || char === '"') {
+            quote = char;
+            current += char;
+            continue;
+          }
+          if (char === '(' || char === '[') {
+            depth += 1;
+            current += char;
+            continue;
+          }
+          if ((char === ')' || char === ']') && depth > 0) {
+            depth -= 1;
+            current += char;
+            continue;
+          }
+          if (char === ',' && depth === 0) {
+            if (current.trim()) parts.push(current.trim());
+            current = '';
+            continue;
+          }
+          current += char;
+        }
+        if (current.trim()) parts.push(current.trim());
+        return parts;
+      }
+
+      function compareSpecificity(left, right) {
+        if (left[0] !== right[0]) return left[0] - right[0];
+        if (left[1] !== right[1]) return left[1] - right[1];
+        return left[2] - right[2];
+      }
+
+      function maxSpecificity(left, right) {
+        return compareSpecificity(left, right) >= 0 ? left : right;
+      }
+
+      function calculateSelectorSpecificity(selectorText) {
+        var working = String(selectorText || '');
+        var specificity = [0, 0, 0];
+        var idMatches = working.match(/#[\w-]+/g) || [];
+        specificity[0] += idMatches.length;
+        working = working.replace(/#[\w-]+/g, ' ');
+        var classMatches = working.match(/\.[\w-]+/g) || [];
+        specificity[1] += classMatches.length;
+        working = working.replace(/\.[\w-]+/g, ' ');
+        var attributeMatches = working.match(/\[[^\]]+\]/g) || [];
+        specificity[1] += attributeMatches.length;
+        working = working.replace(/\[[^\]]+\]/g, ' ');
+        var pseudoElementMatches = working.match(/::[\w-]+/g) || [];
+        specificity[2] += pseudoElementMatches.length;
+        working = working.replace(/::[\w-]+/g, ' ');
+        var pseudoClassMatches = working.match(/:(?!:)[\w-]+(?:\([^)]*\))?/g) || [];
+        specificity[1] += pseudoClassMatches.length;
+        working = working.replace(/:(?!:)[\w-]+(?:\([^)]*\))?/g, ' ');
+        var elementMatches = working.match(/(^|[\s>+~])([a-zA-Z][\w-]*|\*)/g) || [];
+        for (var elementIndex = 0; elementIndex < elementMatches.length; elementIndex++) {
+          var token = String(elementMatches[elementIndex] || '').trim();
+          if (token && token !== '*') specificity[2] += 1;
+        }
+        return specificity;
+      }
+
+      function getMatchedSelectorSpecificity(element, selectorText) {
+        var parts = splitSelectorList(String(selectorText || ''));
+        var best = [0, 0, 0];
+        for (var partIndex = 0; partIndex < parts.length; partIndex++) {
+          var selector = parts[partIndex];
+          if (!selector) continue;
+          try {
+            if (!element.matches(selector)) continue;
+            best = maxSpecificity(best, calculateSelectorSpecificity(selector));
+          } catch (selectorError) {}
+        }
+        return best;
+      }
+
       function visitRules(ruleList, sourceLabel, sourcePath) {
         if (!ruleList) return;
         for (var i = 0; i < ruleList.length; i++) {
@@ -2585,6 +2679,81 @@ export const buildPreviewRuntimeScript = (
           } catch (sourcePathError) {}
           visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet), sourcePath);
         } catch (sheetError) {}
+      }
+
+      var winnerByProperty = {};
+      for (var matchIndex = 0; matchIndex < matches.length; matchIndex++) {
+        var matchRule = matches[matchIndex];
+        var specificity = getMatchedSelectorSpecificity(el, matchRule.selector);
+        for (var declarationIndex = 0; declarationIndex < matchRule.declarations.length; declarationIndex++) {
+          var declaration = matchRule.declarations[declarationIndex];
+          var property = normalizeMatchedProperty(declaration.property);
+          if (!property) continue;
+          var candidate = {
+            important: !!declaration.important,
+            specificity: specificity,
+            ruleIndex: matchIndex,
+            declarationIndex: declarationIndex,
+            inline: false
+          };
+          var currentWinner = winnerByProperty[property];
+          if (!currentWinner) {
+            winnerByProperty[property] = candidate;
+            continue;
+          }
+          if (currentWinner.important !== candidate.important) {
+            if (candidate.important) winnerByProperty[property] = candidate;
+            continue;
+          }
+          var specificityDiff = compareSpecificity(
+            candidate.specificity,
+            currentWinner.specificity
+          );
+          if (specificityDiff > 0) {
+            winnerByProperty[property] = candidate;
+            continue;
+          }
+          if (specificityDiff < 0) continue;
+          if (candidate.ruleIndex > currentWinner.ruleIndex) {
+            winnerByProperty[property] = candidate;
+            continue;
+          }
+          if (
+            candidate.ruleIndex === currentWinner.ruleIndex &&
+            candidate.declarationIndex > currentWinner.declarationIndex
+          ) {
+            winnerByProperty[property] = candidate;
+          }
+        }
+      }
+
+      if (el.style) {
+        for (var inlineIndex = 0; inlineIndex < el.style.length; inlineIndex++) {
+          var inlineProperty = el.style[inlineIndex];
+          var normalizedInline = normalizeMatchedProperty(inlineProperty);
+          if (!normalizedInline) continue;
+          winnerByProperty[normalizedInline] = {
+            important: el.style.getPropertyPriority(inlineProperty) === 'important',
+            specificity: [Infinity, Infinity, Infinity],
+            ruleIndex: Number.MAX_SAFE_INTEGER,
+            declarationIndex: Number.MAX_SAFE_INTEGER,
+            inline: true
+          };
+        }
+      }
+
+      for (var annotatedRuleIndex = 0; annotatedRuleIndex < matches.length; annotatedRuleIndex++) {
+        var annotatedRule = matches[annotatedRuleIndex];
+        for (var annotatedDeclarationIndex = 0; annotatedDeclarationIndex < annotatedRule.declarations.length; annotatedDeclarationIndex++) {
+          var annotatedDeclaration = annotatedRule.declarations[annotatedDeclarationIndex];
+          var winner = winnerByProperty[normalizeMatchedProperty(annotatedDeclaration.property)];
+          annotatedDeclaration.active = !!(
+            winner &&
+            !winner.inline &&
+            winner.ruleIndex === annotatedRuleIndex &&
+            winner.declarationIndex === annotatedDeclarationIndex
+          );
+        }
       }
 
       return matches;

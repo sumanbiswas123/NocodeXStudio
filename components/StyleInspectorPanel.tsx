@@ -101,11 +101,22 @@ const isTemporaryMatchedRuleSource = (source: string) => {
 };
 
 const buildMatchedRuleInstanceKey = (
-  rule: { selector: string; source: string; occurrenceIndex: number },
-) => `${rule.source}::${rule.selector}::${rule.occurrenceIndex}`;
+  rule: {
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  },
+) =>
+  `${rule.sourcePath || rule.source}::${rule.selector}::${rule.occurrenceIndex}`;
 
 const buildMatchedDeclarationDraftKey = (
-  rule: { selector: string; source: string; occurrenceIndex: number },
+  rule: {
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  },
   originalProperty: string,
 ) =>
   `${buildMatchedRuleInstanceKey(rule)}::${normalizeKey(originalProperty)}`;
@@ -128,6 +139,72 @@ const collapseRenderedDeclarations = (declarations: MatchedDeclaration[]) => {
     }
   });
   return Array.from(kept.values());
+};
+
+const buildDeclarationPropertySignature = (
+  declarations: MatchedDeclaration[],
+) =>
+  declarations
+    .map((declaration) => normalizeKey(declaration.property))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+const mergeRenderedRuleDeclarations = (
+  base: MatchedDeclaration[],
+  incoming: MatchedDeclaration[],
+) => {
+  const merged = new Map<string, MatchedDeclaration>();
+  [...base, ...incoming].forEach((declaration) => {
+    const key = [
+      normalizeKey(declaration.property),
+      String(declaration.value || "").trim(),
+      declaration.important ? "important" : "",
+    ].join("::");
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, declaration);
+      return;
+    }
+    if (current.active !== true && declaration.active === true) {
+      merged.set(key, declaration);
+    }
+  });
+  return Array.from(merged.values());
+};
+
+const collapseDuplicateRenderedRules = (rules: AnnotatedMatchedRule[]) => {
+  const grouped = new Map<string, AnnotatedMatchedRule>();
+  const ordered: AnnotatedMatchedRule[] = [];
+
+  rules.forEach((rule) => {
+    const duplicateKey = [
+      String(rule.sourcePath || rule.source || "").trim(),
+      normalizeSelectorSignature(rule.selector),
+      buildDeclarationPropertySignature(rule.declarations),
+    ].join("::");
+    const current = grouped.get(duplicateKey);
+    if (!current) {
+      grouped.set(duplicateKey, rule);
+      ordered.push(rule);
+      return;
+    }
+    const mergedRule: AnnotatedMatchedRule = {
+      ...rule,
+      declarations: mergeRenderedRuleDeclarations(
+        current.declarations,
+        rule.declarations,
+      ),
+      occurrenceIndex: current.occurrenceIndex,
+    };
+    grouped.set(duplicateKey, mergedRule);
+    const currentIndex = ordered.indexOf(current);
+    if (currentIndex >= 0) {
+      ordered[currentIndex] = mergedRule;
+    }
+  });
+
+  return ordered;
 };
 
 const CSS_NUMERIC_TOKEN_PATTERN = /-?(?:\d+\.?\d*|\.\d+)/g;
@@ -1039,7 +1116,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const annotatedMatchedRules = useMemo(() => {
     const occurrenceCounter = new Map<string, number>();
     return matchedCssRules.map((rule) => {
-      const counterKey = `${rule.source}::${rule.selector}`;
+      const counterKey = `${rule.sourcePath || rule.source}::${rule.selector}`;
       const occurrenceIndex = occurrenceCounter.get(counterKey) || 0;
       occurrenceCounter.set(counterKey, occurrenceIndex + 1);
       return {
@@ -1133,17 +1210,18 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
   const orderedMatchedRules = useMemo(
     () => {
-      const stableRules = filteredMatchedRules.filter(
+      const normalizedRules = collapseDuplicateRenderedRules(filteredMatchedRules);
+      const stableRules = normalizedRules.filter(
         (rule) => !isTemporaryMatchedRuleSource(rule.source),
       );
-      const hiddenTemporaryRules = filteredMatchedRules.filter(
+      const hiddenTemporaryRules = normalizedRules.filter(
         (rule) =>
           isTemporaryMatchedRuleSource(rule.source) &&
           stableRules.some((stableRule) =>
             selectorGroupsOverlap(stableRule.selector, rule.selector),
           ),
       );
-      const visibleRules = filteredMatchedRules.filter((rule) => {
+      const visibleRules = normalizedRules.filter((rule) => {
         if (!isTemporaryMatchedRuleSource(rule.source)) return true;
         return !hiddenTemporaryRules.includes(rule);
       });
@@ -1160,9 +1238,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               (temporaryDeclaration) =>
                 temporaryDeclaration.active === true &&
                 normalizeKey(temporaryDeclaration.property) ===
-                  normalizeKey(declaration.property) &&
-                String(temporaryDeclaration.value || "").trim() ===
-                  String(declaration.value || "").trim(),
+                  normalizeKey(declaration.property),
             );
           });
           return shouldPromote
