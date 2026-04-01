@@ -2517,6 +2517,72 @@ export const buildPreviewRuntimeScript = (
       return false;
     }
 
+    function styleSheetSourceCandidatesMatch(left, right) {
+      var normalizedLeft = normalizeProjectRelative(String(left || '')).toLowerCase();
+      var normalizedRight = normalizeProjectRelative(String(right || '')).toLowerCase();
+      if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
+        return true;
+      }
+      var baseLeft = readCssSourceBasename(left).toLowerCase();
+      var baseRight = readCssSourceBasename(right).toLowerCase();
+      return !!(baseLeft && baseRight && baseLeft === baseRight);
+    }
+
+    function collectStyleSheetSourceCandidates(sheet) {
+      var candidates = {};
+      function pushCandidate(raw) {
+        var text = String(raw || '').trim();
+        if (!text) return;
+        candidates[text] = true;
+        var clean = text.split('?')[0].split('#')[0];
+        if (clean) {
+          candidates[clean] = true;
+          candidates[normalizeProjectRelative(clean)] = true;
+          var base = readCssSourceBasename(clean);
+          if (base) candidates[base] = true;
+        }
+        try {
+          var parsed = new URL(text, window.location.href);
+          var pathname = String(parsed.pathname || '').trim();
+          if (!pathname) return;
+          candidates[pathname] = true;
+          var normalizedPath = normalizeProjectRelative(pathname);
+          if (normalizedPath) candidates[normalizedPath] = true;
+          var pathBase = readCssSourceBasename(pathname);
+          if (pathBase) candidates[pathBase] = true;
+        } catch (candidateError) {}
+      }
+
+      pushCandidate(sheet && sheet.href ? sheet.href : '');
+      var ownerNode = sheet && sheet.ownerNode;
+      if (ownerNode && ownerNode.getAttribute) {
+        pushCandidate(ownerNode.getAttribute('data-source'));
+        pushCandidate(ownerNode.getAttribute('data-href'));
+        pushCandidate(ownerNode.getAttribute('data-nx-live-source'));
+      }
+      pushCandidate(getStyleSheetSourceLabel(sheet));
+      return Object.keys(candidates).filter(Boolean);
+    }
+
+    function hasLiveOverrideForStyleSheet(target, allSheets) {
+      if (isPreviewLiveOverrideStylesheet(target)) return false;
+      var targetCandidates = collectStyleSheetSourceCandidates(target);
+      if (!targetCandidates.length) return false;
+      for (var sheetIndex = 0; sheetIndex < allSheets.length; sheetIndex++) {
+        var sheet = allSheets[sheetIndex];
+        if (!isPreviewLiveOverrideStylesheet(sheet)) continue;
+        var overrideCandidates = collectStyleSheetSourceCandidates(sheet);
+        for (var overrideIndex = 0; overrideIndex < overrideCandidates.length; overrideIndex++) {
+          for (var targetIndex = 0; targetIndex < targetCandidates.length; targetIndex++) {
+            if (styleSheetSourceCandidatesMatch(targetCandidates[targetIndex], overrideCandidates[overrideIndex])) {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    }
+
     function collectMatchedCssRulesForElement(el) {
       var matches = [];
       if (!el || !el.matches || !document.styleSheets) return matches;
@@ -2660,11 +2726,16 @@ export const buildPreviewRuntimeScript = (
         }
       }
 
-      for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
-        var sheet = document.styleSheets[sheetIndex];
+      var styleSheets = [];
+      for (var collectedSheetIndex = 0; collectedSheetIndex < document.styleSheets.length; collectedSheetIndex++) {
+        styleSheets.push(document.styleSheets[collectedSheetIndex]);
+      }
+
+      for (var sheetIndex = 0; sheetIndex < styleSheets.length; sheetIndex++) {
+        var sheet = styleSheets[sheetIndex];
         if (!sheet) continue;
-        if (isPreviewLiveOverrideStylesheet(sheet)) continue;
         try {
+          if (hasLiveOverrideForStyleSheet(sheet, styleSheets)) continue;
           var sourcePath = '';
           try {
             if (sheet.href) {
@@ -3818,6 +3889,72 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     return false;
   }
 
+  function styleSheetSourceCandidatesMatch(left, right) {
+    var normalizedLeft = normalizeProjectRelative(String(left || '')).toLowerCase();
+    var normalizedRight = normalizeProjectRelative(String(right || '')).toLowerCase();
+    if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
+      return true;
+    }
+    var baseLeft = readCssSourceBasename(left).toLowerCase();
+    var baseRight = readCssSourceBasename(right).toLowerCase();
+    return !!(baseLeft && baseRight && baseLeft === baseRight);
+  }
+
+  function collectStyleSheetSourceCandidates(sheet) {
+    var candidates = {};
+    function pushCandidate(raw) {
+      var text = String(raw || '').trim();
+      if (!text) return;
+      candidates[text] = true;
+      var clean = text.split('?')[0].split('#')[0];
+      if (clean) {
+        candidates[clean] = true;
+        candidates[normalizeProjectRelative(clean)] = true;
+        var base = readCssSourceBasename(clean);
+        if (base) candidates[base] = true;
+      }
+      try {
+        var parsed = new URL(text, window.location.href);
+        var pathname = String(parsed.pathname || '').trim();
+        if (!pathname) return;
+        candidates[pathname] = true;
+        var normalizedPath = normalizeProjectRelative(pathname);
+        if (normalizedPath) candidates[normalizedPath] = true;
+        var pathBase = readCssSourceBasename(pathname);
+        if (pathBase) candidates[pathBase] = true;
+      } catch (candidateError) {}
+    }
+
+    pushCandidate(sheet && sheet.href ? sheet.href : '');
+    var ownerNode = sheet && sheet.ownerNode;
+    if (ownerNode && ownerNode.getAttribute) {
+      pushCandidate(ownerNode.getAttribute('data-source'));
+      pushCandidate(ownerNode.getAttribute('data-href'));
+      pushCandidate(ownerNode.getAttribute('data-nx-live-source'));
+    }
+    pushCandidate(getStyleSheetSourceLabel(sheet));
+    return Object.keys(candidates).filter(Boolean);
+  }
+
+  function hasLiveOverrideForStyleSheet(target, allSheets) {
+    if (isPreviewLiveOverrideStylesheet(target)) return false;
+    var targetCandidates = collectStyleSheetSourceCandidates(target);
+    if (!targetCandidates.length) return false;
+    for (var sheetIndex = 0; sheetIndex < allSheets.length; sheetIndex++) {
+      var sheet = allSheets[sheetIndex];
+      if (!isPreviewLiveOverrideStylesheet(sheet)) continue;
+      var overrideCandidates = collectStyleSheetSourceCandidates(sheet);
+      for (var overrideIndex = 0; overrideIndex < overrideCandidates.length; overrideIndex++) {
+        for (var targetIndex = 0; targetIndex < targetCandidates.length; targetIndex++) {
+          if (styleSheetSourceCandidatesMatch(targetCandidates[targetIndex], overrideCandidates[overrideIndex])) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function collectMatchedCssRulesForElement(el) {
     var matches = [];
     if (!el || !el.matches || !document.styleSheets) return matches;
@@ -3867,11 +4004,16 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
     }
 
-    for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
-      var sheet = document.styleSheets[sheetIndex];
+    var styleSheets = [];
+    for (var collectedSheetIndex = 0; collectedSheetIndex < document.styleSheets.length; collectedSheetIndex++) {
+      styleSheets.push(document.styleSheets[collectedSheetIndex]);
+    }
+
+    for (var sheetIndex = 0; sheetIndex < styleSheets.length; sheetIndex++) {
+      var sheet = styleSheets[sheetIndex];
       if (!sheet) continue;
-      if (isPreviewLiveOverrideStylesheet(sheet)) continue;
       try {
+        if (hasLiveOverrideForStyleSheet(sheet, styleSheets)) continue;
         var sourcePath = '';
         try {
           if (sheet.href) {

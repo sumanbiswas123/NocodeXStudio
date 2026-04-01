@@ -769,6 +769,26 @@ export const usePreviewCssMutation = ({
         frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
       );
       let updatedBaseInlineSheet = false;
+      const matchingStyleNodes = () =>
+        styleNodes.filter((styleNode) =>
+          cssRuleSourcesMatch(
+            normalizeProjectRelative(styleNode.getAttribute("data-source") || ""),
+            normalizedSourcePath,
+          ),
+        );
+      const getLiveOverrideNodesForSource = () =>
+        Array.from(
+          frameDocument.querySelectorAll<HTMLStyleElement>(
+            "style[data-nx-live-source]",
+          ),
+        ).filter((styleNode) =>
+          cssRuleSourcesMatch(
+            normalizeProjectRelative(
+              styleNode.getAttribute("data-nx-live-source") || "",
+            ),
+            normalizedSourcePath,
+          ),
+        );
       styleNodes.forEach((styleNode) => {
         const nodeSource = normalizeProjectRelative(
           styleNode.getAttribute("data-source") || "",
@@ -781,14 +801,32 @@ export const usePreviewCssMutation = ({
         }
       });
 
-      if (updatedBaseInlineSheet) {
-        Array.from(
-          frameDocument.querySelectorAll<HTMLStyleElement>(
-            `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`,
-          ),
-        ).forEach((overrideNode) => {
+      const normalizeMatchingStyleNodes = () => {
+        const matchingNodes = matchingStyleNodes();
+        if (matchingNodes.length === 0) return;
+        const canonicalBaseNode =
+          matchingNodes.find(
+            (styleNode) => !styleNode.hasAttribute("data-nx-live-source"),
+          ) || matchingNodes[0];
+        canonicalBaseNode.removeAttribute("data-nx-live-source");
+        canonicalBaseNode.setAttribute("data-source", normalizedSourcePath);
+        canonicalBaseNode.setAttribute("data-href", normalizedSourcePath);
+
+        matchingNodes.forEach((styleNode) => {
+          if (styleNode === canonicalBaseNode) return;
+          if (styleNode.hasAttribute("data-nx-live-source")) {
+            styleNode.remove();
+          }
+        });
+
+        getLiveOverrideNodesForSource().forEach((overrideNode) => {
+          if (overrideNode === canonicalBaseNode) return;
           overrideNode.remove();
         });
+      };
+
+      if (updatedBaseInlineSheet) {
+        normalizeMatchingStyleNodes();
       }
 
       if (!didUpdate) {
@@ -812,27 +850,30 @@ export const usePreviewCssMutation = ({
           if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath))
             return;
 
-          const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
-          let overrideNode =
-            frameDocument.querySelector<HTMLStyleElement>(overrideSelector);
-          if (!overrideNode) {
-            overrideNode = frameDocument.createElement("style");
-            overrideNode.setAttribute(
-              "data-nx-live-source",
-              normalizedSourcePath,
-            );
-            overrideNode.setAttribute("data-source", normalizedSourcePath);
-            overrideNode.setAttribute("data-href", normalizedSourcePath);
-            linkNode.insertAdjacentElement("afterend", overrideNode);
+          const baseSelector = `style[data-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]:not([data-nx-live-source])`;
+          let baseNode =
+            frameDocument.querySelector<HTMLStyleElement>(baseSelector);
+          if (!baseNode) {
+            baseNode = frameDocument.createElement("style");
+            baseNode.setAttribute("data-source", normalizedSourcePath);
+            baseNode.setAttribute("data-href", normalizedSourcePath);
+            baseNode.setAttribute("data-nx-inline-from-link", "true");
+            linkNode.insertAdjacentElement("afterend", baseNode);
           }
-          overrideNode.setAttribute(
-            "data-nx-live-source",
-            normalizedSourcePath,
-          );
-          overrideNode.setAttribute("data-source", normalizedSourcePath);
-          overrideNode.setAttribute("data-href", normalizedSourcePath);
-          overrideNode.textContent = nextCssText;
+          baseNode.removeAttribute("data-nx-live-source");
+          baseNode.setAttribute("data-source", normalizedSourcePath);
+          baseNode.setAttribute("data-href", normalizedSourcePath);
+          baseNode.setAttribute("data-nx-inline-from-link", "true");
+          baseNode.textContent = nextCssText;
+          linkNode.disabled = true;
+          linkNode.setAttribute("data-nx-preview-link-disabled", "true");
+          getLiveOverrideNodesForSource().forEach((overrideNode) => {
+            if (overrideNode !== baseNode) {
+              overrideNode.remove();
+            }
+          });
           didUpdate = true;
+          updatedBaseInlineSheet = true;
         });
       }
 
@@ -867,6 +908,8 @@ export const usePreviewCssMutation = ({
         sourcePath: normalizedSourcePath,
         didUpdate,
         elementPath: Array.isArray(elementPath) ? elementPath : [],
+        matchingDataSourceStyles: matchingStyleNodes().length,
+        remainingLiveOverrideStyles: getLiveOverrideNodesForSource().length,
       });
       return didUpdate;
     },

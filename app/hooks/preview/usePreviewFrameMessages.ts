@@ -20,7 +20,6 @@ import type {
   PreviewMatchedCssRule,
 } from "../../helpers/previewCssHelpers";
 import {
-  canonicalizeEquivalentMatchedCssRules,
   collectMatchedCssRulesFromElement,
   annotateMatchedCssRuleActivity,
   normalizePresentationStylePatch,
@@ -643,9 +642,7 @@ export const usePreviewFrameMessages = ({
       const computedStyles =
         payloadComputedStyles || extractComputedStylesFromElement(liveElement);
       const liveMatchedCssRules = liveElement
-        ? canonicalizeEquivalentMatchedCssRules(
-            collectMatchedCssRulesFromElement(liveElement),
-          )
+        ? collectMatchedCssRulesFromElement(liveElement)
         : [];
       const liveHasStableSources = liveMatchedCssRules.some(
         (rule) => !isTemporaryMatchedRuleSource(rule.source),
@@ -655,10 +652,8 @@ export const usePreviewFrameMessages = ({
       );
       const payloadMatchedCssRulesAnnotated =
         liveElement && payloadMatchedCssRules.length > 0
-          ? canonicalizeEquivalentMatchedCssRules(
-              annotateMatchedCssRuleActivity(liveElement, payloadMatchedCssRules),
-            )
-          : canonicalizeEquivalentMatchedCssRules(payloadMatchedCssRules);
+          ? annotateMatchedCssRuleActivity(liveElement, payloadMatchedCssRules)
+          : payloadMatchedCssRules;
       const matchedCssRules =
         liveMatchedCssRules.length === 0
           ? payloadMatchedCssRulesAnnotated
@@ -668,14 +663,27 @@ export const usePreviewFrameMessages = ({
               ? liveMatchedCssRules
               : payloadMatchedCssRulesAnnotated;
       if (typeof window !== "undefined" && (window as any).__NX_DEBUG_PREVIEW_CSS !== false) {
+        const payloadRuleSummary = payloadMatchedCssRules.map(
+          (rule) => `${rule.source} | ${rule.selector} | ${rule.declarations.length}`,
+        );
+        const payloadAnnotatedRuleSummary = payloadMatchedCssRulesAnnotated.map(
+          (rule) =>
+            `${rule.source} | ${rule.selector} | ${rule.declarations.filter((declaration) => declaration.active === true).length}/${rule.declarations.length}`,
+        );
+        const liveRuleSummary = liveMatchedCssRules.map(
+          (rule) =>
+            `${rule.source} | ${rule.selector} | ${rule.declarations.filter((declaration) => declaration.active === true).length}/${rule.declarations.length}`,
+        );
         console.log("[PreviewCSSDebug] PREVIEW_SELECT matched rule sources", {
           path: nextPath,
+          payloadRuleSummary,
           payloadMatchedCssRules: payloadMatchedCssRules.map((rule) => ({
             selector: rule.selector,
             source: rule.source,
             sourcePath: rule.sourcePath || "",
             declarations: rule.declarations.length,
           })),
+          payloadAnnotatedRuleSummary,
           payloadMatchedCssRulesAnnotated: payloadMatchedCssRulesAnnotated.map((rule) => ({
             selector: rule.selector,
             source: rule.source,
@@ -685,15 +693,20 @@ export const usePreviewFrameMessages = ({
               (declaration) => declaration.active === true,
             ).length,
           })),
+          liveRuleSummary,
           liveMatchedCssRules: liveMatchedCssRules.map((rule) => ({
             selector: rule.selector,
             source: rule.source,
             sourcePath: rule.sourcePath || "",
             declarations: rule.declarations.length,
+            activeCount: rule.declarations.filter(
+              (declaration) => declaration.active === true,
+            ).length,
           })),
           selectedMatchedCssRulesWinner:
             matchedCssRules === liveMatchedCssRules ? "live" : "payload",
         });
+        console.log("[PreviewCSSDebug] PREVIEW_SELECT liveRuleSummary", liveRuleSummary);
       }
 
       const payloadText =
