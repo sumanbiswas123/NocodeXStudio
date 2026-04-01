@@ -6,6 +6,7 @@ import type { VirtualElement } from "../../types";
 import type { PdfAnnotationUiRecord } from "../helpers/pdfAnnotationHelpers";
 import type { PreviewSelectionMode } from "../helpers/appHelpers";
 import type { PreviewMatchedCssRule } from "../helpers/previewCssHelpers";
+import "../styles/ui/right-inspector-shell.css";
 
 type ThemeMode = "light" | "dark";
 
@@ -129,7 +130,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
 
   return (
     <div
-      className={`absolute z-40 no-scrollbar ${isResizingRightPanel ? "" : "transition-all duration-700"} right-0 top-0 bottom-0 ${isCodePanelOpen || !isRightPanelOpen ? "pointer-events-none" : ""}`}
+      className={`right-inspector-shell ${isResizingRightPanel ? "" : "right-inspector-shell--animated"} ${isCodePanelOpen || !isRightPanelOpen ? "right-inspector-shell--disabled" : ""}`}
       style={{
         width: "var(--right-panel-width)",
         overflow: "hidden",
@@ -142,19 +143,17 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
       }}
     >
       <div
-        className="h-full min-h-full relative flex flex-col overflow-hidden"
+        className="right-inspector-surface"
         style={{
           background:
             theme === "dark"
               ? "linear-gradient(180deg, rgba(15,23,42,0.97) 0%, rgba(17,24,39,0.95) 100%)"
               : "linear-gradient(180deg, rgba(255,255,255,0.84) 0%, rgba(248,250,252,0.76) 100%)",
           backdropFilter: "none",
-          borderTopLeftRadius: "28px",
-          borderBottomLeftRadius: "28px",
         }}
       >
         <div
-          className="shrink-0 border-b px-3 py-2"
+          className="right-inspector-toolbar"
           style={{
             borderColor:
               theme === "dark"
@@ -166,10 +165,10 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
                 : "rgba(255,255,255,0.78)",
           }}
         >
-          <div className="flex items-center justify-end gap-2">
+          <div className="right-inspector-toolbar-actions">
             <button
               type="button"
-              className="h-9 min-w-[44px] rounded-xl border px-2 flex items-center justify-center transition-colors text-[11px] font-semibold tracking-[0.14em]"
+              className="right-inspector-toolbar-button right-inspector-toolbar-button--toggle"
               style={{
                 borderColor:
                   theme === "dark"
@@ -195,7 +194,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
             </button>
             <button
               type="button"
-              className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
+              className="right-inspector-toolbar-button right-inspector-toolbar-button--icon"
               style={{
                 borderColor:
                   theme === "dark"
@@ -234,7 +233,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
             </button>
             <button
               type="button"
-              className="h-9 w-9 rounded-xl border flex items-center justify-center transition-colors"
+              className="right-inspector-toolbar-button right-inspector-toolbar-button--icon"
               style={{
                 borderColor:
                   theme === "dark"
@@ -254,7 +253,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
         {showEmbeddedPdfAnnotations ? (
           <>
             <div
-              className="min-h-0 overflow-hidden"
+              className="right-inspector-pdf-region"
               style={{
                 flex: showStyleInspectorSection ? "0 0 48%" : "1 1 auto",
                 background:
@@ -272,7 +271,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
             </div>
             {showStyleInspectorSection ? (
               <div
-                className="shrink-0 h-[8px]"
+                className="right-inspector-section-divider"
                 style={{
                   background:
                     theme === "dark"
@@ -290,7 +289,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
 
         {showStyleInspectorSection ? (
           <div
-            className="min-h-0 flex-1 overflow-hidden px-2 pt-2 pb-2"
+            className="right-inspector-style-region"
             style={{
               borderTop: showEmbeddedPdfAnnotations
                 ? "none"
@@ -304,7 +303,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
             }}
           >
             <div
-              className="h-full overflow-hidden rounded-[20px]"
+              className="right-inspector-style-card"
               style={{
                 background:
                   theme === "dark"
@@ -370,19 +369,19 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
           </div>
         ) : !showEmbeddedPdfAnnotations ? (
           <div
-            className="min-h-0 flex-1 flex items-center justify-center px-6 text-center"
+            className="right-inspector-empty-state"
             style={{
               color: theme === "dark" ? "#94a3b8" : "#64748b",
             }}
           >
-            <div className="text-[12px] tracking-[0.16em] uppercase">
+            <div className="right-inspector-empty-state-copy">
               Enable CSS or PDF to inspect this slide
             </div>
           </div>
         ) : null}
 
         <div
-          className="pointer-events-none absolute inset-0"
+          className="right-inspector-frame"
           style={{
             boxShadow:
               theme === "dark"
@@ -394,7 +393,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
           <button
             type="button"
             onClick={() => setIsRightPanelOpen(false)}
-            className="absolute top-3 left-3 z-20 h-8 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
+            className="right-inspector-hide-button"
             style={{
               borderColor:
                 theme === "dark"
@@ -419,7 +418,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
       </div>
       <div
         onMouseDown={onRightPanelResizeStart}
-        className="absolute top-0 left-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors"
+        className="right-inspector-resize-handle"
         title="Resize panel"
       />
     </div>

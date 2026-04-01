@@ -1,180 +1,192 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+:root {
+  --bg-app: #030712;
+  --bg-panel: #0f172a;
+  --bg-glass: rgba(15, 23, 42, 0.7);
+  --bg-glass-strong: rgba(15, 23, 42, 0.95);
+  --border-color: rgba(255, 255, 255, 0.1);
+  --text-main: #e2e8f0;
+  --text-muted: #64748b;
+  --icon-color: #94a3b8;
+  --accent-primary: #a78bfa;
+  --accent-glow: rgba(167, 139, 250, 0.45);
+  --glass-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  --input-bg: rgba(0, 0, 0, 0.2);
+  --toolbar-bg: rgba(15, 23, 42, 0.6);
+  --theme-transition-x: 100vw;
+  --theme-transition-y: 0px;
+  --theme-transition-radius: 150vmax;
+}
 
-@layer base {
-  :root {
-    /* Dark Mode (Default) */
-    --bg-app: #030712;
-    --bg-panel: #0f172a;
-    --bg-glass: rgba(15, 23, 42, 0.7);
-    --bg-glass-strong: rgba(15, 23, 42, 0.95);
-    --border-color: rgba(255, 255, 255, 0.1);
-    --text-main: #e2e8f0;
-    --text-muted: #64748b;
-    --icon-color: #94a3b8;
-    --accent-primary: #a78bfa;
-    --accent-glow: rgba(167, 139, 250, 0.45);
-    --glass-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
-    --input-bg: rgba(0, 0, 0, 0.2);
-    --toolbar-bg: rgba(15, 23, 42, 0.6);
-    --theme-transition-x: 100vw;
-    --theme-transition-y: 0px;
-    --theme-transition-radius: 150vmax;
-  }
+.light-mode {
+  --bg-app: #f8fafc;
+  --bg-panel: #ffffff;
+  --bg-glass: rgba(255, 255, 255, 0.85);
+  --bg-glass-strong: rgba(255, 255, 255, 0.98);
+  --border-color: rgba(0, 0, 0, 0.12);
+  --text-main: #000000;
+  --text-muted: #64748b;
+  --icon-color: #475569;
+  --accent-primary: #4f46e5;
+  --accent-glow: rgba(79, 70, 229, 0.15);
+  --glass-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --input-bg: #f1f5f9;
+  --toolbar-bg: rgba(255, 255, 255, 0.9);
+}
 
-  .light-mode {
-    /* Light Mode */
-    --bg-app: #f8fafc; /* Slate-50 - Lighter/Clean */
-    --bg-panel: #ffffff;
-    --bg-glass: rgba(255, 255, 255, 0.85); /* More solid */
-    --bg-glass-strong: rgba(255, 255, 255, 0.98); /* Almost opaque */
-    --border-color: rgba(0, 0, 0, 0.12); /* Slightly sharper borders */
-    --text-main: #000000; /* Pure Black for Max Contrast */
-    --text-muted: #64748b; /* Slate-500 - Readable Grey */
-    --icon-color: #475569; /* Slate-600 - Visible Icons */
-    --accent-primary: #4f46e5; /* Indigo-600 - Vibrant */
-    --accent-glow: rgba(79, 70, 229, 0.15);
-    --glass-shadow:
-      0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-    --input-bg: #f1f5f9; /* Slate-100 - Distinct input bg */
-    --toolbar-bg: rgba(255, 255, 255, 0.9);
-  }
+body {
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  cursor:
+    url("/cursors/figma-arrow-dark.svg") 3 2,
+    auto;
+}
 
-  body {
-    background-color: var(--bg-app);
-    color: var(--text-main);
-    cursor:
-      url("/cursors/figma-arrow-dark.svg") 3 2,
-      auto;
-    @apply antialiased font-sans selection:bg-indigo-500/30 selection:text-indigo-600;
-  }
+::selection {
+  background: rgba(99, 102, 241, 0.3);
+  color: #4f46e5;
+}
 
-  .light-mode {
-    cursor:
-      url("/cursors/figma-arrow-light.svg") 3 2,
-      auto;
-  }
+.light-mode {
+  cursor:
+    url("/cursors/figma-arrow-light.svg") 3 2,
+    auto;
+}
 
-  a,
-  button,
-  [role="button"],
-  input[type="button"],
-  input[type="submit"],
-  input[type="reset"],
-  summary,
-  label[for],
-  .cursor-pointer {
-    cursor:
-      url("/cursors/figma-hand.svg") 14 7,
-      pointer !important;
-  }
+a,
+button,
+[role="button"],
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+summary,
+label[for],
+.cursor-pointer {
+  cursor:
+    url("/cursors/figma-hand.svg") 14 7,
+    pointer !important;
+}
 
-  .cursor-figma-default {
-    cursor:
-      url("/cursors/figma-arrow-dark.svg") 3 2,
-      auto !important;
-  }
-  .light-mode .cursor-figma-default {
-    cursor:
-      url("/cursors/figma-arrow-light.svg") 3 2,
-      auto !important;
-  }
-  .cursor-figma-pointer {
-    cursor:
-      url("/cursors/figma-hand.svg") 14 7,
-      pointer !important;
-  }
-  .cursor-figma-text {
-    cursor:
-      url("/cursors/figma-text.svg") 16 16,
-      text !important;
-  }
-  .cursor-figma-move {
-    cursor:
-      url("/cursors/figma-move.svg") 16 16,
-      move !important;
-  }
-  .cursor-figma-crosshair {
-    cursor:
-      url("/cursors/figma-crosshair.svg") 16 16,
-      crosshair !important;
-  }
-  .cursor-figma-grab {
-    cursor:
-      url("/cursors/figma-grab.svg") 12 8,
-      grab !important;
-  }
-  .cursor-figma-grabbing {
-    cursor:
-      url("/cursors/figma-grab.svg") 12 8,
-      grabbing !important;
-  }
-  .cursor-figma-ew {
-    cursor:
-      url("/cursors/figma-ew-resize.svg") 16 16,
-      ew-resize !important;
-  }
-  .cursor-figma-ns {
-    cursor:
-      url("/cursors/figma-ns-resize.svg") 16 16,
-      ns-resize !important;
-  }
-  .cursor-figma-nesw {
-    cursor:
-      url("/cursors/figma-nesw-resize.svg") 16 16,
-      nesw-resize !important;
-  }
-  .cursor-figma-nwse {
-    cursor:
-      url("/cursors/figma-nwse-resize.svg") 16 16,
-      nwse-resize !important;
-  }
-  .cursor-figma-not-allowed {
-    cursor:
-      url("/cursors/figma-not-allowed.svg") 16 16,
-      not-allowed !important;
-  }
+.cursor-figma-default {
+  cursor:
+    url("/cursors/figma-arrow-dark.svg") 3 2,
+    auto !important;
+}
 
-  input:not([type="button"]):not([type="submit"]):not([type="reset"]),
-  textarea,
-  select,
-  [contenteditable="true"],
-  .cursor-text {
-    cursor:
-      url("/cursors/figma-text.svg") 16 16,
-      text !important;
-  }
+.light-mode .cursor-figma-default {
+  cursor:
+    url("/cursors/figma-arrow-light.svg") 3 2,
+    auto !important;
+}
 
-  .cursor-col-resize,
-  .cursor-ew-resize {
-    cursor:
-      url("/cursors/figma-ew-resize.svg") 16 16,
-      ew-resize !important;
-  }
+.cursor-figma-pointer {
+  cursor:
+    url("/cursors/figma-hand.svg") 14 7,
+    pointer !important;
+}
 
-  .cursor-row-resize,
-  .cursor-ns-resize {
-    cursor:
-      url("/cursors/figma-ns-resize.svg") 16 16,
-      ns-resize !important;
-  }
+.cursor-figma-text {
+  cursor:
+    url("/cursors/figma-text.svg") 16 16,
+    text !important;
+}
 
-  .cursor-ne-resize,
-  .cursor-sw-resize,
-  .cursor-nesw-resize {
-    cursor:
-      url("/cursors/figma-nesw-resize.svg") 16 16,
-      nesw-resize !important;
-  }
+.cursor-figma-move {
+  cursor:
+    url("/cursors/figma-move.svg") 16 16,
+    move !important;
+}
 
-  .cursor-nw-resize,
-  .cursor-se-resize,
-  .cursor-nwse-resize {
-    cursor:
-      url("/cursors/figma-nwse-resize.svg") 16 16,
-      nwse-resize !important;
-  }
+.cursor-figma-crosshair {
+  cursor:
+    url("/cursors/figma-crosshair.svg") 16 16,
+    crosshair !important;
+}
+
+.cursor-figma-grab {
+  cursor:
+    url("/cursors/figma-grab.svg") 12 8,
+    grab !important;
+}
+
+.cursor-figma-grabbing {
+  cursor:
+    url("/cursors/figma-grab.svg") 12 8,
+    grabbing !important;
+}
+
+.cursor-figma-ew {
+  cursor:
+    url("/cursors/figma-ew-resize.svg") 16 16,
+    ew-resize !important;
+}
+
+.cursor-figma-ns {
+  cursor:
+    url("/cursors/figma-ns-resize.svg") 16 16,
+    ns-resize !important;
+}
+
+.cursor-figma-nesw {
+  cursor:
+    url("/cursors/figma-nesw-resize.svg") 16 16,
+    nesw-resize !important;
+}
+
+.cursor-figma-nwse {
+  cursor:
+    url("/cursors/figma-nwse-resize.svg") 16 16,
+    nwse-resize !important;
+}
+
+.cursor-figma-not-allowed {
+  cursor:
+    url("/cursors/figma-not-allowed.svg") 16 16,
+    not-allowed !important;
+}
+
+input:not([type="button"]):not([type="submit"]):not([type="reset"]),
+textarea,
+select,
+[contenteditable="true"],
+.cursor-text {
+  cursor:
+    url("/cursors/figma-text.svg") 16 16,
+    text !important;
+}
+
+.cursor-col-resize,
+.cursor-ew-resize {
+  cursor:
+    url("/cursors/figma-ew-resize.svg") 16 16,
+    ew-resize !important;
+}
+
+.cursor-row-resize,
+.cursor-ns-resize {
+  cursor:
+    url("/cursors/figma-ns-resize.svg") 16 16,
+    ns-resize !important;
+}
+
+.cursor-ne-resize,
+.cursor-sw-resize,
+.cursor-nesw-resize {
+  cursor:
+    url("/cursors/figma-nesw-resize.svg") 16 16,
+    nesw-resize !important;
+}
+
+.cursor-nw-resize,
+.cursor-se-resize,
+.cursor-nwse-resize {
+  cursor:
+    url("/cursors/figma-nwse-resize.svg") 16 16,
+    nwse-resize !important;
 }
 
 /* Custom Scrollbar */
@@ -184,80 +196,120 @@
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-transparent;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background-color: var(--border-color);
-  @apply rounded-full transition-colors;
+  border-radius: 9999px;
+  transition: background-color 150ms ease;
 }
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--text-muted);
 }
 
 /* Glassmorphism Utilities */
-@layer components {
-  .glass-panel {
-    background-color: var(--bg-glass);
-    backdrop-filter: blur(20px);
-    border: 1px solid var(--border-color);
-    box-shadow: var(--glass-shadow);
-  }
+.glass-panel {
+  background-color: var(--bg-glass);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--glass-shadow);
+}
 
-  .glass-panel-strong {
-    background-color: var(--bg-glass-strong);
-    backdrop-filter: blur(24px);
-    border-left: 1px solid var(--border-color);
-  }
+.glass-panel-strong {
+  background-color: var(--bg-glass-strong);
+  backdrop-filter: blur(24px);
+  border-left: 1px solid var(--border-color);
+}
 
-  .glass-toolbar {
-    background-color: var(--toolbar-bg);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border-color);
-    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.1);
-  }
+.glass-toolbar {
+  background-color: var(--toolbar-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.1);
+}
 
-  .glass-input {
-    background-color: var(--input-bg);
-    border: 1px solid var(--border-color);
-    color: var(--text-main);
-    @apply rounded-md transition-all outline-none placeholder:text-slate-400 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50;
-  }
+.glass-input {
+  background-color: var(--input-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  color: var(--text-main);
+  outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease;
+}
 
-  .glass-button {
-    background-color: rgba(125, 125, 125, 0.1);
-    border: 1px solid var(--border-color);
-    color: var(--text-muted);
-    @apply hover:bg-black/5 hover:text-indigo-500 transition-all active:scale-95 shadow-sm backdrop-blur-sm;
-  }
-  .light-mode .glass-button {
-    @apply hover:bg-white/60;
-  }
+.glass-input::placeholder {
+  color: #94a3b8;
+}
 
-  .glass-button.active {
-    background-color: var(--accent-glow);
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-  }
+.glass-input:focus {
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.5);
+}
 
-  .glass-icon-btn {
-    color: var(--icon-color);
-    @apply p-2 rounded-lg transition-all active:scale-90 hover:text-indigo-500;
-  }
-  .glass-icon-btn:hover {
-    background-color: var(--border-color);
-  }
+.glass-button {
+  background-color: rgba(125, 125, 125, 0.1);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(8px);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
 
-  .navbar-icon-btn {
-    color: var(--icon-color);
-    transform: none !important;
-  }
+.glass-button:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: #4f46e5;
+}
 
-  .navbar-icon-btn:hover {
-    color: var(--icon-color);
-    background-color: transparent;
-    transform: none !important;
-  }
+.light-mode .glass-button:hover {
+  background-color: rgba(255, 255, 255, 0.6);
+}
+
+.glass-button:active {
+  transform: scale(0.95);
+}
+
+.glass-button.active {
+  background-color: var(--accent-glow);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+.glass-icon-btn {
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  color: var(--icon-color);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.glass-icon-btn:hover {
+  background-color: var(--border-color);
+  color: #4f46e5;
+}
+
+.glass-icon-btn:active {
+  transform: scale(0.9);
+}
+
+.navbar-icon-btn {
+  color: var(--icon-color);
+  transform: none !important;
+}
+
+.navbar-icon-btn:hover {
+  color: var(--icon-color);
+  background-color: transparent;
+  transform: none !important;
 }
 
 /* Animation Classes */

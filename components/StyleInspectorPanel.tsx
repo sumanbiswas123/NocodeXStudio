@@ -6,6 +6,7 @@ import {
   CSS_PROPERTY_VALUES,
   filterAndSortProperties,
 } from "../utils/cssProperties";
+import "../app/styles/components/style-inspector-panel.css";
 
 interface StyleInspectorPanelProps {
   element: VirtualElement | null;
@@ -24,6 +25,7 @@ interface StyleInspectorPanelProps {
     rule: {
       selector: string;
       source: string;
+      sourcePath?: string;
       occurrenceIndex?: number;
       originalProperty?: string;
       isActive?: boolean;
@@ -33,6 +35,7 @@ interface StyleInspectorPanelProps {
   matchedCssRules?: Array<{
     selector: string;
     source: string;
+    sourcePath?: string;
     declarations: Array<{
       property: string;
       value: string;
@@ -88,6 +91,14 @@ const isInternalPreviewHelperRule = (rule: {
 }) =>
   /__nx-preview-(selected|editing|dirty)/i.test(rule.selector) ||
   /__nx-preview-(selected|editing|dirty)/i.test(rule.source);
+
+const isTemporaryMatchedRuleSource = (source: string) => {
+  const normalized = String(source || "").trim().toLowerCase();
+  return (
+    normalized === "inline stylesheet" ||
+    /^style-sheet-\d+-\d+$/.test(normalized)
+  );
+};
 
 const buildMatchedRuleInstanceKey = (
   rule: { selector: string; source: string; occurrenceIndex: number },
@@ -293,6 +304,40 @@ const splitSelectorGroup = (selectorText: string) => {
   return parts;
 };
 
+const normalizeSelectorSignature = (value: string) =>
+  String(value || "")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const selectorGroupsOverlap = (left: string, right: string) => {
+  const leftParts = new Set(
+    splitSelectorGroup(left)
+      .map((part) => normalizeSelectorSignature(part))
+      .filter(Boolean),
+  );
+  return splitSelectorGroup(right)
+    .map((part) => normalizeSelectorSignature(part))
+    .filter(Boolean)
+    .some((part) => leftParts.has(part));
+};
+
+const isPreviewCssDebugEnabled = () => {
+  if (typeof window === "undefined") return false;
+  const explicit = (window as any).__NX_DEBUG_PREVIEW_CSS;
+  if (explicit === false) return false;
+  return true;
+};
+
+const debugPreviewCss = (label: string, payload: Record<string, unknown>) => {
+  if (!isPreviewCssDebugEnabled()) return;
+  console.groupCollapsed(`[PreviewCSSDebug] ${label}`);
+  Object.entries(payload).forEach(([key, value]) => {
+    console.log(key, value);
+  });
+  console.groupEnd();
+};
+
 const selectorPartMatchesElement = (
   selectorPart: string,
   element: VirtualElement | null,
@@ -401,7 +446,7 @@ const SuggestionList: React.FC<{
 }> = ({ suggestions, width = "100%", onSelect }) =>
   suggestions.length ? (
     <div
-      className="absolute top-full left-0 z-50 mt-1 max-h-44 overflow-y-auto no-scrollbar border"
+      className="style-inspector-suggestions"
       style={{
         width,
         background: "var(--bg-glass-strong)",
@@ -413,7 +458,7 @@ const SuggestionList: React.FC<{
         <button
           key={suggestion}
           type="button"
-          className="block w-full border-b px-2 py-1.5 text-left text-[12px] hover:bg-white/5"
+          className="style-inspector-suggestion-button"
           style={{ borderColor: "var(--border-color)", color: "var(--text-main)" }}
           onMouseDown={(event) => {
             event.preventDefault();
@@ -751,6 +796,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       {
         selector: rule.selector,
         source: rule.source,
+        sourcePath: rule.sourcePath,
         occurrenceIndex,
       },
       { [toReactName(draft.key.trim())]: draft.value.trim() },
@@ -791,6 +837,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         {
           selector: rule.selector,
           source: rule.source,
+          sourcePath: rule.sourcePath,
           occurrenceIndex,
           originalProperty: currentEditing.originalProperty,
           isActive: currentEditing.isActive,
@@ -808,6 +855,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       {
         selector: rule.selector,
         source: rule.source,
+        sourcePath: rule.sourcePath,
         occurrenceIndex,
         originalProperty: currentEditing.originalProperty,
         isActive: currentEditing.isActive,
@@ -836,12 +884,26 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     const draftRule = {
       selector: rule.selector,
       source: rule.source,
+      sourcePath: rule.sourcePath,
       occurrenceIndex,
     };
     const draftKey = buildMatchedDeclarationDraftKey(
       draftRule,
       originalProperty,
     );
+    debugPreviewCss("pushMatchedDeclarationDraft", {
+      selector: rule.selector,
+      source: rule.source,
+      occurrenceIndex,
+      originalProperty,
+      property,
+      value,
+      existingDeclarations: rule.declarations.map((declaration) => ({
+        property: declaration.property,
+        value: declaration.value,
+        active: declaration.active,
+      })),
+    });
     setMatchedDeclarationDrafts((current) => ({
       ...current,
       [draftKey]: {
@@ -854,6 +916,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       {
         selector: rule.selector,
         source: rule.source,
+        sourcePath: rule.sourcePath,
         occurrenceIndex,
         originalProperty,
         isActive,
@@ -1069,17 +1132,96 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }, [annotatedMatchedRules, filterText, matchedDeclarationDrafts]);
 
   const orderedMatchedRules = useMemo(
-    () =>
-      [...filteredMatchedRules]
+    () => {
+      const stableRules = filteredMatchedRules.filter(
+        (rule) => !isTemporaryMatchedRuleSource(rule.source),
+      );
+      const hiddenTemporaryRules = filteredMatchedRules.filter(
+        (rule) =>
+          isTemporaryMatchedRuleSource(rule.source) &&
+          stableRules.some((stableRule) =>
+            selectorGroupsOverlap(stableRule.selector, rule.selector),
+          ),
+      );
+      const visibleRules = filteredMatchedRules.filter((rule) => {
+        if (!isTemporaryMatchedRuleSource(rule.source)) return true;
+        return !hiddenTemporaryRules.includes(rule);
+      });
+      const promotedRules = visibleRules.map((rule) => {
+        if (isTemporaryMatchedRuleSource(rule.source)) {
+          return rule;
+        }
+        const nextDeclarations = rule.declarations.map((declaration) => {
+          const shouldPromote = hiddenTemporaryRules.some((temporaryRule) => {
+            if (!selectorGroupsOverlap(rule.selector, temporaryRule.selector)) {
+              return false;
+            }
+            return temporaryRule.declarations.some(
+              (temporaryDeclaration) =>
+                temporaryDeclaration.active === true &&
+                normalizeKey(temporaryDeclaration.property) ===
+                  normalizeKey(declaration.property) &&
+                String(temporaryDeclaration.value || "").trim() ===
+                  String(declaration.value || "").trim(),
+            );
+          });
+          return shouldPromote
+            ? {
+                ...declaration,
+                active: true,
+              }
+            : declaration;
+        });
+        return {
+          ...rule,
+          declarations: nextDeclarations,
+        };
+      });
+      return [...promotedRules]
         .reverse()
         .sort((left, right) => {
           const leftInternal = isInternalPreviewHelperRule(left);
           const rightInternal = isInternalPreviewHelperRule(right);
           if (leftInternal === rightInternal) return 0;
           return leftInternal ? 1 : -1;
-        }),
+        });
+    },
     [filteredMatchedRules],
   );
+
+  useEffect(() => {
+    const duplicateRules = orderedMatchedRules
+      .map((rule) => {
+        const counts = new Map<string, Array<{ value: string; active?: boolean }>>();
+        rule.declarations.forEach((declaration) => {
+          const property = normalizeKey(declaration.property);
+          const bucket = counts.get(property) || [];
+          bucket.push({
+            value: String(declaration.value || "").trim(),
+            active: declaration.active,
+          });
+          counts.set(property, bucket);
+        });
+        const duplicates = Array.from(counts.entries())
+          .filter(([, bucket]) => bucket.length > 1)
+          .map(([property, bucket]) => ({
+            property,
+            entries: bucket,
+          }));
+        return duplicates.length > 0
+          ? {
+              selector: rule.selector,
+              source: rule.source,
+              duplicates,
+            }
+          : null;
+      })
+      .filter(Boolean);
+    if (duplicateRules.length === 0) return;
+    debugPreviewCss("StyleInspector duplicate declarations detected", {
+      duplicateRules,
+    });
+  }, [orderedMatchedRules]);
 
   useEffect(() => {
     const activeMatchedField = activeMatchedFieldRef.current;
@@ -1115,99 +1257,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     }
   }, [editingMatchedDeclaration, orderedMatchedRules]);
 
-  const matchedDeclarationActivity = useMemo(() => {
-    type Winner = {
-      important: boolean;
-      ruleIndex: number;
-      declarationIndex: number;
-      inline: boolean;
-    };
-
-    const resolved = new Map<string, boolean | undefined>();
-    const winnerByProperty = new Map<string, Winner>();
-    const toDeclarationKey = (
-      rule: { selector: string; source: string; occurrenceIndex: number },
-      declarationIndex: number,
-    ) => `${buildMatchedRuleInstanceKey(rule)}::${declarationIndex}`;
-
-    const applyWinner = (property: string, candidate: Winner) => {
-      const current = winnerByProperty.get(property);
-      if (!current) {
-        winnerByProperty.set(property, candidate);
-        return;
-      }
-      if (current.important !== candidate.important) {
-        if (candidate.important) {
-          winnerByProperty.set(property, candidate);
-        }
-        return;
-      }
-      if (candidate.ruleIndex > current.ruleIndex) {
-        winnerByProperty.set(property, candidate);
-        return;
-      }
-      if (
-        candidate.ruleIndex === current.ruleIndex &&
-        candidate.declarationIndex > current.declarationIndex
-      ) {
-        winnerByProperty.set(property, candidate);
-      }
-    };
-
-    filteredMatchedRules.forEach((rule, ruleIndex) => {
-      rule.declarations.forEach((declaration, declarationIndex) => {
-        const declarationKey = toDeclarationKey(rule, declarationIndex);
-        if (declaration.active !== undefined) {
-          resolved.set(declarationKey, declaration.active);
-        }
-        const property = normalizeKey(declaration.property);
-        if (!property) return;
-        applyWinner(property, {
-          important: Boolean(declaration.important),
-          ruleIndex,
-          declarationIndex,
-          inline: false,
-        });
-      });
-    });
-
-    styles.forEach((style, index) => {
-      const property = normalizeKey(style.key);
-      if (!property || !String(style.value || "").trim()) return;
-      applyWinner(property, {
-        important: /\s!important\s*$/i.test(String(style.value)),
-        ruleIndex: Number.MAX_SAFE_INTEGER,
-        declarationIndex: index,
-        inline: true,
-      });
-    });
-
-    filteredMatchedRules.forEach((rule, ruleIndex) => {
-      rule.declarations.forEach((declaration, declarationIndex) => {
-        const declarationKey = toDeclarationKey(rule, declarationIndex);
-        if (resolved.has(declarationKey)) return;
-        const property = normalizeKey(declaration.property);
-        const winner = property ? winnerByProperty.get(property) : undefined;
-        resolved.set(
-          declarationKey,
-          Boolean(winner) &&
-            !winner?.inline &&
-            winner.ruleIndex === ruleIndex &&
-            winner.declarationIndex === declarationIndex,
-        );
-      });
-    });
-
-    return resolved;
-  }, [filteredMatchedRules, styles]);
-
-  const getDeclarationActiveState = (
-    rule: { selector: string; source: string; occurrenceIndex: number },
-    declarationIndex: number,
-  ) =>
-    matchedDeclarationActivity.get(
-      `${buildMatchedRuleInstanceKey(rule)}::${declarationIndex}`,
-    );
+  const getDeclarationActiveState = (declaration: MatchedDeclaration) =>
+    declaration.active;
 
   const pushStylePatchForRow = (
     row: StyleRow,
@@ -1605,21 +1656,21 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   if (!element) {
     return (
       <div
-        className="h-full px-4 py-5"
+        className="style-inspector-empty"
         style={{ background: "var(--bg-glass)", color: "var(--text-muted)" }}
       >
         <div
-          className="flex h-full flex-col items-center justify-center border px-6 text-center"
+          className="style-inspector-empty-card"
           style={{
             borderColor: "var(--border-color)",
             background: "var(--bg-glass-strong)",
           }}
         >
-          <AlertCircle className="mb-3 opacity-60" size={22} />
-          <p className="text-sm" style={{ color: "var(--text-main)" }}>
+          <AlertCircle className="style-inspector-empty-icon" size={22} />
+          <p className="style-inspector-empty-title" style={{ color: "var(--text-main)" }}>
             Select an element
           </p>
-          <p className="mt-1 text-xs leading-5">Its styles will show here.</p>
+          <p className="style-inspector-empty-copy">Its styles will show here.</p>
         </div>
       </div>
     );
@@ -1628,7 +1679,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   return (
       <div
         ref={panelRootRef}
-        className="flex h-full flex-col overflow-hidden"
+        className="style-inspector-panel"
       style={{
         background: "var(--bg-glass)",
         color: "var(--text-main)",
@@ -1638,29 +1689,29 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       onClick={() => setActiveSuggestionField(null)}
     >
       <div
-        className="shrink-0 border-b px-3 py-2"
+        className="style-inspector-header"
         style={{
           borderColor: "var(--border-color)",
           background: "var(--bg-glass-strong)",
         }}
       >
         <div
-          className="truncate text-[12px]"
+          className="style-inspector-selector"
           style={{ color: "var(--text-main)" }}
         >
           {selectorLabel}
         </div>
-        <div className="mt-2 relative">
+        <div className="style-inspector-filter-wrap">
           <Search
             size={12}
-            className="absolute left-2 top-1/2 -translate-y-1/2"
+            className="style-inspector-filter-icon"
             style={{ color: "var(--text-muted)" }}
           />
           <input
             value={filterText}
             onChange={(event) => setFilterText(event.target.value)}
             placeholder="Filter"
-            className="w-full border py-1 pl-7 pr-2 text-[12px] outline-none"
+            className="style-inspector-filter-input"
             style={{
               borderColor: "var(--border-color)",
               background: "var(--input-bg)",
@@ -1670,13 +1721,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
+      <div className="style-inspector-body">
         {onUpdateIdentity ? (
           <div
-            className="border-b px-3 py-2"
+            className="style-inspector-section"
             style={{ borderColor: "var(--border-color)" }}
           >
-            <div className="flex items-center gap-2 text-[12px]">
+            <div className="style-inspector-text-tools" style={{ fontSize: 12 }}>
               {showSelectorTokenInput ? (
                 <input
                   value={selectorTokenDraft}
@@ -1700,7 +1751,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSelectorTokenInput(true)}
-                  className="flex items-center gap-1"
+                  className="style-inspector-text-tools"
                   style={{ color: "var(--text-muted)" }}
                   title="Add .class or #id"
                 >
@@ -1714,14 +1765,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
         {selectionMode === "text" && onUpdateContent ? (
           <div
-            className="border-b px-3 py-2"
+            className="style-inspector-section"
             style={{ borderColor: "var(--border-color)" }}
           >
-            <div className="flex items-center gap-2">
+            <div className="style-inspector-text-tools">
               <button
                 type="button"
                 onClick={() => setShowHtmlEditor((current) => !current)}
-                className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
+                className="style-inspector-tool-button"
                 style={{
                   borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
                   color: "var(--accent-primary)",
@@ -1734,11 +1785,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 <button
                   type="button"
                   onClick={() =>
-                    onToggleTextTag
+                  onToggleTextTag
                       ? onToggleTextTag("sup")
                       : onWrapTextTag("sup")
                   }
-                  className="rounded-md border px-2 py-1.5 text-[12px] transition-colors hover:bg-black/5"
+                  className="style-inspector-tool-button"
                   style={{
                     borderColor:
                       element?.type === "sup"
@@ -1762,11 +1813,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 <button
                   type="button"
                   onClick={() =>
-                    onToggleTextTag
+                  onToggleTextTag
                       ? onToggleTextTag("sub")
                       : onWrapTextTag("sub")
                   }
-                  className="rounded-md border px-2 py-1.5 text-[12px] transition-colors hover:bg-black/5"
+                  className="style-inspector-tool-button"
                   style={{
                     borderColor:
                       element?.type === "sub"
@@ -1788,25 +1839,25 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               ) : null}
             </div>
             {showHtmlEditor ? (
-              <div className="mt-2">
+              <div className="style-inspector-group">
                 <textarea
                   value={htmlDraft}
                   onChange={(event) => setHtmlDraft(event.target.value)}
-                  className="min-h-[88px] w-full resize-y rounded-md border p-2 text-[12px] outline-none"
+                  className="style-inspector-html-editor"
                   style={{
                     borderColor: "var(--border-color)",
                     color: "var(--text-main)",
                     background: "var(--input-bg)",
                   }}
                 />
-                <div className="mt-2 flex justify-end">
+                <div className="style-inspector-html-actions">
                   <button
                     type="button"
                     onClick={() => {
                       onUpdateContent({ html: htmlDraft });
                       setShowHtmlEditor(false);
                     }}
-                    className="rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors hover:bg-black/5"
+                    className="style-inspector-html-apply"
                     style={{
                       borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
                       color: "var(--accent-primary)",
@@ -1821,29 +1872,29 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           </div>
         ) : assetSource && onReplaceAsset ? (
           <div
-            className="border-b px-3 py-2"
+            className="style-inspector-section"
             style={{ borderColor: "var(--border-color)" }}
           >
             <div
-              className="mb-2 overflow-hidden rounded-md border"
+              className="style-inspector-asset-preview"
               style={{
                 borderColor: "color-mix(in srgb, var(--accent-primary) 20%, transparent)",
                 background: "color-mix(in srgb, var(--accent-primary) 8%, transparent)",
               }}
             >
               <div
-                className="flex items-center justify-center px-2 py-2"
+                className="style-inspector-asset-preview-frame"
                 onMouseEnter={() => showAssetPreview(assetSource)}
                 onMouseLeave={() => setHoveredAssetPreview(null)}
               >
                 <img
                   src={assetPreviewSource || assetSource}
                   alt={getAssetLabel(assetSource) || "Selected asset"}
-                  className="block max-h-[72px] w-auto max-w-full object-contain"
+                  className="style-inspector-asset-image"
                 />
               </div>
               <div
-                className="border-t px-2 py-1 text-[11px] truncate"
+                className="style-inspector-asset-label"
                 style={{
                   borderColor: "color-mix(in srgb, var(--accent-primary) 16%, transparent)",
                   color: "var(--text-muted)",
@@ -1856,8 +1907,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             <button
               type="button"
               onClick={onReplaceAsset}
-              className="w-full rounded-md border px-2.5 py-2 text-left text-[12px] font-semibold transition-colors hover:bg-black/5"
+              className="style-inspector-asset-button"
               style={{
+                width: "100%",
+                textAlign: "left",
                 borderColor: "color-mix(in srgb, var(--accent-primary) 24%, transparent)",
                 color: "var(--accent-primary)",
                 background: "color-mix(in srgb, var(--accent-primary) 10%, transparent)",
@@ -1870,14 +1923,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         ) : null}
 
         <div
-          className="border-b px-3 py-2"
+          className="style-inspector-section"
           style={{ borderColor: "var(--border-color)" }}
         >
-          <div className="text-[12px]" style={{ color: "var(--text-main)" }}>
+          <div className="style-inspector-inline-heading" style={{ color: "var(--text-main)" }}>
             element.style {"{"}
           </div>
 
-          <div className="mt-1 space-y-1">
+          <div className="style-inspector-group">
             {filteredStyles.map(({ style, index }) => {
               const cssKey = toCssName(style.key);
               const isSuperseded =
@@ -1888,10 +1941,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
               return (
                 <div
                   key={style.id}
-                  className="group flex items-center gap-2 pl-4 text-[12px] min-w-0"
+                  className="style-inspector-inline-row--interactive"
                   style={{ opacity: isSuperseded ? 0.45 : 1 }}
                 >
-                  <div className="relative w-[84px] shrink-0">
+                  <div className="style-inspector-key-column">
                     <input
                       data-style-row-id={style.id}
                       data-style-field="key"
@@ -1909,7 +1962,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         captureInlineSelection(style.id, "key", event)
                       }
                       onClick={(event) => event.stopPropagation()}
-                      className="w-full border-0 bg-transparent p-0 outline-none"
+                      className="style-inspector-key-input"
                       style={{
                         color: "var(--accent-primary)",
                         textDecoration: isSuperseded ? "line-through" : "none",
@@ -1942,10 +1995,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
                   <span style={{ color: "var(--text-muted)" }}>:</span>
 
-                  <div className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                  <div className="style-inspector-value-inline">
                     {isColorProperty(cssKey) && colorInputValue ? (
                       <div
-                        className="relative h-3 w-3 border"
+                        className="style-inspector-color-chip"
                         style={{
                           borderColor: "var(--border-color)",
                           background: style.value,
@@ -1961,7 +2014,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                               event.target.value,
                             )
                           }
-                          className="absolute inset-0 opacity-0"
+                          className="style-inspector-color-input"
                         />
                       </div>
                     ) : null}
@@ -1986,7 +2039,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         captureInlineSelection(style.id, "value", event)
                       }
                       onClick={(event) => event.stopPropagation()}
-                      className="w-full min-w-0 truncate border-0 bg-transparent p-0 outline-none"
+                      className="style-inspector-value-input"
                       style={{
                         color: "var(--text-main)",
                         textDecoration: isSuperseded ? "line-through" : "none",
@@ -2020,7 +2073,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => deleteStyle(index)}
-                    className="opacity-0 transition-opacity group-hover:opacity-100"
+                    className="style-inspector-delete-button"
                     title={`Delete ${cssKey}`}
                   >
                     <Trash2 size={12} style={{ color: "var(--text-muted)" }} />
@@ -2031,15 +2084,15 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
             {filteredStyles.length === 0 ? (
               <div
-                className="pl-4 text-[12px]"
+                className="style-inspector-inline-row"
                 style={{ color: "var(--text-muted)" }}
               >
                 {filterText ? "No matching styles" : ""}
               </div>
             ) : null}
 
-            <div className="flex items-center gap-2 pl-4 text-[12px]">
-              <div className="relative w-[84px] shrink-0">
+            <div className="style-inspector-inline-row">
+              <div className="style-inspector-key-column">
                 <input
                   value={newPropName}
                   onChange={(event) =>
@@ -2051,7 +2104,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   }}
                   onClick={(event) => event.stopPropagation()}
                   placeholder="property"
-                  className="w-full border-0 bg-transparent p-0 outline-none"
+                  className="style-inspector-ghost-input"
                   style={{ color: "var(--accent-primary)" }}
                 />
                 {activeSuggestionField?.index === -1 &&
@@ -2069,7 +2122,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
               <span style={{ color: "var(--text-muted)" }}>:</span>
 
-              <div className="relative min-w-0 flex-1">
+              <div className="style-inspector-value-wrap">
                 <input
                   value={newPropValue}
                   onChange={(event) =>
@@ -2091,7 +2144,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     if (event.key === "Enter") addProperty();
                   }}
                   placeholder="value"
-                  className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
+                  className="style-inspector-ghost-input"
                   style={{ color: "var(--text-main)" }}
                 />
                 {activeSuggestionField?.index === -1 &&
@@ -2114,7 +2167,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           </div>
 
           <div
-            className="mt-1 text-[12px]"
+            className="style-inspector-inline-heading"
             style={{ color: "var(--text-main)" }}
           >
             {"}"}
@@ -2127,56 +2180,52 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             const draft = ruleDrafts[ruleKey] || { key: "", value: "" };
             const occurrenceIndex = rule.occurrenceIndex;
             const hasResolvedActivity = rule.declarations.some(
-              (_declaration, declarationIndex) =>
-                getDeclarationActiveState(rule, declarationIndex) !== undefined,
+              (declaration) => getDeclarationActiveState(declaration) !== undefined,
             );
             const activeDeclarationCount = rule.declarations.filter(
-              (_declaration, declarationIndex) =>
-                getDeclarationActiveState(rule, declarationIndex),
+              (declaration) => getDeclarationActiveState(declaration),
             ).length;
             const isRuleInactive =
               hasResolvedActivity && activeDeclarationCount === 0;
             return (
               <div
                 key={`${rule.selector}-${rule.source}-${ruleIndex}`}
-                className="border-b px-3 py-2"
+                className="style-inspector-rule-section"
                 style={{
                   borderColor: "var(--border-color)",
                   opacity: isRuleInactive ? 0.52 : 1,
                 }}
               >
-                <div className="flex items-center justify-between gap-3 text-[12px]">
-                  <div className="flex min-w-0 items-center gap-2">
+                <div className="style-inspector-rule-header">
+                  <div className="style-inspector-rule-selector">
                     <SelectorText selector={rule.selector} element={element} />
                   </div>
                   <span
-                    className="shrink-0"
+                    className="style-inspector-rule-source"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {rule.source}
                   </span>
                 </div>
-                <div className="mt-1 space-y-1">
+                <div className="style-inspector-rule-group">
                   {rule.declarations.map((declaration, declarationIndex) =>
                     editingMatchedDeclaration?.ruleKey === ruleKey &&
                     editingMatchedDeclaration.originalProperty ===
                       declaration.property ? (
                       (() => {
-                        const declarationActive = getDeclarationActiveState(
-                          rule,
-                          declarationIndex,
-                        );
+                        const declarationActive =
+                          getDeclarationActiveState(declaration);
                         return (
                       <div
                         key={`${ruleKey}-${declaration.property}-${declarationIndex}`}
-                        className="flex items-center gap-2 pl-4 text-[12px] min-w-0"
+                        className="style-inspector-rule-row"
                         style={{
                           opacity:
                             declarationActive === false ? 0.48 : 1,
                         }}
                       >
                         <span
-                          className="mt-[1px] h-2 w-2 shrink-0 rounded-full"
+                          className="style-inspector-rule-indicator style-inspector-rule-indicator--top"
                           style={{
                             background:
                               declarationActive === true
@@ -2186,7 +2235,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                   : "rgba(14, 165, 233, 0.55)",
                           }}
                         />
-                        <div className="relative w-[84px] shrink-0">
+                        <div className="style-inspector-rule-input-wrap">
                           <input
                             data-rule-key={ruleKey}
                             data-original-property={
@@ -2239,7 +2288,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 event,
                               )
                             }
-                            className="w-full border-0 bg-transparent p-0 outline-none"
+                            className="style-inspector-key-input"
                             style={{ color: "var(--accent-primary)" }}
                             autoFocus={
                               editingMatchedDeclaration.focusField === "key"
@@ -2263,7 +2312,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           ) : null}
                         </div>
                         <span style={{ color: "var(--text-muted)" }}>:</span>
-                        <div className="relative min-w-0 flex-1">
+                        <div className="style-inspector-rule-value-input-wrap">
                           <input
                             data-rule-key={ruleKey}
                             data-original-property={
@@ -2357,7 +2406,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 setActiveSuggestionField(null);
                               }
                             }}
-                            className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
+                            className="style-inspector-value-input"
                             style={{ color: "var(--text-main)" }}
                             autoFocus={
                               editingMatchedDeclaration.focusField !== "key"
@@ -2390,10 +2439,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       })()
                     ) : (
                       (() => {
-                        const declarationActive = getDeclarationActiveState(
-                          rule,
-                          declarationIndex,
-                        );
+                        const declarationActive =
+                          getDeclarationActiveState(declaration);
                         const declarationKey = `${ruleKey}::${declaration.property}`;
                         const declarationPreview =
                           hoveredAssetPreview?.key === declarationKey
@@ -2402,7 +2449,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         return (
                       <div
                         key={`${ruleKey}-${declaration.property}-${declarationIndex}`}
-                        className="flex items-start gap-2 pl-4 text-[12px] min-w-0"
+                        className="style-inspector-rule-row style-inspector-rule-row--display"
                         style={{
                           opacity:
                             declarationActive === false ? 0.48 : 1,
@@ -2410,7 +2457,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         title={`${declaration.property}: ${declaration.value}${declaration.important ? " !important" : ""}`}
                       >
                         <span
-                          className="mt-[4px] h-2 w-2 shrink-0 rounded-full"
+                          className="style-inspector-rule-indicator style-inspector-rule-indicator--value"
                           style={{
                             background:
                               declarationActive === true
@@ -2421,7 +2468,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           }}
                         />
                         <span
-                          className="w-[84px] shrink-0 truncate"
+                          className="style-inspector-rule-key style-inspector-rule-key--truncate"
                           style={{
                             color: "var(--accent-primary)",
                             textDecoration:
@@ -2445,10 +2492,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           {declaration.property}
                         </span>
                         <span style={{ color: "var(--text-muted)" }}>:</span>
-                        <div className="min-w-0 flex flex-1 items-start gap-2">
-                          <div className="relative min-w-0 flex-1">
+                        <div className="style-inspector-rule-value-block">
+                          <div className="style-inspector-rule-value-wrap">
                             <span
-                              className="min-w-0 block truncate"
+                              className="style-inspector-rule-value-text"
                               style={{
                                 color: "var(--text-main)",
                                 textDecoration:
@@ -2487,7 +2534,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             </span>
                             {declarationPreview ? (
                               <div
-                                className="pointer-events-none absolute left-0 top-full z-20 mt-1 overflow-hidden rounded-md border p-2"
+                                className="style-inspector-rule-preview-popover"
                                 style={{
                                   width: 132,
                                   background: "var(--bg-glass-strong)",
@@ -2498,7 +2545,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                 <img
                                   src={declarationPreview}
                                   alt={getAssetLabel(declarationPreview) || "CSS asset preview"}
-                                  className="block h-auto max-h-[84px] w-full rounded object-contain"
+                                  className="style-inspector-rule-preview-image"
                                 />
                               </div>
                             ) : null}
@@ -2510,8 +2557,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     ),
                   )}
 
-                  <div className="flex items-center gap-2 pl-4 text-[12px]">
-                    <div className="relative w-[84px] shrink-0">
+                  <div className="style-inspector-rule-row">
+                    <div className="style-inspector-rule-input-wrap">
                       <input
                         value={draft.key}
                         onChange={(event) =>
@@ -2528,7 +2575,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         }}
                         onClick={(event) => event.stopPropagation()}
                         placeholder="property"
-                        className="w-full border-0 bg-transparent p-0 outline-none"
+                        className="style-inspector-key-input"
                         style={{ color: "var(--accent-primary)" }}
                       />
                       {activeSuggestionField?.index === -(ruleIndex + 2) &&
@@ -2544,7 +2591,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       ) : null}
                     </div>
                     <span style={{ color: "var(--text-muted)" }}>:</span>
-                    <div className="relative min-w-0 flex-1">
+                    <div className="style-inspector-rule-value-input-wrap">
                       <input
                         value={draft.value}
                         onChange={(event) =>
@@ -2569,7 +2616,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             addRuleProperty(rule, ruleKey, occurrenceIndex);
                         }}
                         placeholder="value"
-                        className="w-full min-w-0 border-0 bg-transparent p-0 outline-none"
+                        className="style-inspector-value-input"
                         style={{ color: "var(--text-main)" }}
                       />
                       {activeSuggestionField?.index === -(ruleIndex + 2) &&
@@ -2596,7 +2643,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   </div>
                 </div>
                 <div
-                  className="mt-1 text-[12px]"
+                  className="style-inspector-inline-heading"
                   style={{ color: "var(--text-main)" }}
                 >
                   {"}"}
@@ -2607,13 +2654,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         )}
 
         <div
-          className="border-b"
+          className="style-inspector-computed-shell"
           style={{ borderColor: "var(--border-color)" }}
         >
           <button
             type="button"
             onClick={() => setShowComputed((current) => !current)}
-            className="flex w-full items-center justify-between px-3 py-2 text-left text-[12px]"
+            className="style-inspector-computed-toggle"
             style={{ color: "var(--text-main)" }}
           >
             <span>
@@ -2622,28 +2669,28 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             </span>
             <ChevronDown
               size={12}
-              className={`transition-transform ${showComputed ? "rotate-180" : ""}`}
+              className={`style-inspector-computed-chevron ${showComputed ? "style-inspector-computed-chevron--open" : ""}`}
             />
           </button>
 
           {showComputed ? (
-            <div className="px-3 pb-2 text-[12px]">
+            <div className="style-inspector-computed-body">
               {computedEntries.length ? (
                 computedEntries.map((entry) => (
                   <div
                     key={entry.key}
-                    className="flex items-start gap-2 border-t py-1 pl-4 min-w-0"
+                    className="style-inspector-computed-row"
                     style={{ borderColor: "var(--border-color)" }}
                   >
                     <span
-                      className="w-[84px] shrink-0 break-words"
+                      className="style-inspector-computed-key"
                       style={{ color: "var(--accent-primary)" }}
                     >
                       {entry.key}
                     </span>
                     <span style={{ color: "var(--text-muted)" }}>:</span>
                     <span
-                      className="min-w-0 flex-1 break-words whitespace-pre-wrap"
+                      className="style-inspector-computed-value"
                       style={{ color: "var(--text-main)" }}
                     >
                       {entry.value};
@@ -2652,7 +2699,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 ))
               ) : (
                 <div
-                  className="pl-4 pt-1"
+                  className="style-inspector-computed-empty"
                   style={{ color: "var(--text-muted)" }}
                 >
                   No computed styles available

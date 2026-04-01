@@ -95,6 +95,28 @@ export const usePreviewInspectorRuntime = ({
   setPreviewSelectedMatchedCssRules,
 }: UsePreviewInspectorRuntimeOptions): UsePreviewInspectorRuntimeResult => {
   const lastAutoAssetReplaceKeyRef = useRef<string | null>(null);
+  const latestPreviewSelectedElementRef = useRef<VirtualElement | null>(
+    previewSelectedElement,
+  );
+  const latestPreviewSelectedMatchedCssRulesRef = useRef<PreviewMatchedCssRule[]>(
+    previewSelectedMatchedCssRules,
+  );
+  const isTemporaryMatchedRuleSource = (source: string) => {
+    const normalized = String(source || "").trim().toLowerCase();
+    return (
+      normalized === "inline stylesheet" ||
+      /^style-sheet-\d+-\d+$/.test(normalized)
+    );
+  };
+
+  useEffect(() => {
+    latestPreviewSelectedElementRef.current = previewSelectedElement;
+  }, [previewSelectedElement]);
+
+  useEffect(() => {
+    latestPreviewSelectedMatchedCssRulesRef.current =
+      previewSelectedMatchedCssRules;
+  }, [previewSelectedMatchedCssRules]);
 
   useEffect(() => {
     const ensureCdpBridge = async () => {
@@ -143,10 +165,11 @@ export const usePreviewInspectorRuntime = ({
   }, []);
 
   useEffect(() => {
+    const latestPreviewSelectedElement = latestPreviewSelectedElementRef.current;
     if (
       !Array.isArray(previewSelectedPath) ||
       previewSelectedPath.length === 0 ||
-      !previewSelectedElement
+      !latestPreviewSelectedElement
     ) {
       return;
     }
@@ -177,15 +200,26 @@ export const usePreviewInspectorRuntime = ({
         );
         const cdpMatchedCssRules = derivePreviewMatchedCssRulesFromCdp(
           payload.matchedStyles,
-          previewSelectedMatchedCssRules,
-          previewSelectedElement.styles,
+          latestPreviewSelectedMatchedCssRulesRef.current,
+          latestPreviewSelectedElement.styles,
         );
 
         if (cdpComputedStyles) {
           setPreviewSelectedComputedStyles(cdpComputedStyles);
         }
         if (cdpMatchedCssRules.length > 0) {
-          setPreviewSelectedMatchedCssRules(cdpMatchedCssRules);
+          setPreviewSelectedMatchedCssRules((current) => {
+            const cdpHasStableSources = cdpMatchedCssRules.some(
+              (rule) => !isTemporaryMatchedRuleSource(rule.source),
+            );
+            const currentHasStableSources = current.some(
+              (rule) => !isTemporaryMatchedRuleSource(rule.source),
+            );
+            if (cdpHasStableSources || !currentHasStableSources) {
+              return cdpMatchedCssRules;
+            }
+            return current;
+          });
         }
       } catch {
         if (controller.signal.aborted) return;
@@ -198,8 +232,6 @@ export const usePreviewInspectorRuntime = ({
     };
   }, [
     previewRefreshNonce,
-    previewSelectedElement,
-    previewSelectedMatchedCssRules,
     previewSelectedPath,
     setPreviewSelectedComputedStyles,
     setPreviewSelectedMatchedCssRules,

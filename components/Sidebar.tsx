@@ -6,6 +6,7 @@ import MasterFeaturePanel from './MasterFeaturePanel';
 import AnimationControls from './AnimationControls';
 import { FileMap, VirtualElement } from '../types';
 import { FolderOpen, Box, Sparkles, Settings, Image as ImageIcon, Wand2, PanelLeftClose, Zap } from 'lucide-react';
+import '../app/styles/components/sidebar.css';
 
 interface SidebarProps {
   files: FileMap;
@@ -123,7 +124,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
 
   return (
     <div
-      className="flex h-full min-h-0 shrink-0 z-10 overflow-hidden"
+      className="sidebar-shell"
       style={
         {
           ['--accent-primary' as any]: selectedAccent,
@@ -133,7 +134,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
     >
       {/* ─── Icon Rail ─── */}
       <div
-        className="w-12 flex flex-col items-center py-3 gap-1 border-r shrink-0"
+        className="sidebar-rail"
         style={{
           backgroundColor: 'var(--bg-glass-strong)',
           borderColor: 'var(--border-color)'
@@ -145,8 +146,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
             key={key}
             onClick={() => handleTabClick(key)}
             title={label}
-            className={`p-2 rounded-lg transition-all duration-200 relative glow-indicator ${activeTab === key ? 'tab-active-glow' : 'hover:bg-black/5'
-              }`}
+            className={`sidebar-tab-button ${activeTab === key ? 'sidebar-tab-button--active' : ''}`}
             style={{
               color:
                 activeTab === key
@@ -158,7 +158,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
             {/* Active dot indicator */}
             {activeTab === key && (
               <span
-                className="absolute -right-[7px] top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-l-full transition-all"
+                className="sidebar-tab-active-indicator"
                 style={{ backgroundColor: selectedAccent }}
               />
             )}
@@ -166,12 +166,12 @@ const SidebarBase: React.FC<SidebarProps> = ({
         ))}
 
         {/* Spacer */}
-        <div className="flex-1" />
+        <div className="sidebar-rail-spacer" />
 
         <button
           onClick={onOpenConfig}
           title="Application Settings"
-          className="p-2 rounded-lg transition-all duration-200 hover:bg-black/5"
+          className="sidebar-settings-button"
           style={{ color: 'var(--icon-color)' }}
         >
           <Settings size={16} />
@@ -181,7 +181,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
           <button
             onClick={onOpenConfig}
             title="Presentation Settings"
-            className="p-2 rounded-lg transition-all duration-200 hover:bg-black/5"
+            className="sidebar-settings-button"
             style={{ color: 'var(--icon-color)' }}
           >
             <Settings size={16} />
@@ -204,20 +204,20 @@ const SidebarBase: React.FC<SidebarProps> = ({
 
       {/* ─── Content Panel ─── */}
       <div
-        className={`min-w-0 flex flex-col h-full min-h-0 overflow-hidden transition-all duration-300 ${isPanelOpen ? 'flex-1 opacity-100' : 'w-0 opacity-0 pointer-events-none'}`}
+        className={`sidebar-content-panel ${isPanelOpen ? 'sidebar-content-panel--open' : 'sidebar-content-panel--collapsed'}`}
         style={{ backgroundColor: 'var(--bg-glass)', color: 'var(--text-main)' }}
       >
         {/* Panel Header */}
         <div
-          className="px-3 py-2.5 border-b flex items-center justify-between backdrop-blur-sm"
+          className="sidebar-panel-header"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-glass-strong)' }}
         >
-          <div className="flex items-center gap-2">
+          <div className="sidebar-panel-header-main">
             <Sparkles size={12} style={{ color: selectedAccent }} />
-            <span className="text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+            <span className="sidebar-panel-title" style={{ color: 'var(--text-muted)' }}>
               <span>{TAB_ITEMS.find(t => t.key === activeTab)?.label}</span>
               {showMasterTools && activeTab === 'master' ? (
-                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold tracking-normal uppercase" style={{ color: '#1d4ed8', backgroundColor: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.35)' }}>
+                <span className="sidebar-panel-badge" style={{ color: '#1d4ed8', backgroundColor: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.35)' }}>
                   Beta
                 </span>
               ) : null}
@@ -227,7 +227,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
             <button
               type="button"
               onClick={() => onTogglePanelOpen(false)}
-              className="h-7 px-2 rounded-full border flex items-center justify-center gap-1.5 transition-all duration-300 text-[10px] font-semibold uppercase tracking-[0.14em] hover:-translate-y-0.5"
+              className="sidebar-collapse-button"
               style={{
                 borderColor: 'var(--border-color)',
                 color: selectedAccent,
@@ -246,14 +246,14 @@ const SidebarBase: React.FC<SidebarProps> = ({
 
         {/* Draw Mode Selector (only when draw mode active) */}
         {false && interactionMode === 'draw' && (
-          <div className="p-2 border-b animate-slideUp" style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(16,185,129,0.05)' }}>
-            <label className="text-[9px] font-bold uppercase tracking-wider mb-1 block" style={{ color: 'var(--text-muted)' }}>
+          <div className="sidebar-draw-mode" style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(16,185,129,0.05)' }}>
+            <label className="sidebar-draw-mode-label" style={{ color: 'var(--text-muted)' }}>
               Drawing Element
             </label>
             <select
               value={drawElementTag}
               onChange={(e) => setDrawElementTag(e.target.value)}
-              className="w-full h-7 text-xs glass-input px-2 focus:outline-none rounded-md"
+              className="sidebar-draw-mode-select glass-input"
               style={{ color: 'var(--text-main)' }}
             >
               <option value="div">Box (div)</option>
@@ -271,7 +271,7 @@ const SidebarBase: React.FC<SidebarProps> = ({
 
         {/* Tab Content */}
         <div
-          className="flex-1 h-0 min-h-0 overflow-hidden custom-scrollbar animate-slideInLeft"
+          className="sidebar-tab-content"
           style={{ overscrollBehavior: 'contain' }}
         >
           {activeTab === 'files' ? (
@@ -298,9 +298,9 @@ const SidebarBase: React.FC<SidebarProps> = ({
           ) : showMasterTools && activeTab === 'master' ? (
             <MasterFeaturePanel files={files} onAddElement={onAddElement} isVisible={isPanelOpen && activeTab === 'master'} theme={theme} />
           ) : activeTab === 'animation' && animationElement ? (
-            <div className="h-full min-h-0 overflow-y-auto p-3 custom-scrollbar">
+            <div className="sidebar-tab-content sidebar-tab-content--scrollable">
               <div
-                className="rounded-xl border p-3"
+                className="sidebar-animation-card"
                 style={{
                   borderColor: 'var(--border-color)',
                   backgroundColor: 'var(--bg-glass)',

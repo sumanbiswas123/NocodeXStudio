@@ -1,6 +1,7 @@
 import React from "react";
 import { FileDown, PanelRightClose } from "lucide-react";
 import { ScreenshotMetadata } from "../helpers/screenshotWorkspace";
+import "../styles/ui/screenshot-gallery-panel.css";
 
 type RightPanelFloatingPosition = {
   left: number;
@@ -78,7 +79,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
 
   return (
     <div
-      className={`absolute z-40 no-scrollbar ${isResizingRightPanel || isDraggingRightPanel ? "" : "transition-all duration-500"} ${isFloatingPanels ? "" : isPanelsSwapped ? "left-0 top-0 bottom-0" : "right-0 top-0 bottom-0"} ${isCodePanelOpen ? "opacity-0 pointer-events-none" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "animate-panelInLeft" : "animate-panelInRight") : ""}`}
+      className={`screenshot-gallery-panel ${isResizingRightPanel || isDraggingRightPanel ? "" : "screenshot-gallery-panel--animated"} ${isFloatingPanels ? "" : isPanelsSwapped ? "screenshot-gallery-panel--docked-left" : "screenshot-gallery-panel--docked-right"} ${isCodePanelOpen ? "screenshot-gallery-panel--hidden" : ""} ${isRightPanelOpen ? (isPanelsSwapped ? "screenshot-gallery-panel--slide-in-left" : "screenshot-gallery-panel--slide-in-right") : ""}`}
       style={{
         transform: isRightPanelOpen
           ? "translateX(0)"
@@ -112,7 +113,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
       }}
     >
       <div
-        className={`h-full min-h-full relative flex flex-col overflow-hidden ${isFloatingPanels ? "rounded-2xl overflow-hidden" : ""}`}
+        className={`screenshot-gallery-surface ${isFloatingPanels ? "screenshot-gallery-surface--floating" : ""}`}
         style={{
           background:
             theme === "dark"
@@ -122,7 +123,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
         }}
       >
         <div
-          className="h-11 shrink-0 px-3 flex items-center justify-between"
+          className="screenshot-gallery-header"
           onMouseDown={onRightPanelDragStart}
           style={{
             borderBottom:
@@ -135,28 +136,28 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                 : "linear-gradient(90deg,rgba(99,102,241,0.12),rgba(16,185,129,0.1),transparent)",
           }}
         >
-          <div className="flex items-center gap-2">
+          <div className="screenshot-gallery-title-group">
             <div
-              className="w-2 h-2 rounded-full"
+              className="screenshot-gallery-title-dot"
               style={{
                 backgroundColor: theme === "dark" ? "#ffffff" : "#8b5cf6",
                 boxShadow:
                   theme === "dark"
                     ? "0 0 10px rgba(255,255,255,0.8)"
                     : "0 0 10px rgba(139,92,246,0.8)",
-              }}
+                }}
             />
             <span
-              className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+              className="screenshot-gallery-title"
               style={{ color: theme === "dark" ? "#cbd5e1" : "#475569" }}
             >
               {rightPanelMode === "gallery" ? "Gallery" : "Inspector"}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="screenshot-gallery-header-actions">
             <button
               type="button"
-              className="px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors"
+              className="screenshot-gallery-pill-button"
               style={{
                 background:
                   theme === "dark"
@@ -176,7 +177,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
             {!isFloatingPanels ? (
               <button
                 type="button"
-                className="h-6 w-6 flex items-center justify-center rounded-md border transition-colors"
+                className="screenshot-gallery-icon-button"
                 style={{
                   background:
                     theme === "dark"
@@ -197,9 +198,9 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+        <div className="screenshot-gallery-body">
           <div
-            className="shrink-0 px-3 py-2 border-b"
+            className="screenshot-gallery-toolbar"
             style={{
               borderColor:
                 theme === "dark"
@@ -208,22 +209,22 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
               background:
                 theme === "dark"
                   ? "rgba(15,23,42,0.42)"
-                  : "rgba(255,255,255,0.72)",
+                : "rgba(255,255,255,0.72)",
             }}
           >
-            <div className="flex items-center justify-between gap-2">
+            <div className="screenshot-gallery-toolbar-header">
               <div
-                className="text-[10px] font-semibold uppercase tracking-[0.2em]"
+                className="screenshot-gallery-toolbar-label"
                 style={{
                   color: theme === "dark" ? "#94a3b8" : "#64748b",
                 }}
               >
                 Screenshots
               </div>
-              <div className="flex items-center gap-2">
+              <div className="screenshot-gallery-toolbar-actions">
                 <button
                   type="button"
-                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                  className="screenshot-gallery-pill-button"
                   style={{
                     borderColor:
                       theme === "dark"
@@ -238,7 +239,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                  className="screenshot-gallery-pill-button"
                   style={{
                     borderColor:
                       theme === "dark"
@@ -255,7 +256,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                  className="screenshot-gallery-pill-button"
                   style={{
                     borderColor:
                       theme === "dark"
@@ -271,7 +272,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
               </div>
             </div>
             <div
-              className="mt-2 text-[10px] uppercase tracking-[0.12em]"
+              className="screenshot-gallery-count"
               style={{
                 color: theme === "dark" ? "#94a3b8" : "#64748b",
               }}
@@ -279,10 +280,10 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
               {screenshotItems.length} items
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
+          <div className="screenshot-gallery-list">
             {screenshotItems.length === 0 ? (
               <div
-                className="rounded-xl border px-4 py-6 text-center text-xs"
+                className="screenshot-gallery-empty"
                 style={{
                   borderColor:
                     theme === "dark"
@@ -299,7 +300,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                 return (
                   <div
                     key={item.id}
-                    className="rounded-2xl border overflow-hidden"
+                    className="screenshot-gallery-item"
                     style={{
                       borderColor:
                         theme === "dark"
@@ -315,21 +316,21 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                       <img
                         src={imageUrl}
                         alt={item.imageFileName}
-                        className="w-full h-40 object-cover"
+                        className="screenshot-gallery-item-image"
                       />
                     )}
-                    <div className="p-3 space-y-2">
-                      <div className="text-xs font-semibold">
+                    <div className="screenshot-gallery-item-content">
+                      <div className="screenshot-gallery-item-title">
                         {item.slideId || "Unknown slide"}
                         {item.popupId ? ` • ${item.popupId}` : ""}
                       </div>
-                      <div className="text-[10px] opacity-70">
+                      <div className="screenshot-gallery-item-meta">
                         {new Date(item.createdAt).toLocaleString()}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="screenshot-gallery-item-actions">
                         <button
                           type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          className="screenshot-gallery-item-button screenshot-gallery-pill-button"
                           style={{
                             borderColor:
                               theme === "dark"
@@ -343,7 +344,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                         </button>
                         <button
                           type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          className="screenshot-gallery-item-button screenshot-gallery-pill-button"
                           style={{
                             borderColor:
                               theme === "dark"
@@ -357,7 +358,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                         </button>
                         <button
                           type="button"
-                          className="px-2 py-1 rounded-full text-[10px] font-semibold border transition-colors"
+                          className="screenshot-gallery-item-button screenshot-gallery-pill-button"
                           style={{
                             borderColor:
                               theme === "dark"
@@ -377,7 +378,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
             )}
           </div>
           <div
-            className="shrink-0 px-3 py-3 border-t"
+            className="screenshot-gallery-footer"
             style={{
               borderColor:
                 theme === "dark"
@@ -391,7 +392,7 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
           >
             <button
               type="button"
-              className="w-full flex items-center justify-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold border transition-colors"
+              className="screenshot-gallery-export-button"
               style={{
                 borderColor:
                   theme === "dark"
@@ -409,9 +410,12 @@ const ScreenshotGalleryPanel: React.FC<ScreenshotGalleryPanelProps> = ({
                 : "Export Editable PDF"}
             </button>
             {pdfExportLogs.length > 0 && (
-              <div className="mt-3 max-h-32 overflow-auto text-[10px] space-y-1">
+              <div className="screenshot-gallery-export-logs">
                 {pdfExportLogs.map((log, index) => (
-                  <div key={`${index}-${log}`} className="opacity-80">
+                  <div
+                    key={`${index}-${log}`}
+                    className="screenshot-gallery-export-log"
+                  >
                     {log}
                   </div>
                 ))}

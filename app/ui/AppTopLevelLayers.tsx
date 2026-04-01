@@ -1,5 +1,6 @@
 import React from "react";
 import { DeviceContextMenu } from "../helpers/appHelpers";
+import "../styles/ui/app-top-level-layers.css";
 
 type AppTopLevelLayersProps = {
   theme: "light" | "dark";
@@ -59,7 +60,7 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
     <>
       {pageSwitchPromptState && (
         <div
-          className="fixed inset-0 z-[120] flex items-center justify-center p-4"
+          className="page-switch-modal-backdrop"
           style={{
             background:
               theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
@@ -67,7 +68,7 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
           }}
         >
           <div
-            className="w-full max-w-md rounded-2xl border shadow-2xl p-5"
+            className="page-switch-modal"
             style={{
               background:
                 theme === "dark"
@@ -80,28 +81,19 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
               color: "var(--text-main)",
             }}
           >
-            <div
-              className="text-[11px] uppercase tracking-[0.18em] font-semibold mb-2"
-              style={{ color: "var(--text-muted)" }}
-            >
+            <div className="page-switch-modal-eyebrow">
               Unsaved Changes
             </div>
-            <h3 className="text-base font-semibold leading-tight">
+            <h3 className="page-switch-modal-title">
               {pageSwitchPromptState.isPendingRefresh
                 ? "Save changes before refresh?"
                 : pageSwitchPromptState.isPendingPreviewMode
                   ? "Save changes before switching mode?"
                   : "Save changes before switching page?"}
             </h3>
-            <p
-              className="text-xs mt-2 leading-relaxed"
-              style={{ color: "var(--text-muted)" }}
-            >
+            <p className="page-switch-modal-copy">
               You have unsaved edits in{" "}
-              <span
-                className="font-semibold"
-                style={{ color: "var(--text-main)" }}
-              >
+              <span className="page-switch-modal-emphasis">
                 {pageSwitchPromptState.pendingSwitchFromLabel}
               </span>
               .
@@ -113,20 +105,17 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
                 <>
                   {" "}
                   Switching to{" "}
-                  <span
-                    className="font-semibold"
-                    style={{ color: "var(--text-main)" }}
-                  >
+                  <span className="page-switch-modal-emphasis">
                     {pageSwitchPromptState.pendingSwitchNextLabel}
                   </span>{" "}
                   can overwrite your in-memory edits.
                 </>
               )}
             </p>
-            <div className="mt-4 flex items-center justify-end gap-2">
+            <div className="page-switch-modal-actions">
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-black/5"
+                className="page-switch-modal-button"
                 style={{
                   borderColor: "var(--border-color)",
                   color: "var(--text-main)",
@@ -139,7 +128,7 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-rose-500/10"
+                className="page-switch-modal-button page-switch-modal-button--discard"
                 style={{
                   borderColor:
                     theme === "dark"
@@ -159,7 +148,7 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
               </button>
               <button
                 type="button"
-                className="px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors hover:bg-cyan-500/15"
+                className="page-switch-modal-button page-switch-modal-button--save"
                 style={{
                   borderColor:
                     theme === "dark"

@@ -1,6 +1,7 @@
 import React from "react";
 import Sidebar from "../../components/Sidebar";
 import type { FileMap, VirtualElement } from "../../types";
+import "../styles/ui/left-sidebar-shell.css";
 
 type InteractionMode = "edit" | "preview" | "inspect" | "draw" | "move";
 
@@ -125,7 +126,7 @@ const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
 
   return (
     <div
-      className={`absolute z-40 no-scrollbar ${isResizingLeftPanel ? "" : "transition-all duration-700"} ${isFloatingPanels ? (isPanelsSwapped ? "right-0 top-20" : "left-0 top-20") : isPanelsSwapped ? "right-0 top-0 bottom-0" : "left-0 top-0 bottom-0"} ${isCodePanelOpen ? "opacity-0 pointer-events-none" : ""}`}
+      className={`left-sidebar-shell ${isResizingLeftPanel ? "" : "left-sidebar-shell--animated"} ${isFloatingPanels ? (isPanelsSwapped ? "left-sidebar-shell--floating-right" : "left-sidebar-shell--floating-left") : isPanelsSwapped ? "left-sidebar-shell--docked-right" : "left-sidebar-shell--docked-left"} ${isCodePanelOpen ? "left-sidebar-shell--hidden" : ""}`}
       style={{
         transform: isLeftPanelOpen
           ? "translateX(0) scale(1)"
@@ -160,13 +161,7 @@ const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
       }}
     >
       <div
-        className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-          isFloatingPanels
-            ? isPanelsSwapped
-              ? "rounded-l-2xl overflow-hidden"
-              : "rounded-r-2xl overflow-hidden"
-            : ""
-        }`}
+        className={`left-sidebar-surface ${isFloatingPanels ? (isPanelsSwapped ? "left-sidebar-surface--floating-right" : "left-sidebar-surface--floating-left") : ""}`}
         style={{
           background:
             theme === "dark"
@@ -175,7 +170,7 @@ const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
           backdropFilter: "none",
         }}
       >
-        <div className="min-h-0 flex-1">
+        <div className="left-sidebar-content">
           <Sidebar
             files={files}
             projectPath={projectPath}
@@ -232,7 +227,7 @@ const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
           />
         </div>
         <div
-          className={`pointer-events-none absolute inset-0 ${isFloatingPanels ? "rounded-r-2xl" : ""}`}
+          className={`left-sidebar-frame ${isFloatingPanels ? (isPanelsSwapped ? "left-sidebar-frame--floating-right" : "left-sidebar-frame--floating-left") : ""}`}
           style={{
             boxShadow:
               theme === "dark"
@@ -245,7 +240,7 @@ const LeftSidebarShell: React.FC<LeftSidebarShellProps> = ({
         <div
           onMouseDown={handleLeftPanelResizeStart}
           onClick={handleLeftPanelStretchToggle}
-          className={`absolute top-0 ${isPanelsSwapped ? "left-0" : "right-0"} h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-400/30 transition-colors`}
+          className={`left-sidebar-resize-handle ${isPanelsSwapped ? "left-sidebar-resize-handle--left" : "left-sidebar-resize-handle--right"}`}
           title="Resize panel. Click to stretch or shrink"
         />
       )}

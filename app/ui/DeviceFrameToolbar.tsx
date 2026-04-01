@@ -11,6 +11,7 @@ import {
   Undo2,
 } from "lucide-react";
 import type { PreviewSelectionMode } from "../helpers/appHelpers";
+import "../styles/ui/device-frame-toolbar.css";
 
 type DeviceFrameToolbarProps = {
   currentDevicePixelRatio: number;
@@ -88,11 +89,10 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
   return (
     <>
       <div
-        className="absolute left-5 bottom-full z-0 transition-all animate-slideDown"
-        style={{ marginBottom: "-10px" }}
+        className="device-toolbar-left device-toolbar-left--slide-in"
       >
         <div
-          className="px-3 pt-1 pb-3 flex items-center gap-2 min-w-0 rounded-t-[16px] rounded-b-none border"
+          className="device-toolbar-left-panel"
           style={{
             background:
               theme === "dark"
@@ -111,7 +111,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
           }}
         >
           <button
-            className={`glass-icon-btn navbar-icon-btn ${deviceMode === "tablet" ? "active" : ""}`}
+            className={`device-toolbar-icon-button ${deviceMode === "tablet" ? "device-toolbar-icon-button--active" : ""}`}
             onClick={() => {
               setDeviceMode("tablet");
               setTabletOrientation((prev) =>
@@ -131,14 +131,14 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
           >
             <Tablet
               size={16}
-              className="transition-transform duration-300 ease-out"
+              className="device-toolbar-icon"
               style={{
                 transform: `rotate(${tabletOrientation === "landscape" ? 90 : 0}deg)`,
               }}
             />
           </button>
           <button
-            className="glass-icon-btn navbar-icon-btn"
+            className="device-toolbar-icon-button"
             onClick={handlePreviewRefresh}
             title="Refresh iPad content (Ctrl+T)"
           >
@@ -146,21 +146,35 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
           </button>
           {currentDevicePixelRatio >= 1.5 && (
             <>
-              <div className="h-4 w-px bg-gray-500/20"></div>
-              <div className="flex items-center gap-0.5 rounded-full px-0.5 py-0.5 border border-gray-500/20">
+              <div className="device-toolbar-divider"></div>
+              <div className="device-toolbar-zoom-group">
                 {[50, 75, 100].map((zoom) => (
                   <button
                     key={zoom}
                     onClick={() => setFrameZoom(zoom as 50 | 75 | 100)}
-                    className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold transition-all ${
-                      frameZoom === zoom
-                        ? theme === "light"
-                          ? "bg-cyan-500/20 text-cyan-700 border border-cyan-500/35"
-                          : "bg-indigo-500/25 text-indigo-300"
-                        : theme === "light"
-                          ? "text-slate-500"
-                          : "text-gray-300"
-                    }`}
+                    className="device-toolbar-zoom-button"
+                    style={{
+                      color:
+                        frameZoom === zoom
+                          ? theme === "light"
+                            ? "#0e7490"
+                            : "#a5b4fc"
+                          : theme === "light"
+                            ? "#64748b"
+                            : "#d1d5db",
+                      background:
+                        frameZoom === zoom
+                          ? theme === "light"
+                            ? "rgba(6,182,212,0.2)"
+                            : "rgba(99,102,241,0.25)"
+                          : "transparent",
+                      border:
+                        frameZoom === zoom
+                          ? theme === "light"
+                            ? "1px solid rgba(6,182,212,0.35)"
+                            : "1px solid rgba(99,102,241,0.35)"
+                          : "1px solid transparent",
+                    }}
                     title={`Set frame zoom to ${zoom}%`}
                   >
                     {zoom}%
@@ -169,65 +183,89 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
               </div>
             </>
           )}
-          <div className="h-4 w-px bg-gray-500/20"></div>
+          <div className="device-toolbar-divider"></div>
           <button
-            className="glass-icon-btn navbar-icon-btn"
+            className="device-toolbar-icon-button"
             onClick={toggleThemeWithTransition}
             title="Toggle Theme"
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
+          <div className="device-toolbar-divider"></div>
           <button
-            className="glass-icon-btn navbar-icon-btn"
+            className="device-toolbar-icon-button"
             onClick={runUndo}
             title="Undo (Ctrl+Z)"
           >
             <Undo2 size={16} />
           </button>
           <button
-            className="glass-icon-btn navbar-icon-btn"
+            className="device-toolbar-icon-button"
             onClick={runRedo}
             title="Redo (Ctrl+U)"
           >
             <Redo2 size={16} />
           </button>
-          <div className="h-4 w-px bg-gray-500/20"></div>
+          <div className="device-toolbar-divider"></div>
           <span
-            className="w-2.5 h-2.5 rounded-full"
+            className="device-toolbar-status-dot"
             style={{
               backgroundColor: dirtyFileCount > 0 ? "#f59e0b" : "#22c55e",
             }}
             aria-hidden="true"
           />
           {interactionMode === "preview" && (
-            <div className="flex items-center gap-1 rounded-full px-1 py-1 border border-gray-500/20">
+            <div className="device-toolbar-preview-mode-group">
               <button
                 onClick={() => setPreviewModeWithSync("edit")}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  previewMode === "edit"
-                    ? theme === "light"
-                      ? "bg-amber-500/20 text-amber-700 border border-amber-500/35"
-                      : "bg-amber-500/25 text-amber-200 border border-amber-500/35"
-                    : theme === "light"
-                      ? "text-slate-500"
-                      : "text-gray-300"
-                }`}
+                className="device-toolbar-mode-button"
+                style={{
+                  color:
+                    previewMode === "edit"
+                      ? theme === "light"
+                        ? "#b45309"
+                        : "#fde68a"
+                      : theme === "light"
+                        ? "#64748b"
+                        : "#d1d5db",
+                  background:
+                    previewMode === "edit"
+                      ? theme === "light"
+                        ? "rgba(245,158,11,0.2)"
+                        : "rgba(245,158,11,0.25)"
+                      : "transparent",
+                  border:
+                    previewMode === "edit"
+                      ? "1px solid rgba(245,158,11,0.35)"
+                      : "1px solid transparent",
+                }}
                 title="LIVE Edit mode: select and edit elements"
               >
                 Edit
               </button>
               <button
                 onClick={() => setPreviewModeWithSync("preview")}
-                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-all ${
-                  previewMode === "preview"
-                    ? theme === "light"
-                      ? "bg-emerald-500/20 text-emerald-700 border border-emerald-500/35"
-                      : "bg-emerald-500/25 text-emerald-200 border border-emerald-500/35"
-                    : theme === "light"
-                      ? "text-slate-500"
-                      : "text-gray-300"
-                }`}
+                className="device-toolbar-mode-button"
+                style={{
+                  color:
+                    previewMode === "preview"
+                      ? theme === "light"
+                        ? "#047857"
+                        : "#bbf7d0"
+                      : theme === "light"
+                        ? "#64748b"
+                        : "#d1d5db",
+                  background:
+                    previewMode === "preview"
+                      ? theme === "light"
+                        ? "rgba(16,185,129,0.2)"
+                        : "rgba(16,185,129,0.25)"
+                      : "transparent",
+                  border:
+                    previewMode === "preview"
+                      ? "1px solid rgba(16,185,129,0.35)"
+                      : "1px solid transparent",
+                }}
                 title="LIVE Preview mode: navigate and interact"
               >
                 Preview
@@ -238,14 +276,10 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
       </div>
       {deviceMode === "tablet" && (
         <div
-          className="absolute right-5 bottom-full z-0 transition-all animate-slideDown"
-          style={{
-            marginBottom: "-20px",
-            transform: "translateY(3px)",
-          }}
+          className="device-toolbar-right device-toolbar-right--slide-in"
         >
           <div
-            className="px-0.5 pt-1 pb-3 flex items-end gap-3"
+            className="device-toolbar-right-content"
             style={{
               background: "transparent",
               border: "none",
@@ -254,7 +288,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
             }}
           >
             <div
-              className="shrink-0 overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+              className="device-toolbar-selection-panel-shell"
               style={{
                 maxWidth: sidebarInteractionMode === "inspect" ? "18rem" : "0rem",
                 opacity: sidebarInteractionMode === "inspect" ? 1 : 0,
@@ -266,7 +300,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
               }}
             >
               <div
-                className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
+                className="device-toolbar-selection-panel"
                 style={{
                   borderColor:
                     theme === "dark"
@@ -285,7 +319,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
                 }}
               >
                 <div
-                  className="flex items-center gap-1 rounded-full border px-1.5 py-[2px]"
+                  className="device-toolbar-selection-pill-group"
                   style={{
                     borderColor:
                       theme === "dark"
@@ -305,7 +339,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
                     <button
                       key={option.value}
                       type="button"
-                      className="rounded-full px-2 py-[3px] text-[8px] font-semibold uppercase tracking-[0.12em] transition-all"
+                      className="device-toolbar-selection-button"
                       style={{
                         color:
                           previewSelectionMode === option.value
@@ -340,7 +374,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
               </div>
             </div>
             <div
-              className="rounded-t-[10px] rounded-b-none border px-2 pt-1 pb-3"
+              className="device-toolbar-inspect-panel"
               style={{
                 borderColor:
                   theme === "dark"
@@ -359,7 +393,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
               }}
             >
               <div
-                className="flex items-center gap-1 rounded-[10px] px-1 py-1 border"
+                className="device-toolbar-inspect-controls"
                 style={{
                   borderColor:
                     theme === "dark"
@@ -373,7 +407,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
               >
                 <button
                   type="button"
-                  className="glass-icon-btn navbar-icon-btn rounded-md"
+                  className="device-toolbar-inspect-button"
                   onClick={() => handleSidebarInteractionModeChange("inspect")}
                   title="Select Element"
                   style={{
@@ -396,7 +430,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="glass-icon-btn navbar-icon-btn rounded-md"
+                  className="device-toolbar-inspect-button"
                   onClick={() => handleSidebarInteractionModeChange("move")}
                   title="Move Element"
                   style={{
@@ -421,9 +455,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
             </div>
             {showScreenshotFeatures && (
               <button
-                className={`glass-icon-btn navbar-icon-btn rounded-md ${
-                  screenshotCaptureBusy ? "opacity-60" : ""
-                }`}
+                className={`device-toolbar-screenshot-button ${screenshotCaptureBusy ? "device-toolbar-screenshot-button--busy" : ""}`}
                 onClick={() => openScreenshotGallery(true)}
                 disabled={screenshotCaptureBusy || !projectPath}
                 title={

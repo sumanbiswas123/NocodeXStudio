@@ -15,12 +15,14 @@ export type PreviewMatchedCssDeclaration = {
 export type PreviewMatchedCssRule = {
   selector: string;
   source: string;
+  sourcePath?: string;
   declarations: PreviewMatchedCssDeclaration[];
 };
 
 export type PreviewMatchedRuleMutation = {
   selector: string;
   source: string;
+  sourcePath?: string;
   occurrenceIndex?: number;
   originalProperty?: string;
   isActive?: boolean;
@@ -94,6 +96,52 @@ export type CdpInspectSelectedResponse = {
 
 const normalizeMatchedCssProperty = (property: string) =>
   String(property || "").trim().toLowerCase();
+
+const isPreviewCssDebugEnabled = () => {
+  if (typeof window === "undefined") return false;
+  const explicit = (window as any).__NX_DEBUG_PREVIEW_CSS;
+  if (explicit === false) return false;
+  return true;
+};
+
+const collectDuplicateDeclarationDebug = (
+  declarations: PreviewMatchedCssDeclaration[],
+) => {
+  const counts = new Map<string, { count: number; values: string[] }>();
+  declarations.forEach((declaration) => {
+    const property = normalizeMatchedCssProperty(declaration.property);
+    if (!property) return;
+    const current = counts.get(property) || { count: 0, values: [] };
+    current.count += 1;
+    current.values.push(String(declaration.value || "").trim());
+    counts.set(property, current);
+  });
+  return Array.from(counts.entries())
+    .filter(([, meta]) => meta.count > 1)
+    .map(([property, meta]) => ({
+      property,
+      count: meta.count,
+      values: meta.values,
+    }));
+};
+
+const debugPreviewCss = (label: string, payload: Record<string, unknown>) => {
+  if (!isPreviewCssDebugEnabled()) return;
+  console.groupCollapsed(`[PreviewCSSDebug] ${label}`);
+  Object.entries(payload).forEach(([key, value]) => {
+    console.log(key, value);
+  });
+  console.groupEnd();
+};
+
+const readCssSourceBasename = (value: string) => {
+  const normalized = String(value || "")
+    .replace(/\\/g, "/")
+    .split("?")[0]
+    .split("#")[0];
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || normalized;
+};
 
 const splitSelectorList = (selectorText: string): string[] => {
   const parts: string[] = [];
@@ -328,26 +376,44 @@ export const collectMatchedCssRulesFromElement = (
     return [];
   }
 
-  const getSourceLabel = (sheet: CSSStyleSheet) => {
+  const getSourceMeta = (sheet: CSSStyleSheet) => {
     if (sheet.href) {
       const cleanHref = String(sheet.href).split("?")[0].split("#")[0];
       const parts = cleanHref.split("/");
-      return parts[parts.length - 1] || cleanHref || "stylesheet";
+      return {
+        source: parts[parts.length - 1] || cleanHref || "stylesheet",
+        sourcePath: normalizeProjectRelative(cleanHref),
+      };
     }
     const ownerNode = sheet.ownerNode;
     if (ownerNode instanceof Element) {
-      return (
+      const source =
         ownerNode.getAttribute("data-source") ||
         ownerNode.getAttribute("data-href") ||
-        "inline stylesheet"
-      );
+        ownerNode.getAttribute("data-nx-live-source") ||
+        "";
+      if (source) {
+        const cleanSource = String(source).split("?")[0].split("#")[0];
+        const parts = cleanSource.replace(/\\/g, "/").split("/");
+        return {
+          source: parts[parts.length - 1] || cleanSource || "stylesheet",
+          sourcePath: normalizeProjectRelative(cleanSource),
+        };
+      }
     }
-    return "inline stylesheet";
+    return {
+      source: "inline stylesheet",
+      sourcePath: undefined,
+    };
   };
 
   const results: PreviewMatchedCssRule[] = [];
 
-  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+  const visitRules = (
+    rules: CSSRuleList | undefined,
+    source: string,
+    sourcePath?: string,
+  ) => {
     if (!rules) return;
     Array.from(rules).forEach((rule) => {
       try {
@@ -377,13 +443,13 @@ export const collectMatchedCssRulesFromElement = (
             });
           });
           if (declarations.length) {
-            results.push({ selector, source, declarations });
+            results.push({ selector, source, sourcePath, declarations });
           }
           return;
         }
 
         if (candidateRule.cssRules) {
-          visitRules(candidateRule.cssRules, source);
+          visitRules(candidateRule.cssRules, source, sourcePath);
         }
       } catch {
         // Ignore inaccessible or unsupported rules.
@@ -394,12 +460,15 @@ export const collectMatchedCssRulesFromElement = (
   const doc = element.ownerDocument;
   if (!doc) return [];
 
-  Array.from(doc.styleSheets).forEach((sheet) => {
+  const styleSheets = Array.from(doc.styleSheets).map(
+    (sheet) => sheet as CSSStyleSheet,
+  );
+
+  styleSheets.forEach((sheet) => {
     try {
-      visitRules(
-        (sheet as CSSStyleSheet).cssRules,
-        getSourceLabel(sheet as CSSStyleSheet),
-      );
+      if (hasLiveOverrideForStyleSheet(sheet, styleSheets)) return;
+      const sourceMeta = getSourceMeta(sheet);
+      visitRules(sheet.cssRules, sourceMeta.source, sourceMeta.sourcePath);
     } catch {
       // Ignore inaccessible stylesheet rules.
     }
@@ -412,19 +481,44 @@ export const collectMatchedCssRulesFromElement = (
 };
 
 export const getCssSourceBasename = (value: string) => {
-  const normalized = String(value || "")
-    .replace(/\\/g, "/")
-    .split("?")[0]
-    .split("#")[0];
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || normalized;
+  return readCssSourceBasename(value);
 };
 
 export const normalizeSelectorSignature = (value: string) =>
   String(value || "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/\s+/g, " ")
+    .split(",")
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(", ")
     .trim();
+
+const isTemporaryDerivedSource = (source: string) => {
+  const normalized = String(source || "").trim().toLowerCase();
+  return (
+    normalized === "inline stylesheet" ||
+    /^style-sheet-\d+-\d+$/.test(normalized)
+  );
+};
+
+const buildDeclarationMatchKey = (
+  declarations: PreviewMatchedCssDeclaration[],
+) =>
+  declarations
+    .map((declaration) => normalizeMatchedCssProperty(declaration.property))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+const selectorListsOverlap = (left: string, right: string) => {
+  const leftSelectors = new Set(
+    splitSelectorList(left).map((part) => normalizeSelectorSignature(part)),
+  );
+  const rightSelectors = splitSelectorList(right).map((part) =>
+    normalizeSelectorSignature(part),
+  );
+  return rightSelectors.some((part) => leftSelectors.has(part));
+};
 
 const normalizeCdpSpecificity = (
   specificity: CdpSpecificity | undefined,
@@ -520,22 +614,47 @@ export const derivePreviewMatchedCssRulesFromCdp = (
       );
 
       let source = rule?.styleSheetId || rule?.origin || "stylesheet";
-      const matchingFallbackIndex = fallbackRules.findIndex(
+      const exactFallbackIndex = fallbackRules.findIndex(
         (fallbackRule, fallbackIndex) =>
           unusedFallbackIndexes.has(fallbackIndex) &&
           normalizeSelectorSignature(fallbackRule.selector) ===
             normalizeSelectorSignature(selectorText),
       );
+      const normalizedDerivedSource = getCssSourceBasename(source) || source;
+      let matchingFallbackIndex = exactFallbackIndex;
+      if (matchingFallbackIndex < 0 && isTemporaryDerivedSource(normalizedDerivedSource)) {
+        const declarationKey = buildDeclarationMatchKey(declarations);
+        matchingFallbackIndex = fallbackRules.findIndex(
+          (fallbackRule, fallbackIndex) =>
+            unusedFallbackIndexes.has(fallbackIndex) &&
+            !isTemporaryDerivedSource(fallbackRule.source) &&
+            selectorListsOverlap(fallbackRule.selector, selectorText) &&
+            buildDeclarationMatchKey(fallbackRule.declarations) === declarationKey,
+        );
+      }
+      if (matchingFallbackIndex < 0 && isTemporaryDerivedSource(normalizedDerivedSource)) {
+        matchingFallbackIndex = fallbackRules.findIndex(
+          (fallbackRule, fallbackIndex) =>
+            unusedFallbackIndexes.has(fallbackIndex) &&
+            !isTemporaryDerivedSource(fallbackRule.source) &&
+            selectorListsOverlap(fallbackRule.selector, selectorText),
+        );
+      }
       if (matchingFallbackIndex >= 0) {
         source = fallbackRules[matchingFallbackIndex].source;
         unusedFallbackIndexes.delete(matchingFallbackIndex);
       } else {
-        source = getCssSourceBasename(source) || source;
+        source = normalizedDerivedSource;
       }
+      const sourcePath =
+        matchingFallbackIndex >= 0
+          ? fallbackRules[matchingFallbackIndex].sourcePath
+          : undefined;
 
       return {
         selector: selectorText,
         source,
+        sourcePath,
         declarations,
         derivedSpecificity,
         sourceOrder: matchIndex,
@@ -614,6 +733,7 @@ export const derivePreviewMatchedCssRulesFromCdp = (
   return derivedRules.map((rule) => ({
     selector: rule.selector,
     source: rule.source,
+    sourcePath: rule.sourcePath,
     declarations: rule.declarations.map((declaration, declarationIndex) => {
       const winner = winnerByProperty.get(
         normalizeMatchedCssProperty(declaration.property),
@@ -638,13 +758,94 @@ export const getStyleSheetSourceLabel = (sheet: CSSStyleSheet) => {
   }
   const ownerNode = sheet.ownerNode;
   if (ownerNode instanceof Element) {
-    return (
+    const source =
       ownerNode.getAttribute("data-source") ||
       ownerNode.getAttribute("data-href") ||
-      "inline stylesheet"
-    );
+      ownerNode.getAttribute("data-nx-live-source") ||
+      "";
+    if (source) {
+      const cleanSource = String(source).split("?")[0].split("#")[0];
+      const parts = cleanSource.replace(/\\/g, "/").split("/");
+      return parts[parts.length - 1] || cleanSource || "stylesheet";
+    }
   }
   return "inline stylesheet";
+};
+
+const isPreviewLiveOverrideStylesheet = (sheet: CSSStyleSheet) => {
+  const ownerNode = sheet.ownerNode;
+  return (
+    ownerNode instanceof Element &&
+    ownerNode.hasAttribute("data-nx-live-source")
+  );
+};
+
+const styleSheetSourceCandidatesMatch = (left: string, right: string) => {
+  const normalizedLeft = normalizeProjectRelative(String(left || "")).toLowerCase();
+  const normalizedRight = normalizeProjectRelative(String(right || "")).toLowerCase();
+  if (normalizedLeft && normalizedRight && normalizedLeft === normalizedRight) {
+    return true;
+  }
+  const baseLeft = readCssSourceBasename(left).toLowerCase();
+  const baseRight = readCssSourceBasename(right).toLowerCase();
+  return Boolean(baseLeft && baseRight && baseLeft === baseRight);
+};
+
+const collectStyleSheetSourceCandidates = (sheet: CSSStyleSheet): string[] => {
+  const candidates = new Set<string>();
+  const pushCandidate = (raw: string | null | undefined) => {
+    const text = String(raw || "").trim();
+    if (!text) return;
+    candidates.add(text);
+    const clean = text.split("?")[0].split("#")[0];
+    if (clean) {
+      candidates.add(clean);
+      candidates.add(normalizeProjectRelative(clean));
+      const base = readCssSourceBasename(clean);
+      if (base) candidates.add(base);
+    }
+    try {
+      const parsed = new URL(text, window.location.href);
+      const pathname = String(parsed.pathname || "").trim();
+      if (!pathname) return;
+      candidates.add(pathname);
+      const normalizedPath = normalizeProjectRelative(pathname);
+      if (normalizedPath) candidates.add(normalizedPath);
+      const base = readCssSourceBasename(pathname);
+      if (base) candidates.add(base);
+    } catch {
+      // Ignore values that are not URL-like.
+    }
+  };
+
+  pushCandidate(sheet.href || "");
+  const ownerNode = sheet.ownerNode;
+  if (ownerNode instanceof Element) {
+    pushCandidate(ownerNode.getAttribute("data-source"));
+    pushCandidate(ownerNode.getAttribute("data-href"));
+    pushCandidate(ownerNode.getAttribute("data-nx-live-source"));
+  }
+  pushCandidate(getStyleSheetSourceLabel(sheet));
+
+  return Array.from(candidates).filter(Boolean);
+};
+
+const hasLiveOverrideForStyleSheet = (
+  target: CSSStyleSheet,
+  allSheets: CSSStyleSheet[],
+) => {
+  if (isPreviewLiveOverrideStylesheet(target)) return false;
+  const targetCandidates = collectStyleSheetSourceCandidates(target);
+  if (targetCandidates.length === 0) return false;
+  return allSheets.some((sheet) => {
+    if (!isPreviewLiveOverrideStylesheet(sheet)) return false;
+    const overrideCandidates = collectStyleSheetSourceCandidates(sheet);
+    return overrideCandidates.some((overrideCandidate) =>
+      targetCandidates.some((targetCandidate) =>
+        styleSheetSourceCandidatesMatch(targetCandidate, overrideCandidate),
+      ),
+    );
+  });
 };
 
 const isTemporaryMatchedRuleSource = (source: string) => {
@@ -706,7 +907,11 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
   }
 
   const results: LiveMatchedCssRuleRef[] = [];
-  const visitRules = (rules: CSSRuleList | undefined, source: string) => {
+  const visitRules = (
+    rules: CSSRuleList | undefined,
+    source: string,
+    sourcePath?: string,
+  ) => {
     if (!rules) return;
     Array.from(rules).forEach((rule) => {
       try {
@@ -732,6 +937,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
             results.push({
               selector,
               source,
+              sourcePath,
               declarations,
               styleRule: rule,
             });
@@ -740,7 +946,7 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
         }
         const nestedRule = rule as CSSRule & { cssRules?: CSSRuleList };
         if (nestedRule.cssRules) {
-          visitRules(nestedRule.cssRules, source);
+          visitRules(nestedRule.cssRules, source, sourcePath);
         }
       } catch {
         // Ignore inaccessible or unsupported rules.
@@ -751,12 +957,33 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
   const doc = element.ownerDocument;
   if (!doc) return [];
 
-  Array.from(doc.styleSheets).forEach((sheet) => {
+  const styleSheets = Array.from(doc.styleSheets).map(
+    (sheet) => sheet as CSSStyleSheet,
+  );
+
+  styleSheets.forEach((sheet) => {
     try {
-      visitRules(
-        (sheet as CSSStyleSheet).cssRules,
-        getStyleSheetSourceLabel(sheet as CSSStyleSheet),
-      );
+      if (hasLiveOverrideForStyleSheet(sheet, styleSheets)) return;
+      const sourceLabel = getStyleSheetSourceLabel(sheet);
+      let sourcePath: string | undefined;
+      if (sheet.href) {
+        sourcePath = normalizeProjectRelative(
+          String(sheet.href).split("?")[0].split("#")[0],
+        );
+      } else {
+        const ownerNode = sheet.ownerNode;
+        if (ownerNode instanceof Element) {
+          const ownerSource =
+            ownerNode.getAttribute("data-source") ||
+            ownerNode.getAttribute("data-href") ||
+            ownerNode.getAttribute("data-nx-live-source") ||
+            "";
+          if (ownerSource) {
+            sourcePath = normalizeProjectRelative(ownerSource);
+          }
+        }
+      }
+      visitRules(sheet.cssRules, sourceLabel, sourcePath);
     } catch {
       // Ignore inaccessible stylesheet rules.
     }
@@ -831,8 +1058,16 @@ export const applyPatchToDeclarationEntries = (
   rule: PreviewMatchedRuleMutation,
   styles: Partial<CSSProperties>,
 ): PreviewMatchedCssDeclaration[] => {
-  const nextDeclarations = [...declarations];
+  const normalizedDeclarations = dedupeExactRuleDeclarations(declarations);
+  const beforeDeclarations = normalizedDeclarations.map((declaration) => ({
+    property: declaration.property,
+    value: declaration.value,
+    important: Boolean(declaration.important),
+    active: declaration.active,
+  }));
+  const nextDeclarations = [...normalizedDeclarations];
   const normalizedNextKeys = new Set<string>();
+  const desiredValuesByProperty = new Map<string, string>();
   const originalCssProperty = rule.originalProperty
     ? toCssPropertyName(rule.originalProperty)
     : "";
@@ -841,6 +1076,7 @@ export const applyPatchToDeclarationEntries = (
     const cssProperty = toCssPropertyName(key);
     const value = normalizePresentationCssValue(cssProperty, rawValue);
     normalizedNextKeys.add(cssProperty.toLowerCase());
+    desiredValuesByProperty.set(cssProperty.toLowerCase(), value);
     const existingIndex = nextDeclarations.findIndex(
       (entry) => entry.property.toLowerCase() === cssProperty.toLowerCase(),
     );
@@ -875,7 +1111,65 @@ export const applyPatchToDeclarationEntries = (
     }
   }
 
-  return nextDeclarations;
+  const affectedProperties = new Set<string>(normalizedNextKeys);
+  if (originalCssProperty) {
+    affectedProperties.add(originalCssProperty.toLowerCase());
+  }
+  if (affectedProperties.size === 0) {
+    return nextDeclarations;
+  }
+
+  const keepIndexByProperty = new Map<string, number>();
+  affectedProperties.forEach((property) => {
+    const matches = nextDeclarations
+      .map((entry, index) => ({
+        entry,
+        index,
+      }))
+      .filter(
+        ({ entry }) =>
+          normalizeMatchedCssProperty(entry.property) === property,
+      );
+    if (matches.length === 0) return;
+
+    const desiredValue = desiredValuesByProperty.get(property);
+    const preferredMatch =
+      desiredValue !== undefined
+        ? [...matches]
+            .reverse()
+            .find(
+              ({ entry }) => String(entry.value || "").trim() === desiredValue,
+            ) || matches[matches.length - 1]
+        : matches[matches.length - 1];
+    keepIndexByProperty.set(property, preferredMatch.index);
+  });
+
+  const collapsedDeclarations = nextDeclarations.filter((entry, index) => {
+    const property = normalizeMatchedCssProperty(entry.property);
+    if (!affectedProperties.has(property)) return true;
+    return keepIndexByProperty.get(property) === index;
+  });
+
+  debugPreviewCss("applyPatchToDeclarationEntries", {
+    selector: rule.selector,
+    source: rule.source,
+    occurrenceIndex: rule.occurrenceIndex ?? 0,
+    originalProperty: rule.originalProperty || "",
+    styles,
+    beforeDeclarations,
+    afterDeclarations: collapsedDeclarations.map((declaration) => ({
+      property: declaration.property,
+      value: declaration.value,
+      important: Boolean(declaration.important),
+      active: declaration.active,
+    })),
+    duplicatePropertiesBefore: collectDuplicateDeclarationDebug(declarations),
+    duplicatePropertiesAfterInitialNormalize:
+      collectDuplicateDeclarationDebug(normalizedDeclarations),
+    duplicatePropertiesAfter: collectDuplicateDeclarationDebug(collapsedDeclarations),
+  });
+
+  return collapsedDeclarations;
 };
 
 const findMatchingCssBrace = (source: string, openIndex: number) => {
@@ -971,11 +1265,13 @@ export const findCssRuleRange = (
 
     const rawHeader = source.slice(segmentStart, index);
     const headerText = rawHeader.trim();
-    if (
+    
+    const isMatch =
       headerText &&
       !headerText.startsWith("@") &&
-      normalizeSelectorSignature(headerText) === normalizedSelector
-    ) {
+      normalizeSelectorSignature(headerText) === normalizedSelector;
+
+    if (isMatch) {
       if (currentOccurrence === occurrenceIndex) {
         const closeIndex = findMatchingCssBrace(source, index);
         if (closeIndex < 0) return null;
@@ -983,7 +1279,7 @@ export const findCssRuleRange = (
         return {
           start: segmentStart,
           end: closeIndex + 1,
-          selectorText: headerText,
+          selectorText: headerText, // Keep the original grouped selector!
           indent: leadingWhitespace,
           body: source.slice(index + 1, closeIndex),
         };

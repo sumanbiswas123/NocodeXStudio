@@ -115,6 +115,14 @@ export const usePreviewContentEditing = ({
   setSelectedPreviewDoc,
   textFileCacheRef,
 }: UsePreviewContentEditingOptions) => {
+  const isTemporaryMatchedRuleSource = (source: string) => {
+    const normalized = String(source || "").trim().toLowerCase();
+    return (
+      normalized === "inline stylesheet" ||
+      /^style-sheet-\d+-\d+$/.test(normalized)
+    );
+  };
+
   const applyPreviewInlineEditDraft = useCallback(
     async (filePath: string, elementPath: number[], nextInnerHtml: string) => {
       await applyPreviewInlineEditDraftHelper({
@@ -232,7 +240,21 @@ export const usePreviewContentEditing = ({
       if (!snapshot) return false;
 
       setPreviewSelectedComputedStyles(snapshot.computedStyles);
-      setPreviewSelectedMatchedCssRules(snapshot.matchedCssRules);
+      setPreviewSelectedMatchedCssRules((current) => {
+        const snapshotHasStableSources = snapshot.matchedCssRules.some(
+          (rule) => !isTemporaryMatchedRuleSource(rule.source),
+        );
+        const currentHasStableSources = current.some(
+          (rule) => !isTemporaryMatchedRuleSource(rule.source),
+        );
+        if (
+          snapshot.matchedCssRules.length > 0 &&
+          (snapshotHasStableSources || !currentHasStableSources)
+        ) {
+          return snapshot.matchedCssRules;
+        }
+        return current;
+      });
       setPreviewSelectedElement(snapshot.elementData);
       return true;
     },

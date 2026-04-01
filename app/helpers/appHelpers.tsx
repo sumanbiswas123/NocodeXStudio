@@ -2497,11 +2497,24 @@ export const buildPreviewRuntimeScript = (
         }
         var ownerNode = sheet.ownerNode;
         if (ownerNode && ownerNode.getAttribute) {
-          var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
-          if (dataSource) return dataSource;
+          var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href') || ownerNode.getAttribute('data-nx-live-source');
+          if (dataSource) {
+            var cleanSource = String(dataSource).split('?')[0].split('#')[0];
+            var sourceParts = cleanSource.replace(/\\\\/g, '/').split('/');
+            return sourceParts[sourceParts.length - 1] || cleanSource || 'stylesheet';
+          }
         }
       } catch (e) {}
       return 'inline stylesheet';
+    }
+
+    function isPreviewLiveOverrideStylesheet(sheet) {
+      if (!sheet) return false;
+      try {
+        var ownerNode = sheet.ownerNode;
+        return !!(ownerNode && ownerNode.getAttribute && ownerNode.hasAttribute('data-nx-live-source'));
+      } catch (e) {}
+      return false;
     }
 
     function collectMatchedCssRulesForElement(el) {
@@ -2555,6 +2568,7 @@ export const buildPreviewRuntimeScript = (
       for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
         var sheet = document.styleSheets[sheetIndex];
         if (!sheet) continue;
+        if (isPreviewLiveOverrideStylesheet(sheet)) continue;
         try {
           visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
         } catch (sheetError) {}
@@ -2671,6 +2685,34 @@ export const buildPreviewRuntimeScript = (
           sel.addRange(range);
         } catch (e) {}
       };
+      var insertPlainTextAtCursor = function(text) {
+        try {
+          var sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return;
+          var range = sel.getRangeAt(0);
+          range.deleteContents();
+          var normalized = String(text || '').replace(/\\r\\n?/g, '\\n');
+          var parts = normalized.split('\\n');
+          for (var i = 0; i < parts.length; i += 1) {
+            if (parts[i]) {
+              range.insertNode(document.createTextNode(parts[i]));
+              range.setStartAfter(range.endContainer);
+            }
+            if (i < parts.length - 1) {
+              var br = document.createElement('br');
+              range.insertNode(br);
+              range.setStartAfter(br);
+            }
+            range.collapse(true);
+          }
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch (e) {
+          try {
+            document.execCommand('insertText', false, String(text || ''));
+          } catch (err) {}
+        }
+      };
       var draftRaf = 0;
       var scheduleDraftSync = function() {
         if (draftRaf) return;
@@ -2692,6 +2734,7 @@ export const buildPreviewRuntimeScript = (
         el.removeEventListener('blur', onBlur, true);
         el.removeEventListener('keydown', onKeyDown, true);
         el.removeEventListener('input', onInput, true);
+        el.removeEventListener('paste', onPaste, true);
         el.removeAttribute('contenteditable');
         el.removeAttribute('data-nx-inline-editing');
         el.classList.remove('__nx-preview-editing');
@@ -2724,10 +2767,19 @@ export const buildPreviewRuntimeScript = (
       var onInput = function() {
         scheduleDraftSync();
       };
+      var onPaste = function(event) {
+        if (!event) return;
+        event.preventDefault();
+        var clipboard = event.clipboardData || window.clipboardData;
+        var text = clipboard ? clipboard.getData('text/plain') : '';
+        insertPlainTextAtCursor(text);
+        scheduleDraftSync();
+      };
 
       el.addEventListener('blur', onBlur, true);
       el.addEventListener('keydown', onKeyDown, true);
       el.addEventListener('input', onInput, true);
+      el.addEventListener('paste', onPaste, true);
     }
 
     try {
@@ -3564,11 +3616,24 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
       var ownerNode = sheet.ownerNode;
       if (ownerNode && ownerNode.getAttribute) {
-        var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href');
-        if (dataSource) return dataSource;
+        var dataSource = ownerNode.getAttribute('data-source') || ownerNode.getAttribute('data-href') || ownerNode.getAttribute('data-nx-live-source');
+        if (dataSource) {
+          var cleanSource = String(dataSource).split('?')[0].split('#')[0];
+          var sourceParts = cleanSource.replace(/\\\\/g, '/').split('/');
+          return sourceParts[sourceParts.length - 1] || cleanSource || 'stylesheet';
+        }
       }
     } catch (e) {}
     return 'inline stylesheet';
+  }
+
+  function isPreviewLiveOverrideStylesheet(sheet) {
+    if (!sheet) return false;
+    try {
+      var ownerNode = sheet.ownerNode;
+      return !!(ownerNode && ownerNode.getAttribute && ownerNode.hasAttribute('data-nx-live-source'));
+    } catch (e) {}
+    return false;
   }
 
   function collectMatchedCssRulesForElement(el) {
@@ -3622,6 +3687,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     for (var sheetIndex = 0; sheetIndex < document.styleSheets.length; sheetIndex++) {
       var sheet = document.styleSheets[sheetIndex];
       if (!sheet) continue;
+      if (isPreviewLiveOverrideStylesheet(sheet)) continue;
       try {
         visitRules(sheet.cssRules, getStyleSheetSourceLabel(sheet));
       } catch (sheetError) {}
@@ -3857,6 +3923,34 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         sel.addRange(range);
       } catch (e) {}
     };
+    var insertPlainTextAtCursor = function(text) {
+      try {
+        var sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        var range = sel.getRangeAt(0);
+        range.deleteContents();
+        var normalized = String(text || '').replace(/\\r\\n?/g, '\\n');
+        var parts = normalized.split('\\n');
+        for (var i = 0; i < parts.length; i += 1) {
+          if (parts[i]) {
+            range.insertNode(document.createTextNode(parts[i]));
+            range.setStartAfter(range.endContainer);
+          }
+          if (i < parts.length - 1) {
+            var br = document.createElement('br');
+            range.insertNode(br);
+            range.setStartAfter(br);
+          }
+          range.collapse(true);
+        }
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) {
+        try {
+          document.execCommand('insertText', false, String(text || ''));
+        } catch (err) {}
+      }
+    };
     var draftRaf = 0;
     var scheduleDraftSync = function() {
       if (draftRaf) return;
@@ -3878,6 +3972,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       el.removeEventListener('blur', onBlur, true);
       el.removeEventListener('keydown', onKeyDown, true);
       el.removeEventListener('input', onInput, true);
+      el.removeEventListener('paste', onPaste, true);
       el.removeAttribute('contenteditable');
       el.removeAttribute('data-nx-inline-editing');
       el.classList.remove('__nx-preview-editing');
@@ -3910,10 +4005,19 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     var onInput = function() {
       scheduleDraftSync();
     };
+    var onPaste = function(event) {
+      if (!event) return;
+      event.preventDefault();
+      var clipboard = event.clipboardData || window.clipboardData;
+      var text = clipboard ? clipboard.getData('text/plain') : '';
+      insertPlainTextAtCursor(text);
+      scheduleDraftSync();
+    };
 
     el.addEventListener('blur', onBlur, true);
     el.addEventListener('keydown', onKeyDown, true);
     el.addEventListener('input', onInput, true);
+    el.addEventListener('paste', onPaste, true);
   }
 
   function emitPathChanged() {

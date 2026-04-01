@@ -1,5 +1,6 @@
 import React from "react";
 import { PdfAnnotationUiRecord } from "../helpers/pdfAnnotationHelpers";
+import "../styles/ui/pdf-annotation-card.css";
 
 type PdfAnnotationCardProps = {
   annotation: PdfAnnotationUiRecord;
@@ -53,7 +54,7 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
 
   return (
     <div
-      className="rounded-[22px] border px-4 py-4"
+      className="pdf-annotation-card"
       style={{
         borderColor: isFocused
           ? "rgba(34,211,238,0.55)"
@@ -69,21 +70,18 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
             : "rgba(255,255,255,0.8)",
       }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold">Page {annotation.annoPdfPage}</div>
-          <div
-            className="mt-1 text-[11px] uppercase tracking-[0.18em]"
-            style={{ color: "var(--text-muted)" }}
-          >
+      <div className="pdf-annotation-card-header">
+        <div className="pdf-annotation-card-header-meta">
+          <div className="pdf-annotation-card-page">Page {annotation.annoPdfPage}</div>
+          <div className="pdf-annotation-card-label">
             {mappedLabel ? mappedLabel : "Unmapped"}
           </div>
         </div>
-        <div className="shrink-0 flex flex-col items-end gap-2">
+        <div className="pdf-annotation-card-actions">
           <select
             title={`Annotation intent for page ${annotation.annoPdfPage}`}
             aria-label={`Annotation intent for page ${annotation.annoPdfPage}`}
-            className="rounded-full border bg-transparent px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+            className="pdf-annotation-card-select"
             style={{
               borderColor:
                 theme === "dark"
@@ -97,13 +95,16 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
             }
           >
             {annotationIntentOptions.map((option) => (
-              <option key={`anno-type-${annotation.annotationId}-${option}`} value={option}>
+              <option
+                key={`anno-type-${annotation.annotationId}-${option}`}
+                value={option}
+              >
                 {option}
               </option>
             ))}
           </select>
           <div
-            className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]"
+            className="pdf-annotation-card-location"
             style={{
               background:
                 theme === "dark"
@@ -117,21 +118,20 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
         </div>
       </div>
 
-      <div className="mt-3 text-[13px] leading-6 break-words">
+      <div className="pdf-annotation-card-content">
         {mainThreadEntry ? (
-          <div className="space-y-3">
+          <div className="pdf-annotation-card-thread">
             <div>
-              <div className="font-medium leading-6">{mainThreadEntry.text}</div>
-              <div
-                className="mt-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
-                style={{ color: "var(--text-muted)" }}
-              >
+              <div style={{ fontWeight: 500, lineHeight: "1.5rem" }}>
+                {mainThreadEntry.text}
+              </div>
+              <div className="pdf-annotation-card-author">
                 {mainThreadEntry.author}
               </div>
             </div>
             {replyEntries.length > 0 ? (
               <div
-                className="rounded-2xl border px-3 py-3 space-y-3"
+                className="pdf-annotation-card-discussion"
                 style={{
                   borderColor:
                     theme === "dark"
@@ -140,19 +140,16 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
                   background:
                     theme === "dark"
                       ? "rgba(2,6,23,0.24)"
-                      : "rgba(248,250,252,0.9)",
+                    : "rgba(248,250,252,0.9)",
                 }}
               >
-                <div
-                  className="text-[10px] font-semibold uppercase tracking-[0.18em]"
-                  style={{ color: "var(--text-muted)" }}
-                >
+                <div className="pdf-annotation-card-discussion-label">
                   Discussion
                 </div>
                 {replyEntries.map((entry, index) => (
                   <div
                     key={`${annotation.annotationId}-reply-${index}`}
-                    className="pl-3 border-l space-y-1"
+                    className="pdf-annotation-card-reply"
                     style={{
                       borderColor:
                         theme === "dark"
@@ -160,11 +157,8 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
                           : "rgba(14,165,233,0.18)",
                     }}
                   >
-                    <div className="leading-6">{entry.text}</div>
-                    <div
-                      className="text-[11px] font-semibold uppercase tracking-[0.16em]"
-                      style={{ color: "var(--text-muted)" }}
-                    >
+                    <div style={{ lineHeight: "1.5rem" }}>{entry.text}</div>
+                    <div className="pdf-annotation-card-author">
                       {entry.author}
                     </div>
                   </div>
@@ -177,12 +171,9 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
         )}
       </div>
 
-      <div
-        className="mt-3 flex items-center gap-2 text-[11px]"
-        style={{ color: "var(--text-muted)" }}
-      >
+      <div className="pdf-annotation-card-target-status">
         <span
-          className="h-2 w-2 rounded-full"
+          className="pdf-annotation-card-target-dot"
           style={{
             background: hasResolvableTarget
               ? "rgba(34,197,94,0.9)"
@@ -194,12 +185,11 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
           : "Target not mapped to preview"}
       </div>
 
-      <div className="mt-4 flex items-center justify-end gap-3">
+      <div className="pdf-annotation-card-footer">
         {annotation.popupInvocation?.popupId && (
           <div
-            className="px-2 py-1 rounded text-[10px] font-mono opacity-60 hover:opacity-100 transition-opacity cursor-help"
+            className="pdf-annotation-card-popup-id"
             title={`Resolved Popup ID: ${annotation.popupInvocation.popupId}`}
-            style={{ background: "rgba(0,0,0,0.1)" }}
           >
             PID: {annotation.popupInvocation.popupId.slice(0, 8)}...
           </div>
@@ -207,7 +197,7 @@ const PdfAnnotationCard: React.FC<PdfAnnotationCardProps> = ({
         {annotation.mappedFilePath ? (
           <button
             type="button"
-            className="rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors"
+            className="pdf-annotation-card-open-button"
             style={{
               borderColor:
                 theme === "dark"

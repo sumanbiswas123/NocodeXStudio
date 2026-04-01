@@ -63,6 +63,7 @@ import { useAppOverlaysViewModel } from "./app/hooks/viewModels/useAppOverlaysVi
 import { useCanvasEditingHandlers } from "./app/hooks/canvas/useCanvasEditingHandlers";
 import { useCanvasHistoryCoordinator } from "./app/hooks/canvas/useCanvasHistoryCoordinator";
 import { usePreviewSelectionState } from "./app/hooks/preview/usePreviewSelectionState";
+import "./app/styles/ui/app-shell.css";
 import {
   PreviewMatchedCssRule,
   PreviewMatchedRuleMutation,
@@ -1757,7 +1758,7 @@ const App: React.FC = () => {
   return (
     <div
       ref={appRootRef}
-      className={`h-screen w-screen flex flex-col font-sans relative overflow-hidden ${theme === "light" ? "light-mode" : ""}`}
+      className={`app-shell-root ${theme === "light" ? "light-mode" : ""}`}
       style={{
         backgroundColor: "var(--bg-app)",
         color: "var(--text-main)",
@@ -1773,7 +1774,7 @@ const App: React.FC = () => {
     >
       <AppTopLevelLayers {...topLevelLayersProps} />
 
-      <div className="flex-1 flex overflow-hidden relative">
+      <div className="app-shell-body">
 
         <LeftSidebarShell {...leftSidebarProps} />
 

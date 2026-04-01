@@ -1,0 +1,159 @@
+.right-inspector-shell {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.right-inspector-shell::-webkit-scrollbar {
+  display: none;
+}
+
+.right-inspector-shell--animated {
+  transition:
+    transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.right-inspector-shell--disabled {
+  pointer-events: none;
+}
+
+.right-inspector-surface {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border-top-left-radius: 28px;
+  border-bottom-left-radius: 28px;
+}
+
+.right-inspector-toolbar {
+  flex-shrink: 0;
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+  padding: 0.5rem 0.75rem;
+}
+
+.right-inspector-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.right-inspector-toolbar-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 0.75rem;
+  transition: background-color 150ms ease;
+}
+
+.right-inspector-toolbar-button--toggle {
+  height: 2.25rem;
+  min-width: 44px;
+  padding: 0 0.5rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.right-inspector-toolbar-button--icon {
+  height: 2.25rem;
+  width: 2.25rem;
+}
+
+.right-inspector-pdf-region {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.right-inspector-section-divider {
+  height: 8px;
+  flex-shrink: 0;
+}
+
+.right-inspector-style-region {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  padding: 0.5rem 0.5rem 0.5rem;
+}
+
+.right-inspector-style-card {
+  height: 100%;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.right-inspector-empty-state {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 1.5rem;
+  text-align: center;
+}
+
+.right-inspector-empty-state-copy {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.right-inspector-frame {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.right-inspector-hide-button {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 20;
+  display: flex;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 9999px;
+  padding: 0 0.5rem;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition:
+    transform 300ms ease,
+    box-shadow 300ms ease;
+}
+
+.right-inspector-hide-button:hover {
+  transform: translateY(-0.125rem);
+}
+
+.right-inspector-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0.5rem;
+  background: transparent;
+  cursor: ew-resize;
+  transition: background-color 150ms ease;
+}
+
+.right-inspector-resize-handle:hover {
+  background: rgba(34, 211, 238, 0.3);
+}

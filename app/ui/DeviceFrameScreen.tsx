@@ -2,6 +2,7 @@ import React from "react";
 import EditorContent from "./EditorContent";
 import type { PdfAnnotationUiRecord } from "../helpers/pdfAnnotationHelpers";
 import type { VirtualElement } from "../../types";
+import "../styles/ui/device-frame-screen.css";
 
 type DeviceFrameScreenProps = {
   desktopResolution: "1080p" | "1.5k" | "2k" | "4k" | "resizable";
@@ -63,14 +64,14 @@ type DeviceFrameScreenProps = {
 };
 
 const RESIZE_HANDLES = [
-  ["n", "Resize from top", "ns-resize", "absolute left-3 right-3 top-[-6px] h-4", "999px"],
-  ["s", "Resize from bottom", "ns-resize", "absolute left-3 right-3 bottom-[-6px] h-4", "999px"],
-  ["e", "Resize from right", "ew-resize", "absolute top-3 bottom-3 right-[-6px] w-4", "999px"],
-  ["w", "Resize from left", "ew-resize", "absolute top-3 bottom-3 left-[-6px] w-4", "999px"],
-  ["nw", "Resize from top left", "nwse-resize", "absolute left-[-7px] top-[-7px] w-5 h-5", "6px"],
-  ["ne", "Resize from top right", "nesw-resize", "absolute right-[-7px] top-[-7px] w-5 h-5", "6px"],
-  ["sw", "Resize from bottom left", "nesw-resize", "absolute left-[-7px] bottom-[-7px] w-5 h-5", "6px"],
-  ["se", "Resize from bottom right", "nwse-resize", "absolute right-[-7px] bottom-[-7px] w-5 h-5", "6px"],
+  ["n", "Resize from top", "ns-resize", "device-frame-resize-handle--n", "999px"],
+  ["s", "Resize from bottom", "ns-resize", "device-frame-resize-handle--s", "999px"],
+  ["e", "Resize from right", "ew-resize", "device-frame-resize-handle--e", "999px"],
+  ["w", "Resize from left", "ew-resize", "device-frame-resize-handle--w", "999px"],
+  ["nw", "Resize from top left", "nwse-resize", "device-frame-resize-handle--nw", "6px"],
+  ["ne", "Resize from top right", "nesw-resize", "device-frame-resize-handle--ne", "6px"],
+  ["sw", "Resize from bottom left", "nesw-resize", "device-frame-resize-handle--sw", "6px"],
+  ["se", "Resize from bottom right", "nwse-resize", "device-frame-resize-handle--se", "6px"],
 ] as const;
 
 const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
@@ -113,10 +114,16 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
 }) => {
   return (
     <div
-      className={`w-full h-full bg-white overflow-hidden relative transition-all duration-700 ${deviceMode === "desktop" ? "rounded-lg pt-9" : deviceMode === "tablet" ? "rounded-[32px]" : "rounded-[38px]"}`}
+      className={`device-frame-screen ${
+        deviceMode === "desktop"
+          ? "device-frame-screen--desktop"
+          : deviceMode === "tablet"
+            ? "device-frame-screen--tablet"
+            : "device-frame-screen--mobile"
+      }`}
     >
       <div
-        className="origin-top-left transition-transform duration-500"
+        className="device-frame-screen-content"
         style={{
           width:
             deviceMode === "mobile"
@@ -170,14 +177,14 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
       >
         <div
           ref={previewStageRef}
-          className="w-full h-full relative"
+          className="device-frame-screen-stage"
           onDragOver={handlePreviewStageDragOver}
           onDrop={handlePreviewStageDrop}
         >
           {shouldShowFrameWelcome && (
-            <div className="absolute inset-0 flex items-center justify-center p-12">
+            <div className="device-frame-welcome">
               <div
-                className="w-full max-w-6xl rounded-[42px] border px-24 py-24 text-center shadow-[0_42px_140px_rgba(15,23,42,0.16)]"
+                className="device-frame-welcome-card"
                 style={{
                   background:
                     "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%)",
@@ -186,22 +193,16 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                   backdropFilter: "none",
                 }}
               >
-                <div
-                  className="text-[44px] font-semibold uppercase tracking-[0.34em]"
-                  style={{ color: "#64748b" }}
-                >
+                <div className="device-frame-welcome-title">
                   Welcome To NoCode X
                 </div>
-                <p
-                  className="mt-8 text-[30px] leading-[1.45] max-w-4xl mx-auto"
-                  style={{ color: "#64748b" }}
-                >
+                <p className="device-frame-welcome-copy">
                   Open a previous presentation or choose a new project folder directly from the frame.
                 </p>
-                <div className="mt-12 flex items-center justify-center gap-4">
+                <div className="device-frame-welcome-actions">
                   <button
                     type="button"
-                    className="rounded-[22px] px-10 py-5 text-[22px] font-semibold transition-colors"
+                    className="device-frame-welcome-button"
                     style={{
                       background: "rgba(14,165,233,0.14)",
                       border: "1px solid rgba(14,165,233,0.25)",
@@ -215,14 +216,11 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                   </button>
                 </div>
                 {recentProjects.length > 0 && (
-                  <div className="mt-12 text-left">
-                    <div
-                      className="text-[18px] font-semibold uppercase tracking-[0.24em] text-center"
-                      style={{ color: "#64748b" }}
-                    >
+                  <div className="device-frame-welcome-recent">
+                    <div className="device-frame-welcome-recent-heading">
                       Recent Presentations
                     </div>
-                    <div className="mt-6 grid grid-cols-1 gap-4">
+                    <div className="device-frame-welcome-recent-list">
                       {recentProjects.map((recentPath) => {
                         const recentName = recentPath
                           .replace(/\\/g, "/")
@@ -233,7 +231,7 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                           <button
                             key={recentPath}
                             type="button"
-                            className="w-full rounded-[22px] border px-6 py-5 text-left transition-colors"
+                            className="device-frame-welcome-recent-item"
                             style={{
                               borderColor: "rgba(15,23,42,0.12)",
                               background: "rgba(255,255,255,0.68)",
@@ -244,13 +242,10 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                             }}
                             title={recentPath}
                           >
-                            <div className="text-[24px] font-semibold">
+                            <div className="device-frame-welcome-recent-name">
                               {recentName}
                             </div>
-                            <div
-                              className="mt-2 truncate text-[15px]"
-                              style={{ color: "#64748b" }}
-                            >
+                            <div className="device-frame-welcome-recent-path">
                               {recentPath}
                             </div>
                           </button>
@@ -260,7 +255,7 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                   </div>
                 )}
                 {projectPath ? (
-                  <div className="mt-8 text-[18px]" style={{ color: "#64748b" }}>
+                  <div className="device-frame-welcome-current-project">
                     Current project:{" "}
                     {
                       projectPath
@@ -289,12 +284,12 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
               onLoad={handlePreviewFrameLoad}
               onDragOver={handlePreviewStageDragOver}
               onDrop={handlePreviewStageDrop}
-              className={`absolute inset-0 w-full h-full border-0 bg-white transition-opacity duration-150 ${
+              className={`device-frame-preview-iframe ${
                 interactionMode === "preview"
                   ? isToolboxDragging
-                    ? "opacity-100 pointer-events-none"
-                    : "opacity-100 pointer-events-auto"
-                  : "opacity-0 pointer-events-none"
+                    ? "device-frame-preview-iframe--passive"
+                    : "device-frame-preview-iframe--interactive"
+                  : "device-frame-preview-iframe--hidden"
               }`}
             />
           )}
@@ -308,8 +303,10 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
               return (
                 <div
                   key={annotation.annotationId}
-                  className={`absolute pointer-events-none rounded-[18px] border-2 ${
-                    isFocused ? "z-30" : "z-20"
+                  className={`device-frame-annotation-box ${
+                    isFocused
+                      ? "device-frame-annotation-box--focused"
+                      : "device-frame-annotation-box--default"
                   }`}
                   style={{
                     left: `${annotation.positionPct.left}%`,
@@ -338,10 +335,10 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
             })}
           {!shouldShowFrameWelcome && (
             <div
-              className={`w-full h-full transition-opacity duration-200 ${
+              className={`device-frame-editor-layer ${
                 interactionMode === "preview"
-                  ? "opacity-0 pointer-events-none"
-                  : "opacity-100 pointer-events-auto"
+                  ? "device-frame-editor-layer--hidden"
+                  : "device-frame-editor-layer--visible"
               }`}
             >
               <EditorContent
@@ -363,23 +360,19 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
             previewSelectedPath.length > 0 &&
             previewSelectionBox && (
               <div
-                className="absolute z-30 pointer-events-none"
+                className="device-frame-selection-box"
                 style={{
                   left: `${previewSelectionBox.left}px`,
                   top: `${previewSelectionBox.top}px`,
                   width: `${previewSelectionBox.width}px`,
                   height: `${previewSelectionBox.height}px`,
-                  border: "2px solid rgba(34,211,238,0.95)",
-                  boxShadow:
-                    "0 0 0 1px rgba(6,182,212,0.85), 0 0 0 6px rgba(34,211,238,0.12)",
-                  borderRadius: "4px",
                 }}
               >
                 {RESIZE_HANDLES.map(([key, title, cursor, className, radius]) => (
                   <button
                     key={key}
                     type="button"
-                    className={`pointer-events-auto absolute ${className}`}
+                    className={`device-frame-resize-handle ${className}`}
                     style={{ cursor }}
                     title={title}
                     onMouseDown={(event) =>
@@ -396,15 +389,11 @@ const DeviceFrameScreen: React.FC<DeviceFrameScreenProps> = ({
                         event,
                       )
                     }
-                  >
+                    >
                     <span
-                      className="absolute inset-0"
+                      className="device-frame-resize-grip"
                       style={{
                         borderRadius: radius,
-                        background: "rgba(34, 211, 238, 0.82)",
-                        border: "1px solid rgba(255,255,255,0.95)",
-                        boxShadow:
-                          "0 0 0 1px rgba(8,145,178,0.42), 0 4px 12px rgba(34,211,238,0.35)",
                       }}
                     />
                   </button>

@@ -1,0 +1,107 @@
+.main-stage-shell {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.main-stage-shell--animated {
+  transition: margin 500ms ease;
+}
+
+.main-stage-scroller {
+  position: relative;
+  flex: 1 1 auto;
+  padding-bottom: 2.5rem;
+  scrollbar-width: none;
+  transition:
+    overflow-x 300ms ease,
+    overflow-y 300ms ease;
+}
+
+.main-stage-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.main-stage-background {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.main-stage-background-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--border-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-color) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(
+    ellipse 60% 60% at 50% 50%,
+    #000 70%,
+    transparent 100%
+  );
+}
+
+.main-stage-background-glow {
+  position: absolute;
+  border-radius: 9999px;
+}
+
+.main-stage-background-glow--top {
+  top: -18%;
+  left: 18%;
+  height: 380px;
+  width: 380px;
+  background: radial-gradient(
+    circle,
+    rgba(99, 102, 241, 0.12) 0%,
+    rgba(99, 102, 241, 0.05) 38%,
+    transparent 72%
+  );
+  opacity: 0.8;
+}
+
+.main-stage-background-glow--bottom {
+  right: 12%;
+  bottom: -8%;
+  height: 320px;
+  width: 320px;
+  background: radial-gradient(
+    circle,
+    rgba(168, 85, 247, 0.12) 0%,
+    rgba(168, 85, 247, 0.05) 36%,
+    transparent 72%
+  );
+  opacity: 0.75;
+}
+
+.main-stage-canvas {
+  position: relative;
+  display: flex;
+  min-height: 100%;
+  width: 100%;
+  flex-direction: column;
+  outline: none;
+}
+
+.main-stage-spacer {
+  pointer-events: none;
+  height: 1rem;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.main-stage-device-frame {
+  position: relative;
+  margin: 0 auto;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  transition:
+    width 700ms ease,
+    height 700ms ease,
+    transform 700ms ease;
+}

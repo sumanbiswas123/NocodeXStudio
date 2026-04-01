@@ -10,6 +10,7 @@ import {
   PREVIEW_AUTOSAVE_STORAGE_KEY,
   isSvgPath,
 } from "../helpers/appHelpers";
+import "../styles/ui/app-overlays.css";
 
 type AppOverlaysProps = {
   shellState: {
@@ -155,7 +156,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
   return (
     <>
       <div
-        className={`absolute z-50 no-scrollbar transition-all duration-500 cubic-bezier(0.2, 0.8, 0.2, 1) ${isFloatingPanels ? "right-10 top-24 bottom-3" : "right-0 top-0 bottom-0"} ${isCodePanelOpen ? "animate-panelInRight" : ""}`}
+        className={`code-panel-overlay ${isFloatingPanels ? "code-panel-overlay--floating" : "code-panel-overlay--docked"} ${isCodePanelOpen ? "animate-panelInRight" : ""}`}
         style={{
           transform: isCodePanelOpen
             ? "translateX(0)"
@@ -176,9 +177,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         }}
       >
         <div
-          className={`h-full min-h-full relative flex flex-col overflow-hidden ${
-            isFloatingPanels ? "rounded-2xl overflow-hidden" : ""
-          }`}
+          className={`code-panel-surface ${isFloatingPanels ? "code-panel-surface--floating" : ""}`}
           style={{
             background:
               theme === "dark"
@@ -188,7 +187,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
           }}
         >
           <div
-            className="h-11 shrink-0 px-3 flex items-center justify-between"
+            className="code-panel-header"
             style={{
               borderBottom:
                 theme === "dark"
@@ -197,12 +196,12 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               background:
                 theme === "dark"
                   ? "linear-gradient(90deg, rgba(139,92,246,0.2), rgba(99,102,241,0.16), rgba(15,23,42,0.0))"
-                  : "linear-gradient(90deg,rgba(139,92,246,0.12),rgba(99,102,241,0.1),transparent)",
+                : "linear-gradient(90deg,rgba(139,92,246,0.12),rgba(99,102,241,0.1),transparent)",
             }}
           >
-            <div className="flex items-center gap-2">
+            <div className="code-panel-header-brand">
               <div
-                className="w-2 h-2 rounded-full"
+                className="code-panel-header-indicator"
                 style={{
                   backgroundColor: theme === "dark" ? "#c4b5fd" : "#7c3aed",
                   boxShadow:
@@ -212,16 +211,16 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
                 }}
               />
               <span
-                className="text-[11px] uppercase tracking-[0.2em] font-semibold"
+                className="code-panel-header-title"
                 style={{ color: theme === "dark" ? "#e9d5ff" : "#5b21b6" }}
               >
                 Code Studio
               </span>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="code-panel-header-actions">
               <button
                 type="button"
-                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                className="code-panel-action-button code-panel-action-button--text"
                 style={{
                   borderColor: "var(--border-color)",
                   color: "var(--text-main)",
@@ -235,7 +234,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               </button>
               <button
                 type="button"
-                className="text-[10px] px-2 py-1 rounded-md border transition-colors hover:bg-violet-500/15"
+                className="code-panel-action-button code-panel-action-button--text"
                 style={{
                   borderColor: "var(--border-color)",
                   color: "var(--text-main)",
@@ -248,7 +247,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               </button>
               <button
                 type="button"
-                className="h-7 w-7 rounded-md border flex items-center justify-center transition-colors hover:bg-violet-500/15"
+                className="code-panel-action-button code-panel-action-button--icon"
                 style={{
                   borderColor: "var(--border-color)",
                   color: "var(--text-main)",
@@ -260,7 +259,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               </button>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="code-panel-editor-region">
             <ColorCodeEditor
               value={activeCodeContent}
               onChange={handleCodeDraftChange}
@@ -271,7 +270,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
             />
           </div>
           <div
-            className="pointer-events-none absolute inset-0 rounded-2xl"
+            className="code-panel-frame"
             style={{
               boxShadow:
                 theme === "dark"
@@ -284,17 +283,15 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
 
       {!isRightPanelOpen && isRightInspectorMode && !isCodePanelOpen ? (
         <div
-          className="fixed z-[95] transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          className="right-inspector-toggle"
           style={{
-            right: "1rem",
-            top: "1rem",
             opacity: 1,
             transform: "translateY(0)",
           }}
         >
           <button
             type="button"
-            className="h-12 px-3 rounded-2xl border flex items-center justify-center gap-2 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.18)]"
+            className="right-inspector-toggle-button"
             style={{
               background:
                 theme === "light"
@@ -319,7 +316,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               }}
             />
             <span
-              className="text-[10px] font-semibold uppercase tracking-[0.16em]"
+              className="right-inspector-toggle-label"
               style={{ color: theme === "dark" ? "#a5f3fc" : "#0e7490" }}
             >
               Show
@@ -329,15 +326,11 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
       ) : null}
 
       <div
-        className={`fixed z-[100] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-visible ${isCodePanelOpen ? "translate-y-6 opacity-0 pointer-events-none" : ""}`}
-        style={{
-          left: "1rem",
-          bottom: "1rem",
-        }}
+        className={`console-launcher ${isCodePanelOpen ? "console-launcher--hidden" : ""}`}
       >
         <button
           type="button"
-          className={`relative z-10 h-14 w-14 rounded-full transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden flex items-center justify-center ${isCompactConsoleOpening ? "animate-compactConsoleOpen" : ""} ${theme === "dark" ? "hover:bg-white/5" : "hover:bg-black/5"}`}
+          className={`console-launcher-button ${isCompactConsoleOpening ? "console-launcher-button--opening" : ""} ${theme === "dark" ? "console-launcher-button--dark" : "console-launcher-button--light"}`}
           style={{
             background:
               theme === "light"
@@ -354,11 +347,11 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         >
           <PanelRight
             size={18}
-            className="shrink-0"
+            className="console-launcher-icon"
             style={{ color: theme === "dark" ? "#67e8f9" : "#0891b2" }}
           />
           {previewConsoleErrorCount > 0 && (
-            <span className="absolute -top-1 -right-1 inline-flex min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] leading-[18px] justify-center">
+            <span className="console-launcher-badge">
               {previewConsoleErrorCount}
             </span>
           )}
@@ -435,7 +428,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
 
       {(isPdfExporting || pdfExportLogs.length > 0) && (
         <div
-          className="fixed right-6 bottom-6 z-[1200] w-[320px] rounded-2xl border shadow-2xl p-3 text-xs"
+          className="pdf-export-toast"
           style={{
             background:
               theme === "dark"
@@ -448,26 +441,26 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
             color: theme === "dark" ? "#e2e8f0" : "#0f172a",
           }}
         >
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.2em] font-semibold opacity-70">
+          <div className="pdf-export-toast-header">
+            <div className="pdf-export-toast-title">
               PDF Export
             </div>
             {pdfExportLogs.length > 0 && (
               <button
                 type="button"
-                className="text-[10px] font-semibold opacity-70 hover:opacity-100"
+                className="pdf-export-toast-close"
                 onClick={clearPdfExportLogs}
               >
                 Close
               </button>
             )}
           </div>
-          <div className="mt-2 space-y-1 max-h-32 overflow-auto">
+          <div className="pdf-export-toast-log-list">
             {pdfExportLogs.length === 0 ? (
-              <div className="opacity-70">Exporting...</div>
+              <div className="pdf-export-toast-status">Exporting...</div>
             ) : (
               pdfExportLogs.slice(-6).map((log, index) => (
-                <div key={`${index}-${log}`} className="opacity-80">
+                <div key={`${index}-${log}`} className="pdf-export-toast-log">
                   {log}
                 </div>
               ))

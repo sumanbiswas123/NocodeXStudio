@@ -1,6 +1,7 @@
 import React from "react";
 import EditorCanvas from "../../components/EditorCanvas";
 import { VirtualElement } from "../../types";
+import "../styles/ui/editor-content.css";
 
 export type EditorContentProps = {
   root: VirtualElement;
@@ -38,7 +39,7 @@ const EditorContent = React.memo<EditorContentProps>(
           __html: `* { outline: none; } ${selectedId ? `[data-id="${selectedId}"] { outline: 2px solid #6366f1 !important; z-index: 10; cursor: default; }` : ""}`,
         }}
       />
-      <div className="w-full h-full overflow-auto custom-scrollbar bg-white">
+      <div className="editor-content-shell">
         <EditorCanvas
           element={root}
           selectedId={selectedId}

@@ -2,6 +2,7 @@ import React from "react";
 import DeviceFrameChrome from "./DeviceFrameChrome";
 import DeviceFrameScreen from "./DeviceFrameScreen";
 import DeviceFrameToolbar from "./DeviceFrameToolbar";
+import "../styles/ui/main-stage-shell.css";
 
 type MainStageShellProps = {
   stageState: {
@@ -77,7 +78,7 @@ const MainStageShell: React.FC<MainStageShellProps> = ({
 
   return (
     <div
-      className={`flex-1 flex flex-col relative ${isResizingLeftPanel || isResizingRightPanel ? "" : "transition-all duration-500"}`}
+      className={`main-stage-shell ${isResizingLeftPanel || isResizingRightPanel ? "" : "main-stage-shell--animated"}`}
       style={{
         marginLeft: stageMarginLeft,
         marginRight: stageMarginRight,
@@ -85,23 +86,24 @@ const MainStageShell: React.FC<MainStageShellProps> = ({
     >
       <div
         ref={scrollerRef}
-        className="flex-1 relative no-scrollbar transition-all duration-300 pb-10"
+        className="main-stage-scroller"
         style={{
           overflowX: shouldLockHorizontalScroll ? "hidden" : baseOverflowX,
           overflowY: shouldLockVerticalScroll ? "hidden" : "auto",
         }}
         onClick={onStageBackgroundClick}
       >
-        <div className="fixed inset-0 pointer-events-none z-0">
-          <div className="absolute inset-0 bg-[linear-gradient(var(--border-color)_1px,transparent_1px),linear-gradient(90deg,var(--border-color)_1px,transparent_1px)] bg-[size:32px_32px] [mask-image:radial-gradient(ellipse_60%_60%_at_50%_50%,#000_70%,transparent_100%)]"></div>
-          <div className="absolute top-[-18%] left-[18%] h-[380px] w-[380px] rounded-full bg-[radial-gradient(circle,rgba(99,102,241,0.12)_0%,rgba(99,102,241,0.05)_38%,transparent_72%)] opacity-80"></div>
-          <div className="absolute bottom-[-8%] right-[12%] h-[320px] w-[320px] rounded-full bg-[radial-gradient(circle,rgba(168,85,247,0.12)_0%,rgba(168,85,247,0.05)_36%,transparent_72%)] opacity-75"></div>
+        <div className="main-stage-background">
+          <div className="main-stage-background-grid"></div>
+          <div className="main-stage-background-glow main-stage-background-glow--top"></div>
+          <div className="main-stage-background-glow main-stage-background-glow--bottom"></div>
         </div>
 
         <div
-          className="min-h-full relative flex flex-col p-10 outline-none bg-grid-pattern"
+          className="main-stage-canvas"
           style={{
             perspective: "1000px",
+            paddingTop: `${baseStagePadding}px`,
             paddingLeft: `${baseStagePadding}px`,
             paddingRight: `${baseStagePadding}px`,
             width: "100%",
@@ -110,12 +112,12 @@ const MainStageShell: React.FC<MainStageShellProps> = ({
               ? `calc(100% + var(--left-panel-width) + ${rightOverlayInset}px)`
               : floatingHorizontalInset > 0
                 ? `calc(100% + ${floatingHorizontalInset}px)`
-                : "100%",
+              : "100%",
           }}
         >
-          <div className="w-full shrink-0 h-4 pointer-events-none"></div>
+          <div className="main-stage-spacer"></div>
           <div
-            className="relative shrink-0 flex items-center justify-center transition-all duration-700 mx-auto mt-0"
+            className="main-stage-device-frame"
             style={{
               width:
                 deviceMode === "mobile"

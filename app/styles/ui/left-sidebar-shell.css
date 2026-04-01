@@ -1,0 +1,105 @@
+.left-sidebar-shell {
+  position: absolute;
+  z-index: 40;
+  scrollbar-width: none;
+}
+
+.left-sidebar-shell::-webkit-scrollbar {
+  display: none;
+}
+
+.left-sidebar-shell--animated {
+  transition:
+    transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    top 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    right 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    bottom 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    left 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.left-sidebar-shell--floating-left {
+  top: 5rem;
+  left: 0;
+}
+
+.left-sidebar-shell--floating-right {
+  top: 5rem;
+  right: 0;
+}
+
+.left-sidebar-shell--docked-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.left-sidebar-shell--docked-right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.left-sidebar-shell--hidden {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.left-sidebar-surface {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.left-sidebar-surface--floating-left {
+  border-radius: 0 1rem 1rem 0;
+}
+
+.left-sidebar-surface--floating-right {
+  border-radius: 1rem 0 0 1rem;
+}
+
+.left-sidebar-content {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.left-sidebar-frame {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.left-sidebar-frame--floating-left {
+  border-radius: 0 1rem 1rem 0;
+}
+
+.left-sidebar-frame--floating-right {
+  border-radius: 1rem 0 0 1rem;
+}
+
+.left-sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 0.5rem;
+  background: transparent;
+  cursor: ew-resize;
+  transition: background-color 150ms ease;
+}
+
+.left-sidebar-resize-handle:hover {
+  background: rgba(34, 211, 238, 0.3);
+}
+
+.left-sidebar-resize-handle--left {
+  left: 0;
+}
+
+.left-sidebar-resize-handle--right {
+  right: 0;
+}

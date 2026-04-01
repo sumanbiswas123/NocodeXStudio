@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { VirtualElement } from '../types';
+import '../app/styles/components/editor-canvas.css';
 
 interface EditorCanvasProps {
   element: VirtualElement;
@@ -286,7 +287,7 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
     ...(element.attributes || {}),
     style: mergedStyle,
     onClick: handleClick,
-    className: `transition-colors ${element.id === 'root' ? 'min-h-full' : (!isPreview ? 'hover:outline-blue-300 hover:outline-dashed hover:outline-1' : '')} ${element.className || ''}`
+    className: `editor-canvas-node ${element.id === 'root' ? 'editor-canvas-node--root' : (!isPreview ? 'editor-canvas-node--editable' : '')} ${element.className || ''}`
   };
 
   // Render children recursively
@@ -333,7 +334,7 @@ const EditorCanvasBase: React.FC<EditorCanvasProps> = ({
   const wrapWithHandles = (el: React.ReactElement) => {
     if (!isMoveMode || !isSelected || element.id === 'root') return el;
     return (
-      <div style={{ position: 'relative', display: 'inline-block', boxSizing: 'border-box', overflow: 'visible' }}>
+      <div className="editor-canvas-handle-wrapper">
         {el}
         {resizeHandles}
       </div>

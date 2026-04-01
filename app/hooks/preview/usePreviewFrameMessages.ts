@@ -24,6 +24,14 @@ import {
   normalizePresentationStylePatch,
 } from "../../helpers/previewCssHelpers";
 
+const isTemporaryMatchedRuleSource = (source: string) => {
+  const normalized = String(source || "").trim().toLowerCase();
+  return (
+    normalized === "inline stylesheet" ||
+    /^style-sheet-\d+-\d+$/.test(normalized)
+  );
+};
+
 type PreviewMessagePayload = {
   type?: string;
   path?: string | number[];
@@ -564,6 +572,10 @@ export const usePreviewFrameMessages = ({
                 typeof rule.selector === "string" ? rule.selector : "";
               const source =
                 typeof rule.source === "string" ? rule.source : "stylesheet";
+              const sourcePath =
+                typeof (rule as { sourcePath?: unknown }).sourcePath === "string"
+                  ? String((rule as { sourcePath?: unknown }).sourcePath)
+                  : undefined;
               const declarations = Array.isArray(rule.declarations)
                 ? (rule.declarations
                     .map((declaration) => {
@@ -587,7 +599,7 @@ export const usePreviewFrameMessages = ({
                     .filter(Boolean) as PreviewMatchedCssDeclaration[])
                 : [];
               if (!selector || declarations.length === 0) return null;
-              return { selector, source, declarations };
+              return { selector, source, sourcePath, declarations };
             })
             .filter(Boolean) as PreviewMatchedCssRule[])
         : [];
@@ -602,10 +614,20 @@ export const usePreviewFrameMessages = ({
       const liveMatchedCssRules = liveElement
         ? collectMatchedCssRulesFromElement(liveElement)
         : [];
+      const liveHasStableSources = liveMatchedCssRules.some(
+        (rule) => !isTemporaryMatchedRuleSource(rule.source),
+      );
+      const payloadHasStableSources = payloadMatchedCssRules.some(
+        (rule) => !isTemporaryMatchedRuleSource(rule.source),
+      );
       const matchedCssRules =
-        liveMatchedCssRules.length > 0
-          ? liveMatchedCssRules
-          : payloadMatchedCssRules;
+        liveMatchedCssRules.length === 0
+          ? payloadMatchedCssRules
+          : payloadMatchedCssRules.length === 0
+            ? liveMatchedCssRules
+            : liveHasStableSources || !payloadHasStableSources
+              ? liveMatchedCssRules
+              : payloadMatchedCssRules;
 
       const payloadText =
         typeof payload.text === "string" ? payload.text.trim() : "";

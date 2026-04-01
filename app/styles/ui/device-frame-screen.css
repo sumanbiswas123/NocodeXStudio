@@ -1,0 +1,278 @@
+.device-frame-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  transition:
+    border-radius 700ms ease,
+    padding-top 700ms ease;
+}
+
+.device-frame-screen--desktop {
+  border-radius: 0.5rem;
+  padding-top: 2.25rem;
+}
+
+.device-frame-screen--tablet {
+  border-radius: 32px;
+}
+
+.device-frame-screen--mobile {
+  border-radius: 38px;
+}
+
+.device-frame-screen-content {
+  transform-origin: top left;
+  transition: transform 500ms ease;
+}
+
+.device-frame-screen-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.device-frame-welcome {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+}
+
+.device-frame-welcome-card {
+  width: 100%;
+  max-width: 72rem;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 42px;
+  padding: 6rem;
+  text-align: center;
+  box-shadow: 0 42px 140px rgba(15, 23, 42, 0.16);
+}
+
+.device-frame-welcome-title {
+  color: #64748b;
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+}
+
+.device-frame-welcome-copy {
+  max-width: 56rem;
+  margin: 2rem auto 0;
+  color: #64748b;
+  font-size: 30px;
+  line-height: 1.45;
+}
+
+.device-frame-welcome-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 3rem;
+}
+
+.device-frame-welcome-button {
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 22px;
+  padding: 1.25rem 2.5rem;
+  font-size: 22px;
+  font-weight: 600;
+  transition: background-color 150ms ease;
+}
+
+.device-frame-welcome-recent {
+  margin-top: 3rem;
+  text-align: left;
+}
+
+.device-frame-welcome-recent-heading {
+  color: #64748b;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.device-frame-welcome-recent-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.device-frame-welcome-recent-item {
+  width: 100%;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 22px;
+  padding: 1.25rem 1.5rem;
+  text-align: left;
+  transition: background-color 150ms ease;
+}
+
+.device-frame-welcome-recent-name {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.device-frame-welcome-recent-path {
+  margin-top: 0.5rem;
+  color: #64748b;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-frame-welcome-current-project {
+  margin-top: 2rem;
+  color: #64748b;
+  font-size: 18px;
+}
+
+.device-frame-preview-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+  transition: opacity 150ms ease;
+}
+
+.device-frame-preview-iframe--interactive {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.device-frame-preview-iframe--passive {
+  opacity: 1;
+  pointer-events: none;
+}
+
+.device-frame-preview-iframe--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.device-frame-annotation-box {
+  position: absolute;
+  pointer-events: none;
+  border-width: 2px;
+  border-style: solid;
+  border-radius: 18px;
+}
+
+.device-frame-annotation-box--focused {
+  z-index: 30;
+}
+
+.device-frame-annotation-box--default {
+  z-index: 20;
+}
+
+.device-frame-editor-layer {
+  width: 100%;
+  height: 100%;
+  transition: opacity 200ms ease;
+}
+
+.device-frame-editor-layer--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.device-frame-editor-layer--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.device-frame-selection-box {
+  pointer-events: none;
+  position: absolute;
+  z-index: 30;
+  border: 2px solid rgba(34, 211, 238, 0.95);
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 1px rgba(6, 182, 212, 0.85),
+    0 0 0 6px rgba(34, 211, 238, 0.12);
+}
+
+.device-frame-resize-handle {
+  pointer-events: auto;
+  position: absolute;
+}
+
+.device-frame-resize-handle--n {
+  top: -6px;
+  left: 0.75rem;
+  right: 0.75rem;
+  height: 1rem;
+}
+
+.device-frame-resize-handle--s {
+  bottom: -6px;
+  left: 0.75rem;
+  right: 0.75rem;
+  height: 1rem;
+}
+
+.device-frame-resize-handle--e {
+  top: 0.75rem;
+  right: -6px;
+  bottom: 0.75rem;
+  width: 1rem;
+}
+
+.device-frame-resize-handle--w {
+  top: 0.75rem;
+  left: -6px;
+  bottom: 0.75rem;
+  width: 1rem;
+}
+
+.device-frame-resize-handle--nw {
+  top: -7px;
+  left: -7px;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.device-frame-resize-handle--ne {
+  top: -7px;
+  right: -7px;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.device-frame-resize-handle--sw {
+  bottom: -7px;
+  left: -7px;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.device-frame-resize-handle--se {
+  right: -7px;
+  bottom: -7px;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.device-frame-resize-grip {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  background: rgba(34, 211, 238, 0.82);
+  box-shadow:
+    0 0 0 1px rgba(8, 145, 178, 0.42),
+    0 4px 12px rgba(34, 211, 238, 0.35);
+}

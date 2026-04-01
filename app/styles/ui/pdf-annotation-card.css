@@ -1,0 +1,162 @@
+.pdf-annotation-card {
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 22px;
+  padding: 1rem;
+}
+
+.pdf-annotation-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pdf-annotation-card-header-meta {
+  min-width: 0;
+}
+
+.pdf-annotation-card-page {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.pdf-annotation-card-label {
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pdf-annotation-card-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.pdf-annotation-card-select,
+.pdf-annotation-card-location,
+.pdf-annotation-card-open-button {
+  border-width: 1px;
+  border-style: solid;
+}
+
+.pdf-annotation-card-select {
+  border-radius: 9999px;
+  background: transparent;
+  padding: 0.25rem 0.75rem;
+  color: var(--text-main);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pdf-annotation-card-location {
+  border-radius: 9999px;
+  padding: 0.25rem 0.625rem;
+  color: var(--text-main);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pdf-annotation-card-content {
+  margin-top: 0.75rem;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.5rem;
+}
+
+.pdf-annotation-card-thread > * + * {
+  margin-top: 0.75rem;
+}
+
+.pdf-annotation-card-author {
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.pdf-annotation-card-discussion {
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 1rem;
+  padding: 0.75rem;
+}
+
+.pdf-annotation-card-discussion > * + * {
+  margin-top: 0.75rem;
+}
+
+.pdf-annotation-card-discussion-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pdf-annotation-card-reply {
+  border-left-width: 1px;
+  border-left-style: solid;
+  padding-left: 0.75rem;
+}
+
+.pdf-annotation-card-reply > * + * {
+  margin-top: 0.25rem;
+}
+
+.pdf-annotation-card-target-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.pdf-annotation-card-target-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+}
+
+.pdf-annotation-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.pdf-annotation-card-popup-id {
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(0, 0, 0, 0.1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 10px;
+  cursor: help;
+  opacity: 0.6;
+  transition: opacity 150ms ease;
+}
+
+.pdf-annotation-card-popup-id:hover {
+  opacity: 1;
+}
+
+.pdf-annotation-card-open-button {
+  border-radius: 9999px;
+  padding: 0.375rem 0.75rem;
+  font-size: 11px;
+  font-weight: 600;
+  transition: background-color 150ms ease;
+}

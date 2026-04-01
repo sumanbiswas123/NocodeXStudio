@@ -73,7 +73,9 @@ type UsePreviewCssMutationOptions = {
   setPreviewSelectedMatchedCssRules: Dispatch<
     SetStateAction<PreviewMatchedCssRule[]>
   >;
-  syncPreviewSelectionSnapshotFromLiveElement: (elementPath: number[]) => boolean;
+  syncPreviewSelectionSnapshotFromLiveElement: (
+    elementPath: number[],
+  ) => boolean;
   textFileCacheRef: MutableRefObject<Record<string, string>>;
 };
 
@@ -105,6 +107,25 @@ export const usePreviewCssMutation = ({
   syncPreviewSelectionSnapshotFromLiveElement,
   textFileCacheRef,
 }: UsePreviewCssMutationOptions) => {
+  const isPreviewCssDebugEnabled = () => {
+    if (typeof window === "undefined") return false;
+    const explicit = (window as any).__NX_DEBUG_PREVIEW_CSS;
+    if (explicit === false) return false;
+    return true;
+  };
+
+  const debugPreviewCssMutation = (
+    label: string,
+    payload: Record<string, unknown>,
+  ) => {
+    if (!isPreviewCssDebugEnabled()) return;
+    console.groupCollapsed(`[PreviewCSSDebug] ${label}`);
+    Object.entries(payload).forEach(([key, value]) => {
+      console.log(key, value);
+    });
+    console.groupEnd();
+  };
+
   const handleImmediatePreviewStyle = useCallback(
     (styles: Partial<React.CSSProperties>) => {
       if (
@@ -163,8 +184,46 @@ export const usePreviewCssMutation = ({
     ],
   );
 
+  const clearPreviewInlineStylePropertiesAtPath = useCallback(
+    (elementPath: number[], styles: Partial<React.CSSProperties>) => {
+      if (!Array.isArray(elementPath) || elementPath.length === 0) return;
+      const liveTarget = getLivePreviewSelectedElement(elementPath);
+      if (!(liveTarget instanceof HTMLElement)) return;
+      Object.keys(styles).forEach((key) => {
+        const cssKey = toCssPropertyName(key);
+        liveTarget.style.removeProperty(cssKey);
+      });
+      if (!liveTarget.getAttribute("style")?.trim()) {
+        liveTarget.removeAttribute("style");
+      }
+      debugPreviewCssMutation("clearPreviewInlineStylePropertiesAtPath", {
+        elementPath,
+        clearedProperties: Object.keys(styles).map((key) =>
+          toCssPropertyName(key),
+        ),
+        resultingInlineStyle: liveTarget.getAttribute("style") || "",
+      });
+    },
+    [debugPreviewCssMutation, getLivePreviewSelectedElement],
+  );
+
   const resolvePreviewMatchedRuleSourcePath = useCallback(
     (source: string) => {
+      const directSourcePathCandidate = normalizeProjectRelative(
+        String(source || ""),
+      );
+      const normalizedSource = normalizeProjectRelative(String(source || ""));
+      const sourceBasename = getCssSourceBasename(source).toLowerCase();
+
+      const directSourcePathMatch =
+        findFilePathCaseInsensitive(filesRef.current, directSourcePathCandidate) ||
+        (filesRef.current[directSourcePathCandidate]?.type === "css"
+          ? directSourcePathCandidate
+          : null);
+      if (directSourcePathMatch) {
+        return directSourcePathMatch;
+      }
+
       if (selectedPreviewHtml) {
         const selectedHtmlSource =
           typeof filesRef.current[selectedPreviewHtml]?.content === "string"
@@ -190,7 +249,9 @@ export const usePreviewCssMutation = ({
                 ),
               )
               .filter((candidate): candidate is string => Boolean(candidate))
-              .filter((candidate) => filesRef.current[candidate]?.type === "css")
+              .filter(
+                (candidate) => filesRef.current[candidate]?.type === "css",
+              )
               .filter((candidate) => cssRuleSourcesMatch(candidate, source));
             if (linkedCssCandidates.length === 1) {
               return linkedCssCandidates[0];
@@ -199,9 +260,25 @@ export const usePreviewCssMutation = ({
             // Ignore malformed HTML and continue to broader lookup.
           }
         }
+
+        if (sourceBasename === "local.css") {
+          const activeDir = selectedPreviewHtml.includes("/")
+            ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+            : "";
+          const siblingLocalCss = normalizeProjectRelative(
+            activeDir ? `${activeDir}/css/local.css` : "css/local.css",
+          );
+          const siblingLocalCssMatch =
+            findFilePathCaseInsensitive(filesRef.current, siblingLocalCss) ||
+            (filesRef.current[siblingLocalCss]?.type === "css"
+              ? siblingLocalCss
+              : null);
+          if (siblingLocalCssMatch) {
+            return siblingLocalCssMatch;
+          }
+        }
       }
 
-      const normalizedSource = normalizeProjectRelative(String(source || ""));
       const exactMatch =
         findFilePathCaseInsensitive(filesRef.current, normalizedSource) ||
         (filesRef.current[normalizedSource]?.type === "css"
@@ -212,17 +289,35 @@ export const usePreviewCssMutation = ({
       }
 
       const normalizedSuffix = normalizedSource.toLowerCase();
-      const basename = getCssSourceBasename(source).toLowerCase();
       const candidates = Object.keys(filesRef.current).filter((path) => {
         if (filesRef.current[path]?.type !== "css") return false;
         const normalizedPath = normalizeProjectRelative(path).toLowerCase();
         if (normalizedSuffix && normalizedPath.endsWith(normalizedSuffix)) {
           return true;
         }
-        return getCssSourceBasename(path).toLowerCase() === basename;
+        return getCssSourceBasename(path).toLowerCase() === sourceBasename;
       });
 
-      return candidates.length === 1 ? candidates[0] : null;
+      // --- CRITICAL FIX: Smart Tie-Breaker ---
+      if (candidates.length === 1) return candidates[0];
+
+      if (candidates.length > 1 && selectedPreviewHtml) {
+        // If there are multiple local.css files, find the one in the same folder as the HTML
+        const activeDir = selectedPreviewHtml.includes("/")
+          ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+          : "";
+
+        const closestMatch = candidates.find((c) => {
+          const cDir = c.includes("/") ? c.slice(0, c.lastIndexOf("/")) : "";
+          return cDir === activeDir;
+        });
+
+        if (closestMatch) return closestMatch;
+
+        return candidates[0]; // Better to guess the first one than to fail to inline styles
+      }
+
+      return null;
     },
     [filesRef, selectedPreviewHtml, textFileCacheRef],
   );
@@ -245,14 +340,14 @@ export const usePreviewCssMutation = ({
 
       let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
       const normalizedRuleSelector = normalizeSelectorSignature(rule.selector);
-      const resolvedRuleSource = resolvePreviewMatchedRuleSourcePath(rule.source);
+      const resolvedRuleSource = resolvePreviewMatchedRuleSourcePath(
+        rule.sourcePath || rule.source,
+      );
       const originalCssProperty = rule.originalProperty
         ? toCssPropertyName(rule.originalProperty)
         : "";
       const nextCssKeys = new Set(
-        Object.keys(styles).map((key) =>
-          toCssPropertyName(key).toLowerCase(),
-        ),
+        Object.keys(styles).map((key) => toCssPropertyName(key).toLowerCase()),
       );
 
       const applyToRule = (styleRule: CSSStyleRule) => {
@@ -343,7 +438,11 @@ export const usePreviewCssMutation = ({
             }
             if (liveElement instanceof Element) {
               try {
-                if (!liveElement.matches(String(cssRule.selectorText || "").trim())) {
+                if (
+                  !liveElement.matches(
+                    String(cssRule.selectorText || "").trim(),
+                  )
+                ) {
                   continue;
                 }
               } catch {
@@ -366,11 +465,20 @@ export const usePreviewCssMutation = ({
       for (const sheet of Array.from(frameDocument.styleSheets)) {
         try {
           const styleSheet = sheet as CSSStyleSheet;
+          const ownerNode = styleSheet.ownerNode;
+          if (
+            ownerNode instanceof Element &&
+            ownerNode.hasAttribute("data-nx-live-source")
+          ) {
+            continue;
+          }
           const styleSheetCandidates = new Set<string>();
           const styleSheetSource = getStyleSheetSourceLabel(styleSheet);
           if (styleSheetSource) {
             styleSheetCandidates.add(styleSheetSource);
-            styleSheetCandidates.add(normalizeProjectRelative(styleSheetSource));
+            styleSheetCandidates.add(
+              normalizeProjectRelative(styleSheetSource),
+            );
           }
           const styleSheetHref = String(styleSheet.href || "");
           if (styleSheetHref) {
@@ -385,7 +493,9 @@ export const usePreviewCssMutation = ({
                   resolveVirtualPathFromMountRelative(mountRelative);
                 if (virtualPath) {
                   styleSheetCandidates.add(virtualPath);
-                  styleSheetCandidates.add(normalizeProjectRelative(virtualPath));
+                  styleSheetCandidates.add(
+                    normalizeProjectRelative(virtualPath),
+                  );
                 }
               }
             } catch {
@@ -455,6 +565,12 @@ export const usePreviewCssMutation = ({
           : null;
 
       setPreviewSelectedMatchedCssRules((current) => {
+        const beforeRuleSnapshot = current.find(
+          (currentRule) =>
+            cssRuleSourcesMatch(currentRule.source, rule.source) &&
+            normalizeSelectorSignature(currentRule.selector) ===
+              normalizeSelectorSignature(rule.selector),
+        );
         let remainingOccurrence = Math.max(0, rule.occurrenceIndex || 0);
         let didPatchRule = false;
         const nextRules = current.map((currentRule) => {
@@ -480,6 +596,24 @@ export const usePreviewCssMutation = ({
           };
         });
 
+        const afterRuleSnapshot = nextRules.find(
+          (currentRule) =>
+            cssRuleSourcesMatch(currentRule.source, rule.source) &&
+            normalizeSelectorSignature(currentRule.selector) ===
+              normalizeSelectorSignature(rule.selector),
+        );
+
+        debugPreviewCssMutation("applyPreviewMatchedRuleOptimisticState", {
+          selector: rule.selector,
+          source: rule.source,
+          occurrenceIndex: rule.occurrenceIndex ?? 0,
+          originalProperty: rule.originalProperty || "",
+          styles,
+          beforeRuleDeclarations: beforeRuleSnapshot?.declarations || [],
+          afterRuleDeclarations: afterRuleSnapshot?.declarations || [],
+          didPatchRule,
+        });
+
         if (!didPatchRule) return current;
         if (!(liveElement instanceof Element)) {
           return nextRules;
@@ -488,6 +622,7 @@ export const usePreviewCssMutation = ({
       });
     },
     [
+      debugPreviewCssMutation,
       getLivePreviewSelectedElement,
       previewSelectedPath,
       setPreviewSelectedMatchedCssRules,
@@ -539,20 +674,53 @@ export const usePreviewCssMutation = ({
                 ) || hrefValue
               : hrefValue;
           const normalizedHref = normalizeProjectRelative(resolvedHref);
-          if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath)) return;
+          if (!cssRuleSourcesMatch(normalizedHref, normalizedSourcePath))
+            return;
 
           const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
-          let overrideNode = frameDocument.querySelector<HTMLStyleElement>(
-            overrideSelector,
-          );
+          let overrideNode =
+            frameDocument.querySelector<HTMLStyleElement>(overrideSelector);
           if (!overrideNode) {
             overrideNode = frameDocument.createElement("style");
-            overrideNode.setAttribute("data-nx-live-source", normalizedSourcePath);
+            overrideNode.setAttribute(
+              "data-nx-live-source",
+              normalizedSourcePath,
+            );
+            overrideNode.setAttribute("data-source", normalizedSourcePath);
+            overrideNode.setAttribute("data-href", normalizedSourcePath);
             linkNode.insertAdjacentElement("afterend", overrideNode);
           }
+          overrideNode.setAttribute(
+            "data-nx-live-source",
+            normalizedSourcePath,
+          );
+          overrideNode.setAttribute("data-source", normalizedSourcePath);
+          overrideNode.setAttribute("data-href", normalizedSourcePath);
           overrideNode.textContent = nextCssText;
           didUpdate = true;
         });
+      }
+
+      if (!didUpdate) {
+        const fallbackHead =
+          frameDocument.head || frameDocument.documentElement || null;
+        if (fallbackHead) {
+          const overrideSelector = `style[data-nx-live-source="${normalizedSourcePath.replace(/"/g, '\\"')}"]`;
+          let overrideNode =
+            frameDocument.querySelector<HTMLStyleElement>(overrideSelector);
+          if (!overrideNode) {
+            overrideNode = frameDocument.createElement("style");
+            fallbackHead.appendChild(overrideNode);
+          }
+          overrideNode.setAttribute(
+            "data-nx-live-source",
+            normalizedSourcePath,
+          );
+          overrideNode.setAttribute("data-source", normalizedSourcePath);
+          overrideNode.setAttribute("data-href", normalizedSourcePath);
+          overrideNode.textContent = nextCssText;
+          didUpdate = true;
+        }
       }
 
       if (didUpdate && Array.isArray(elementPath) && elementPath.length > 0) {
@@ -571,8 +739,13 @@ export const usePreviewCssMutation = ({
   );
 
   const buildPreviewMatchedRulePatchedSource = useCallback(
-    (rule: PreviewMatchedRuleMutation, styles: Partial<React.CSSProperties>) => {
-      const sourcePath = resolvePreviewMatchedRuleSourcePath(rule.source);
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
+      const sourcePath = resolvePreviewMatchedRuleSourcePath(
+        rule.sourcePath || rule.source,
+      );
       if (!sourcePath) return null;
       const sourceText =
         typeof textFileCacheRef.current[sourcePath] === "string"
@@ -870,7 +1043,8 @@ export const usePreviewCssMutation = ({
       const nextClassName = Array.from(classTokens).join(" ");
       if (target instanceof HTMLElement) {
         target.setAttribute("class", nextClassName);
-        if (!target.getAttribute("style")?.trim()) target.removeAttribute("style");
+        if (!target.getAttribute("style")?.trim())
+          target.removeAttribute("style");
       }
       if (liveTarget instanceof HTMLElement) {
         liveTarget.setAttribute("class", nextClassName);
@@ -1072,7 +1246,10 @@ export const usePreviewCssMutation = ({
   );
 
   const queuePreviewLocalCssPatch = useCallback(
-    (rule: PreviewMatchedRuleMutation, styles: Partial<React.CSSProperties>) => {
+    (
+      rule: PreviewMatchedRuleMutation,
+      styles: Partial<React.CSSProperties>,
+    ) => {
       if (
         !previewSelectedPath ||
         !Array.isArray(previewSelectedPath) ||
@@ -1084,29 +1261,40 @@ export const usePreviewCssMutation = ({
       const nextPath = [...previewSelectedPath];
       applyPreviewMatchedRuleOptimisticState(rule, styles, nextPath);
       const shouldLivePreview = rule.isActive !== false;
-      const appliedLiveRule = shouldLivePreview
-        ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
-        : false;
       const patchedSource =
-        shouldLivePreview && !appliedLiveRule
+        shouldLivePreview
           ? buildPreviewMatchedRulePatchedSource(rule, styles)
           : null;
       const updatedLiveStylesheet =
-        shouldLivePreview && !appliedLiveRule && patchedSource
+        shouldLivePreview && patchedSource
           ? updatePreviewLiveStylesheetContent(
               patchedSource.sourcePath,
               patchedSource.nextSourceText,
               nextPath,
             )
           : false;
-      if (shouldLivePreview && !appliedLiveRule && !updatedLiveStylesheet) {
-        handleImmediatePreviewStyle(styles);
-      }
+      const appliedLiveRule =
+        shouldLivePreview && !patchedSource
+          ? applyPreviewMatchedRuleToLiveStylesheet(rule, styles, nextPath)
+          : false;
+      debugPreviewCssMutation("queuePreviewLocalCssPatch", {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath || "",
+        occurrenceIndex: rule.occurrenceIndex ?? 0,
+        styles,
+        shouldLivePreview,
+        hasPatchedSource: Boolean(patchedSource),
+        updatedLiveStylesheet,
+        appliedLiveRule,
+        inlinePreviewDisabledForMatchedRuleEdits: true,
+      });
       const currentPending = previewLocalCssDraftPendingRef.current;
       const sameTarget =
         currentPending &&
         currentPending.rule.selector === rule.selector &&
         currentPending.rule.source === rule.source &&
+        (currentPending.rule.sourcePath || "") === (rule.sourcePath || "") &&
         (currentPending.rule.occurrenceIndex || 0) ===
           (rule.occurrenceIndex || 0) &&
         currentPending.elementPath.length === nextPath.length &&
@@ -1120,11 +1308,26 @@ export const usePreviewCssMutation = ({
         currentPending.elementPath.length > 0
       ) {
         void (async () => {
+          const pendingPatchedSource = buildPreviewMatchedRulePatchedSource(
+            currentPending.rule,
+            currentPending.styles,
+          );
           const persisted = await persistPreviewMatchedRuleToSourceFile(
             currentPending.rule,
             currentPending.styles,
           );
           if (persisted) {
+            if (pendingPatchedSource) {
+              updatePreviewLiveStylesheetContent(
+                pendingPatchedSource.sourcePath,
+                pendingPatchedSource.nextSourceText,
+                currentPending.elementPath,
+              );
+            }
+            clearPreviewInlineStylePropertiesAtPath(
+              currentPending.elementPath,
+              currentPending.styles,
+            );
             await removePreviewLocalStyleClassesAtPath(
               currentPending.elementPath,
             );
@@ -1158,11 +1361,26 @@ export const usePreviewCssMutation = ({
         previewLocalCssDraftPendingRef.current = null;
         if (!pending || pending.elementPath.length === 0) return;
         void (async () => {
+          const pendingPatchedSource = buildPreviewMatchedRulePatchedSource(
+            pending.rule,
+            pending.styles,
+          );
           const persisted = await persistPreviewMatchedRuleToSourceFile(
             pending.rule,
             pending.styles,
           );
           if (persisted) {
+            if (pendingPatchedSource) {
+              updatePreviewLiveStylesheetContent(
+                pendingPatchedSource.sourcePath,
+                pendingPatchedSource.nextSourceText,
+                pending.elementPath,
+              );
+            }
+            clearPreviewInlineStylePropertiesAtPath(
+              pending.elementPath,
+              pending.styles,
+            );
             await removePreviewLocalStyleClassesAtPath(pending.elementPath);
             syncPreviewSelectionSnapshotFromLiveElement(pending.elementPath);
             return;
@@ -1182,11 +1400,11 @@ export const usePreviewCssMutation = ({
       applyPreviewMatchedRuleOptimisticState,
       applyPreviewMatchedRuleToLiveStylesheet,
       buildPreviewMatchedRulePatchedSource,
-      handleImmediatePreviewStyle,
       persistPreviewMatchedRuleToSourceFile,
       previewLocalCssDraftPendingRef,
       previewLocalCssDraftTimerRef,
       previewSelectedPath,
+      clearPreviewInlineStylePropertiesAtPath,
       removePreviewLocalStyleClassesAtPath,
       syncPreviewSelectionSnapshotFromLiveElement,
       updatePreviewLiveStylesheetContent,
@@ -1199,9 +1417,17 @@ export const usePreviewCssMutation = ({
       styles: Partial<React.CSSProperties>,
     ) => {
       if (!previewSelectedPath || !Array.isArray(previewSelectedPath)) return;
+      debugPreviewCssMutation("handlePreviewMatchedRulePropertyAdd", {
+        selector: rule.selector,
+        source: rule.source,
+        occurrenceIndex: rule.occurrenceIndex ?? 0,
+        originalProperty: rule.originalProperty || "",
+        styles,
+        previewSelectedPath,
+      });
       queuePreviewLocalCssPatch(rule, styles);
     },
-    [previewSelectedPath, queuePreviewLocalCssPatch],
+    [debugPreviewCssMutation, previewSelectedPath, queuePreviewLocalCssPatch],
   );
 
   return {

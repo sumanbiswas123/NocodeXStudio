@@ -1,0 +1,18 @@
+.editor-canvas-node {
+  transition: color 150ms ease;
+}
+
+.editor-canvas-node--root {
+  min-height: 100%;
+}
+
+.editor-canvas-node--editable:hover {
+  outline: 1px dashed #93c5fd;
+}
+
+.editor-canvas-handle-wrapper {
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  overflow: visible;
+}
