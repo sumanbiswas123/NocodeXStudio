@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, Plus, Search, Trash2 } from "lucide-react";
+import { AlertCircle, ChevronDown, Plus, Search, Trash2, X } from "lucide-react";
 import { VirtualElement } from "../types";
 import {
   CSS_PROPERTY_NAMES,
@@ -620,8 +620,16 @@ const shouldPreviewDeclarationAsset = (
 const SuggestionList: React.FC<{
   suggestions: string[];
   width?: string;
+  highlightedIndex?: number;
   onSelect: (value: string) => void;
-}> = ({ suggestions, width = "100%", onSelect }) =>
+  onHighlight?: (index: number) => void;
+}> = ({
+  suggestions,
+  width = "100%",
+  highlightedIndex = -1,
+  onSelect,
+  onHighlight,
+}) =>
   suggestions.length ? (
     <div
       className="style-inspector-suggestions"
@@ -632,17 +640,25 @@ const SuggestionList: React.FC<{
         boxShadow: "var(--glass-shadow)",
       }}
     >
-      {suggestions.map((suggestion) => (
+      {suggestions.map((suggestion, index) => (
         <button
           key={suggestion}
           type="button"
           className="style-inspector-suggestion-button"
-          style={{ borderColor: "var(--border-color)", color: "var(--text-main)" }}
+          style={{
+            borderColor: "var(--border-color)",
+            color: "var(--text-main)",
+            background:
+              highlightedIndex === index
+                ? "color-mix(in srgb, var(--accent-primary) 14%, transparent)"
+                : "transparent",
+          }}
           onMouseDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
             onSelect(suggestion);
           }}
+          onMouseEnter={() => onHighlight?.(index)}
         >
           {suggestion}
         </button>
@@ -667,6 +683,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   onImmediateChange,
 }) => {
   const panelRootRef = useRef<HTMLDivElement | null>(null);
+  const newPropertyKeyInputRef = useRef<HTMLInputElement | null>(null);
+  const newPropertyValueInputRef = useRef<HTMLInputElement | null>(null);
   const styleRowIdRef = useRef(0);
   const stylesRef = useRef<StyleRow[]>([]);
   const styleDraftsRef = useRef<
@@ -703,6 +721,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [activeSuggestionField, setActiveSuggestionField] =
     useState<SuggestionField>(null);
   const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
+  const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] =
+    useState(0);
+  const [hoveredRuleIndicatorKey, setHoveredRuleIndicatorKey] = useState<
+    string | null
+  >(null);
   const [filterText, setFilterText] = useState("");
   const [showComputed, setShowComputed] = useState(false);
   const [showHtmlEditor, setShowHtmlEditor] = useState(false);
@@ -906,6 +929,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     );
   }, [element?.content, element?.html, element?.id]);
 
+  useEffect(() => {
+    setHighlightedSuggestionIndex(filteredSuggestions.length > 0 ? 0 : -1);
+  }, [filteredSuggestions, activeSuggestionField]);
+
   const applySelectorTokenDraft = () => {
     if (!onUpdateIdentity) return;
     const raw = selectorTokenDraft.trim();
@@ -966,6 +993,43 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     const matches = getPropertySuggestions(value, limit);
     setFilteredSuggestions(matches);
     setActiveSuggestionField(matches.length ? { index, type } : null);
+  };
+
+  const moveSuggestionHighlight = (direction: 1 | -1) => {
+    if (!filteredSuggestions.length) return;
+    setHighlightedSuggestionIndex((current) => {
+      const start = current >= 0 ? current : 0;
+      return (start + direction + filteredSuggestions.length) % filteredSuggestions.length;
+    });
+  };
+
+  const getHighlightedSuggestion = () => {
+    if (!filteredSuggestions.length) return "";
+    const safeIndex =
+      highlightedSuggestionIndex >= 0 &&
+      highlightedSuggestionIndex < filteredSuggestions.length
+        ? highlightedSuggestionIndex
+        : 0;
+    return filteredSuggestions[safeIndex] || "";
+  };
+
+  const focusMatchedRuleDraftValueInput = (ruleKey: string) => {
+    window.requestAnimationFrame(() => {
+      const root = panelRootRef.current;
+      if (!root) return;
+      const nextInput = root.querySelector<HTMLInputElement>(
+        `input[data-rule-draft-key="${CSS.escape(ruleKey)}"][data-rule-draft-field="value"]`,
+      );
+      nextInput?.focus();
+      nextInput?.select();
+    });
+  };
+
+  const focusNewPropertyValueInput = () => {
+    window.requestAnimationFrame(() => {
+      newPropertyValueInputRef.current?.focus();
+      newPropertyValueInputRef.current?.select();
+    });
   };
 
   const buildReactStylePatchFromDeclarations = (
@@ -1101,6 +1165,28 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setEditingMatchedDeclaration(null);
     setActiveSuggestionField(null);
     activeMatchedFieldRef.current = null;
+  };
+
+  const deleteMatchedRuleProperty = (
+    rule: AnnotatedMatchedRule,
+    occurrenceIndex: number,
+    property: string,
+    isActive?: boolean,
+  ) => {
+    if (!onAddMatchedRuleProperty) return;
+    onAddMatchedRuleProperty(
+      {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath,
+        occurrenceIndex,
+        originalProperty: property,
+        isActive,
+      },
+      {
+        [toReactName(property)]: "",
+      },
+    );
   };
 
   const pushMatchedDeclarationDraft = (
@@ -2316,6 +2402,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             <div className="style-inspector-inline-row">
               <div className="style-inspector-key-column">
                 <input
+                  ref={newPropertyKeyInputRef}
                   value={newPropName}
                   onChange={(event) =>
                     handleNewPropertyChange("key", event.target.value)
@@ -2333,6 +2420,42 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     setActiveSuggestionField({ index: -1, type: "key" });
                   }}
                   onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    if (
+                      activeSuggestionField?.index === -1 &&
+                      activeSuggestionField.type === "key" &&
+                      filteredSuggestions.length > 0
+                    ) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        moveSuggestionHighlight(1);
+                        return;
+                      }
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        moveSuggestionHighlight(-1);
+                        return;
+                      }
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        const selectedSuggestion = getHighlightedSuggestion();
+                        if (selectedSuggestion) {
+                          setNewPropName(selectedSuggestion);
+                          setActiveSuggestionField(null);
+                          const options = getValueOptions(
+                            selectedSuggestion,
+                            newPropValue,
+                          );
+                          setFilteredSuggestions(options);
+                          setActiveSuggestionField(
+                            options.length ? { index: -1, type: "value" } : null,
+                          );
+                          focusNewPropertyValueInput();
+                        }
+                        return;
+                      }
+                    }
+                  }}
                   placeholder="property"
                   className="style-inspector-ghost-input"
                   style={{ color: "var(--accent-primary)" }}
@@ -2342,9 +2465,17 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   <SuggestionList
                     suggestions={filteredSuggestions}
                     width="220px"
+                    highlightedIndex={highlightedSuggestionIndex}
+                    onHighlight={setHighlightedSuggestionIndex}
                     onSelect={(value) => {
                       setNewPropName(value);
                       setActiveSuggestionField(null);
+                      const options = getValueOptions(value, newPropValue);
+                      setFilteredSuggestions(options);
+                      setActiveSuggestionField(
+                        options.length ? { index: -1, type: "value" } : null,
+                      );
+                      focusNewPropertyValueInput();
                     }}
                   />
                 ) : null}
@@ -2354,6 +2485,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
               <div className="style-inspector-value-wrap">
                 <input
+                  ref={newPropertyValueInputRef}
                   value={newPropValue}
                   onChange={(event) =>
                     handleNewPropertyChange("value", event.target.value)
@@ -2375,6 +2507,31 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   }}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => {
+                    if (
+                      activeSuggestionField?.index === -1 &&
+                      activeSuggestionField.type === "value" &&
+                      filteredSuggestions.length > 0
+                    ) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        moveSuggestionHighlight(1);
+                        return;
+                      }
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        moveSuggestionHighlight(-1);
+                        return;
+                      }
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        const selectedSuggestion = getHighlightedSuggestion();
+                        if (selectedSuggestion) {
+                          setNewPropValue(selectedSuggestion);
+                          setActiveSuggestionField(null);
+                        }
+                        return;
+                      }
+                    }
                     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
                       handleNewPropertyValueStep(event);
                       return;
@@ -2389,6 +2546,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 activeSuggestionField.type === "value" ? (
                   <SuggestionList
                     suggestions={filteredSuggestions}
+                    highlightedIndex={highlightedSuggestionIndex}
+                    onHighlight={setHighlightedSuggestionIndex}
                     onSelect={(value) => {
                       setNewPropValue(value);
                       setActiveSuggestionField(null);
@@ -2690,6 +2849,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           hoveredAssetPreview?.key === declarationKey
                             ? hoveredAssetPreview.src
                             : "";
+                        const isDeleteHovered =
+                          hoveredRuleIndicatorKey === declarationKey;
                         return (
                       <div
                         key={`${ruleKey}-${declaration.property}-${declarationIndex}`}
@@ -2698,19 +2859,48 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           opacity:
                             declarationActive === false ? 0.48 : 1,
                         }}
+                        onMouseEnter={() =>
+                          setHoveredRuleIndicatorKey(declarationKey)
+                        }
+                        onMouseLeave={() => {
+                          setHoveredRuleIndicatorKey((current) =>
+                            current === declarationKey ? null : current,
+                          );
+                        }}
                         title={`${declaration.property}: ${declaration.value}${declaration.important ? " !important" : ""}`}
                       >
-                        <span
+                        <button
+                          type="button"
                           className="style-inspector-rule-indicator style-inspector-rule-indicator--value"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteMatchedRuleProperty(
+                              rule,
+                              occurrenceIndex,
+                              declaration.property,
+                              declarationActive,
+                            );
+                          }}
+                          title={`Delete ${declaration.property}`}
                           style={{
-                            background:
-                              declarationActive === true
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            border: "none",
+                            padding: 0,
+                            cursor: "pointer",
+                            background: isDeleteHovered
+                              ? "rgba(239, 68, 68, 0.95)"
+                              : declarationActive === true
                                 ? "#14b8a6"
                                 : declarationActive === false
                                   ? "rgba(148, 163, 184, 0.55)"
                                   : "rgba(14, 165, 233, 0.55)",
+                            color: "#fff",
                           }}
-                        />
+                        >
+                          {isDeleteHovered ? <X size={9} /> : null}
+                        </button>
                         <span
                           className="style-inspector-rule-key style-inspector-rule-key--truncate"
                           style={{
@@ -2804,6 +2994,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   <div className="style-inspector-rule-row">
                     <div className="style-inspector-rule-input-wrap">
                         <input
+                          data-rule-draft-key={ruleKey}
+                          data-rule-draft-field="key"
                           value={draft.key}
                           onChange={(event) =>
                           {
@@ -2840,6 +3032,43 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                           });
                         }}
                         onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                          if (
+                            activeSuggestionField?.index === -(ruleIndex + 2) &&
+                            activeSuggestionField.type === "key" &&
+                            filteredSuggestions.length > 0
+                          ) {
+                            if (event.key === "ArrowDown") {
+                              event.preventDefault();
+                              moveSuggestionHighlight(1);
+                              return;
+                            }
+                            if (event.key === "ArrowUp") {
+                              event.preventDefault();
+                              moveSuggestionHighlight(-1);
+                              return;
+                            }
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              const selectedSuggestion = getHighlightedSuggestion();
+                              if (selectedSuggestion) {
+                                setRuleDraftValue(ruleKey, "key", selectedSuggestion);
+                                const options = getValueOptions(
+                                  selectedSuggestion,
+                                  draft.value,
+                                );
+                                setFilteredSuggestions(options);
+                                setActiveSuggestionField(
+                                  options.length
+                                    ? { index: -(ruleIndex + 2), type: "value" }
+                                    : null,
+                                );
+                                focusMatchedRuleDraftValueInput(ruleKey);
+                              }
+                              return;
+                            }
+                          }
+                        }}
                         placeholder="property"
                         className="style-inspector-key-input"
                         style={{ color: "var(--accent-primary)" }}
@@ -2849,9 +3078,18 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         <SuggestionList
                           suggestions={filteredSuggestions}
                           width="220px"
+                          highlightedIndex={highlightedSuggestionIndex}
+                          onHighlight={setHighlightedSuggestionIndex}
                           onSelect={(value) => {
                             setRuleDraftValue(ruleKey, "key", value);
-                            setActiveSuggestionField(null);
+                            const options = getValueOptions(value, draft.value);
+                            setFilteredSuggestions(options);
+                            setActiveSuggestionField(
+                              options.length
+                                ? { index: -(ruleIndex + 2), type: "value" }
+                                : null,
+                            );
+                            focusMatchedRuleDraftValueInput(ruleKey);
                           }}
                         />
                       ) : null}
@@ -2859,6 +3097,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                     <span style={{ color: "var(--text-muted)" }}>:</span>
                     <div className="style-inspector-rule-value-input-wrap">
                       <input
+                        data-rule-draft-key={ruleKey}
+                        data-rule-draft-field="value"
                         value={draft.value}
                         onChange={(event) =>
                           setRuleDraftValue(
@@ -2894,6 +3134,31 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         }}
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => {
+                          if (
+                            activeSuggestionField?.index === -(ruleIndex + 2) &&
+                            activeSuggestionField.type === "value" &&
+                            filteredSuggestions.length > 0
+                          ) {
+                            if (event.key === "ArrowDown") {
+                              event.preventDefault();
+                              moveSuggestionHighlight(1);
+                              return;
+                            }
+                            if (event.key === "ArrowUp") {
+                              event.preventDefault();
+                              moveSuggestionHighlight(-1);
+                              return;
+                            }
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              const selectedSuggestion = getHighlightedSuggestion();
+                              if (selectedSuggestion) {
+                                setRuleDraftValue(ruleKey, "value", selectedSuggestion);
+                                setActiveSuggestionField(null);
+                              }
+                              return;
+                            }
+                          }
                           if (event.key === "Enter")
                             addRuleProperty(rule, ruleKey, occurrenceIndex);
                         }}
@@ -2905,6 +3170,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       activeSuggestionField.type === "value" ? (
                         <SuggestionList
                           suggestions={filteredSuggestions}
+                          highlightedIndex={highlightedSuggestionIndex}
+                          onHighlight={setHighlightedSuggestionIndex}
                           onSelect={(value) => {
                             setRuleDraftValue(ruleKey, "value", value);
                             setActiveSuggestionField(null);
