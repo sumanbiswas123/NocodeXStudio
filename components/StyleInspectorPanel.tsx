@@ -289,6 +289,104 @@ const normalizeCssValueInput = (value: string) =>
     (_match, amount) => `${amount}rem`,
   );
 
+const splitCssDeclarationEntries = (raw: string) => {
+  const entries: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let depth = 0;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (quote) {
+      current += char;
+      if (char === quote && raw[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if ((char === ")" || char === "]") && depth > 0) {
+      depth -= 1;
+      current += char;
+      continue;
+    }
+    if ((char === ";" || char === "\n") && depth === 0) {
+      if (current.trim()) entries.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) entries.push(current.trim());
+  return entries;
+};
+
+const splitCssDeclarationPair = (entry: string) => {
+  let quote: "'" | '"' | null = null;
+  let depth = 0;
+  for (let index = 0; index < entry.length; index += 1) {
+    const char = entry[index];
+    if (quote) {
+      if (char === quote && entry[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "[") {
+      depth += 1;
+      continue;
+    }
+    if ((char === ")" || char === "]") && depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    if (char === ":" && depth === 0) {
+      return {
+        property: entry.slice(0, index).trim(),
+        value: entry.slice(index + 1).trim(),
+      };
+    }
+  }
+  return null;
+};
+
+const parseCssDeclarationBatch = (raw: string) => {
+  const cleaned = String(raw || "")
+    .replace(/^[^{]*\{/u, "")
+    .replace(/\}[^}]*$/u, "")
+    .trim();
+  if (!cleaned || !cleaned.includes(":")) return [];
+
+  return splitCssDeclarationEntries(cleaned)
+    .map((entry) => splitCssDeclarationPair(entry))
+    .filter(
+      (
+        entry,
+      ): entry is {
+        property: string;
+        value: string;
+      } => Boolean(entry?.property && entry.value),
+    )
+    .map((entry) => ({
+      property: entry.property,
+      value: normalizeCssValueInput(entry.value),
+    }));
+};
+
 const toColorInputValue = (value: string) => {
   if (typeof document === "undefined") return null;
   const probe = document.createElement("span");
@@ -854,6 +952,51 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         value: field === "value" ? value : current[ruleKey]?.value || "",
       },
     }));
+  };
+
+  const buildReactStylePatchFromDeclarations = (
+    declarations: Array<{ property: string; value: string }>,
+  ) =>
+    declarations.reduce<Partial<React.CSSProperties>>((acc, declaration) => {
+      if (!declaration.property.trim() || !declaration.value.trim()) return acc;
+      acc[toReactName(declaration.property.trim())] = declaration.value.trim();
+      return acc;
+    }, {});
+
+  const tryApplyBulkInlineDeclarations = (raw: string) => {
+    const declarations = parseCssDeclarationBatch(raw);
+    if (declarations.length === 0) return false;
+    onUpdateStyle(buildReactStylePatchFromDeclarations(declarations));
+    setNewPropName("");
+    setNewPropValue("");
+    setActiveSuggestionField(null);
+    return true;
+  };
+
+  const tryApplyBulkRuleDeclarations = (
+    rule: AnnotatedMatchedRule,
+    ruleKey: string,
+    occurrenceIndex: number,
+    raw: string,
+  ) => {
+    if (!onAddMatchedRuleProperty) return false;
+    const declarations = parseCssDeclarationBatch(raw);
+    if (declarations.length === 0) return false;
+    onAddMatchedRuleProperty(
+      {
+        selector: rule.selector,
+        source: rule.source,
+        sourcePath: rule.sourcePath,
+        occurrenceIndex,
+      },
+      buildReactStylePatchFromDeclarations(declarations),
+    );
+    setRuleDrafts((current) => ({
+      ...current,
+      [ruleKey]: { key: "", value: "" },
+    }));
+    setActiveSuggestionField(null);
+    return true;
   };
 
   const addRuleProperty = (
@@ -2174,6 +2317,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   onChange={(event) =>
                     handleNewPropertyChange("key", event.target.value)
                   }
+                  onPaste={(event) => {
+                    const text = event.clipboardData?.getData("text/plain") || "";
+                    if (!text) return;
+                    if (tryApplyBulkInlineDeclarations(text)) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }
+                  }}
                   onFocus={() => {
                     setFilteredSuggestions(filterAndSortProperties("", 20));
                     setActiveSuggestionField({ index: -1, type: "key" });
@@ -2204,6 +2355,14 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   onChange={(event) =>
                     handleNewPropertyChange("value", event.target.value)
                   }
+                  onPaste={(event) => {
+                    const text = event.clipboardData?.getData("text/plain") || "";
+                    if (!text) return;
+                    if (tryApplyBulkInlineDeclarations(text)) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }
+                  }}
                   onFocus={() => {
                     const options = getValueOptions(newPropName, newPropValue);
                     setFilteredSuggestions(options);
@@ -2642,6 +2801,22 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                         onChange={(event) =>
                           setRuleDraftValue(ruleKey, "key", event.target.value)
                         }
+                        onPaste={(event) => {
+                          const text =
+                            event.clipboardData?.getData("text/plain") || "";
+                          if (!text) return;
+                          if (
+                            tryApplyBulkRuleDeclarations(
+                              rule,
+                              ruleKey,
+                              occurrenceIndex,
+                              text,
+                            )
+                          ) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }
+                        }}
                         onFocus={() => {
                           setFilteredSuggestions(
                             filterAndSortProperties("", 20),
@@ -2679,6 +2854,22 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             event.target.value,
                           )
                         }
+                        onPaste={(event) => {
+                          const text =
+                            event.clipboardData?.getData("text/plain") || "";
+                          if (!text) return;
+                          if (
+                            tryApplyBulkRuleDeclarations(
+                              rule,
+                              ruleKey,
+                              occurrenceIndex,
+                              text,
+                            )
+                          ) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }
+                        }}
                         onFocus={() => {
                           const options = getValueOptions(draft.key, draft.value);
                           setFilteredSuggestions(options);
