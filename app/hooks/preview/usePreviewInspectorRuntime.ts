@@ -722,6 +722,11 @@ export const usePreviewInspectorRuntime = ({
         extractAssetUrlFromCssValue(raw) || String(raw || "").trim();
       if (!cleaned) return "";
       if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
+      if (cleaned.startsWith(PREVIEW_MOUNT_PATH)) {
+        const nlPort = String((window as any).NL_PORT || "").trim();
+        const previewServerOrigin = nlPort ? `http://127.0.0.1:${nlPort}` : "";
+        return previewServerOrigin ? `${previewServerOrigin}${cleaned}` : cleaned;
+      }
 
       const basePath =
         source && source.length > 0

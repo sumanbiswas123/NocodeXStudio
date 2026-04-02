@@ -834,7 +834,14 @@ export const usePreviewCssMutation = ({
   );
 
   const updatePreviewLiveStylesheetContent = useCallback(
-    (sourcePath: string, cssContent: string, elementPath?: number[]) => {
+    (
+      sourcePath: string,
+      cssContent: string,
+      elementPath?: number[],
+      options?: {
+        cacheBustAssets?: boolean;
+      },
+    ) => {
       const frameDocument =
         previewFrameRef.current?.contentDocument ??
         previewFrameRef.current?.contentWindow?.document ??
@@ -846,7 +853,7 @@ export const usePreviewCssMutation = ({
         cssContent,
         normalizedSourcePath,
         filesRef.current,
-        Date.now(),
+        options?.cacheBustAssets === false ? null : Date.now(),
       );
       let didUpdate = false;
       const styleNodes = Array.from(
@@ -1448,6 +1455,7 @@ export const usePreviewCssMutation = ({
             cssLocalVirtualPath,
             movePatch.nextCssContent,
             elementPath,
+            { cacheBustAssets: false },
           );
           applyMoveDraftInspectorState(
             elementPath,
@@ -1526,6 +1534,7 @@ export const usePreviewCssMutation = ({
             cssLocalVirtualPath,
             nextCssContent,
             elementPath,
+            { cacheBustAssets: false },
           );
           if (liveTarget instanceof HTMLElement) {
             Object.keys(styles).forEach((key) => {
