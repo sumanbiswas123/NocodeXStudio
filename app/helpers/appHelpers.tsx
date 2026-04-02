@@ -1759,16 +1759,20 @@ export const rewriteInlineAssetRefs = (
     (full, quote, rawValue) => {
       const resolved = resolveProjectRelativePath(currentFile, rawValue);
       if (!resolved) return full;
-      const file = fileMap[resolved];
-      if (
-        !file ||
-        typeof file.content !== "string" ||
-        file.content.trim().length === 0
-      ) {
+      const matchedPath = findFilePathCaseInsensitive(fileMap, resolved) || resolved;
+      const file = fileMap[matchedPath];
+      if (!file) {
         return full;
       }
-      if (file.type === "image" || file.type === "font") {
+      if (
+        (file.type === "image" || file.type === "font") &&
+        typeof file.content === "string" &&
+        file.content.trim().length > 0
+      ) {
         return `url("${file.content}")`;
+      }
+      if (file.type === "image" || file.type === "font") {
+        return `url("${encodeURI(`${PREVIEW_MOUNT_PATH}/${matchedPath}`)}")`;
       }
       return full;
     },
@@ -2681,6 +2685,99 @@ export const buildPreviewRuntimeScript = (
         return best;
       }
 
+      function extractRuleBodyFromCssText(cssText) {
+        var text = String(cssText || '');
+        var openIndex = text.indexOf('{');
+        var closeIndex = text.lastIndexOf('}');
+        if (openIndex < 0 || closeIndex <= openIndex) return '';
+        return text.slice(openIndex + 1, closeIndex).trim();
+      }
+
+      function parseDeclaredCssText(cssText) {
+        var body = extractRuleBodyFromCssText(cssText);
+        if (!body) return [];
+
+        var declarations = [];
+        var current = '';
+        var depth = 0;
+        var quote = null;
+        var inComment = false;
+
+        function pushDeclaration(raw) {
+          var text = String(raw || '').trim();
+          if (!text) return;
+          var colonIndex = text.indexOf(':');
+          if (colonIndex <= 0) return;
+          var property = text.slice(0, colonIndex).trim();
+          var value = text.slice(colonIndex + 1).trim();
+          if (!property || !value) return;
+          var important = false;
+          if (/\\s*!important\\s*$/i.test(value)) {
+            important = true;
+            value = value.replace(/\\s*!important\\s*$/i, '').trim();
+          }
+          if (!value) return;
+          declarations.push({
+            property: property,
+            value: value,
+            important: important
+          });
+        }
+
+        for (var index = 0; index < body.length; index++) {
+          var char = body.charAt(index);
+          var next = body.charAt(index + 1);
+          if (inComment) {
+            if (char === '*' && next === '/') {
+              inComment = false;
+              index += 1;
+            }
+            continue;
+          }
+          if (quote) {
+            current += char;
+            if (char === '\\\\' && next) {
+              current += next;
+              index += 1;
+              continue;
+            }
+            if (char === quote) {
+              quote = null;
+            }
+            continue;
+          }
+          if (char === '/' && next === '*') {
+            inComment = true;
+            index += 1;
+            continue;
+          }
+          if (char === '"' || char === "'") {
+            quote = char;
+            current += char;
+            continue;
+          }
+          if (char === '(') {
+            depth += 1;
+            current += char;
+            continue;
+          }
+          if (char === ')' && depth > 0) {
+            depth -= 1;
+            current += char;
+            continue;
+          }
+          if (char === ';' && depth === 0) {
+            pushDeclaration(current);
+            current = '';
+            continue;
+          }
+          current += char;
+        }
+
+        pushDeclaration(current);
+        return declarations;
+      }
+
       function visitRules(ruleList, sourceLabel, sourcePath) {
         if (!ruleList) return;
         for (var i = 0; i < ruleList.length; i++) {
@@ -2695,9 +2792,9 @@ export const buildPreviewRuntimeScript = (
               } catch (selectorError) {
                 continue;
               }
-              var declarations = [];
+              var declarations = parseDeclaredCssText(String(rule.cssText || ''));
               var style = rule.style;
-              if (style) {
+              if (!declarations.length && style) {
                 for (var j = 0; j < style.length; j++) {
                   var prop = style[j];
                   var val = style.getPropertyValue(prop);
@@ -4031,6 +4128,99 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     var matches = [];
     if (!el || !el.matches || !document.styleSheets) return matches;
 
+    function extractRuleBodyFromCssText(cssText) {
+      var text = String(cssText || '');
+      var openIndex = text.indexOf('{');
+      var closeIndex = text.lastIndexOf('}');
+      if (openIndex < 0 || closeIndex <= openIndex) return '';
+      return text.slice(openIndex + 1, closeIndex).trim();
+    }
+
+    function parseDeclaredCssText(cssText) {
+      var body = extractRuleBodyFromCssText(cssText);
+      if (!body) return [];
+
+      var declarations = [];
+      var current = '';
+      var depth = 0;
+      var quote = null;
+      var inComment = false;
+
+      function pushDeclaration(raw) {
+        var text = String(raw || '').trim();
+        if (!text) return;
+        var colonIndex = text.indexOf(':');
+        if (colonIndex <= 0) return;
+        var property = text.slice(0, colonIndex).trim();
+        var value = text.slice(colonIndex + 1).trim();
+        if (!property || !value) return;
+        var important = false;
+        if (/\\s*!important\\s*$/i.test(value)) {
+          important = true;
+          value = value.replace(/\\s*!important\\s*$/i, '').trim();
+        }
+        if (!value) return;
+        declarations.push({
+          property: property,
+          value: value,
+          important: important
+        });
+      }
+
+      for (var index = 0; index < body.length; index++) {
+        var char = body.charAt(index);
+        var next = body.charAt(index + 1);
+        if (inComment) {
+          if (char === '*' && next === '/') {
+            inComment = false;
+            index += 1;
+          }
+          continue;
+        }
+        if (quote) {
+          current += char;
+          if (char === '\\\\' && next) {
+            current += next;
+            index += 1;
+            continue;
+          }
+          if (char === quote) {
+            quote = null;
+          }
+          continue;
+        }
+        if (char === '/' && next === '*') {
+          inComment = true;
+          index += 1;
+          continue;
+        }
+        if (char === '"' || char === "'") {
+          quote = char;
+          current += char;
+          continue;
+        }
+        if (char === '(') {
+          depth += 1;
+          current += char;
+          continue;
+        }
+        if (char === ')' && depth > 0) {
+          depth -= 1;
+          current += char;
+          continue;
+        }
+        if (char === ';' && depth === 0) {
+          pushDeclaration(current);
+          current = '';
+          continue;
+        }
+        current += char;
+      }
+
+      pushDeclaration(current);
+      return declarations;
+    }
+
     function visitRules(ruleList, sourceLabel, sourcePath) {
       if (!ruleList) return;
       for (var i = 0; i < ruleList.length; i++) {
@@ -4045,9 +4235,9 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
             } catch (selectorError) {
               continue;
             }
-            var declarations = [];
+            var declarations = parseDeclaredCssText(String(rule.cssText || ''));
             var style = rule.style;
-            if (style) {
+            if (!declarations.length && style) {
               for (var j = 0; j < style.length; j++) {
                 var prop = style[j];
                 var val = style.getPropertyValue(prop);

@@ -97,6 +97,97 @@ export type CdpInspectSelectedResponse = {
 const normalizeMatchedCssProperty = (property: string) =>
   String(property || "").trim().toLowerCase();
 
+const extractRuleBodyFromCssText = (cssText: string) => {
+  const text = String(cssText || "");
+  const openIndex = text.indexOf("{");
+  const closeIndex = text.lastIndexOf("}");
+  if (openIndex < 0 || closeIndex <= openIndex) return "";
+  return text.slice(openIndex + 1, closeIndex).trim();
+};
+
+const parseDeclaredCssText = (
+  cssText: string,
+): PreviewMatchedCssDeclaration[] => {
+  const body = extractRuleBodyFromCssText(cssText);
+  if (!body) return [];
+
+  const declarations: PreviewMatchedCssDeclaration[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+  let inComment = false;
+
+  const pushDeclaration = (raw: string) => {
+    const text = String(raw || "").trim();
+    if (!text) return;
+    const colonIndex = text.indexOf(":");
+    if (colonIndex <= 0) return;
+    const property = text.slice(0, colonIndex).trim();
+    let value = text.slice(colonIndex + 1).trim();
+    if (!property || !value) return;
+    let important = false;
+    if (/\s*!important\s*$/i.test(value)) {
+      important = true;
+      value = value.replace(/\s*!important\s*$/i, "").trim();
+    }
+    if (!value) return;
+    declarations.push({ property, value, important });
+  };
+
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    const next = body[index + 1];
+    if (inComment) {
+      if (char === "*" && next === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === "\\" && next) {
+        current += next;
+        index += 1;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if (char === ")" && depth > 0) {
+      depth -= 1;
+      current += char;
+      continue;
+    }
+    if (char === ";" && depth === 0) {
+      pushDeclaration(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  pushDeclaration(current);
+  return declarations;
+};
+
 const isElementLike = (value: unknown): value is Element =>
   Boolean(
     value &&
@@ -475,18 +566,22 @@ export const collectMatchedCssRulesFromElement = (
           } catch {
             return;
           }
-          const declarations: PreviewMatchedCssDeclaration[] = [];
-          Array.from(candidateRule.style || []).forEach((property) => {
-            const value = candidateRule.style?.getPropertyValue(property);
-            if (!property || !value) return;
-            declarations.push({
-              property,
-              value,
-              important:
-                candidateRule.style?.getPropertyPriority(property) ===
-                "important",
+          const declarations: PreviewMatchedCssDeclaration[] =
+            parseDeclaredCssText(String((candidateRule as CSSRule).cssText || "")) ||
+            [];
+          if (declarations.length === 0) {
+            Array.from(candidateRule.style || []).forEach((property) => {
+              const value = candidateRule.style?.getPropertyValue(property);
+              if (!property || !value) return;
+              declarations.push({
+                property,
+                value,
+                important:
+                  candidateRule.style?.getPropertyPriority(property) ===
+                  "important",
+              });
             });
-          });
+          }
           if (declarations.length) {
             results.push({
               selector,
@@ -1088,16 +1183,19 @@ export const collectLiveMatchedCssRuleRefsFromElement = (
           } catch {
             return;
           }
-          const declarations: PreviewMatchedCssDeclaration[] = [];
-          Array.from(rule.style || []).forEach((property) => {
-            const value = rule.style?.getPropertyValue(property);
-            if (!property || !value) return;
-            declarations.push({
-              property,
-              value,
-              important: rule.style?.getPropertyPriority(property) === "important",
+          const declarations: PreviewMatchedCssDeclaration[] =
+            parseDeclaredCssText(String(rule.cssText || ""));
+          if (declarations.length === 0) {
+            Array.from(rule.style || []).forEach((property) => {
+              const value = rule.style?.getPropertyValue(property);
+              if (!property || !value) return;
+              declarations.push({
+                property,
+                value,
+                important: rule.style?.getPropertyPriority(property) === "important",
+              });
             });
-          });
+          }
           if (declarations.length > 0) {
             results.push({
               selector,
