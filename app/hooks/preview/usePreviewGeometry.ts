@@ -14,7 +14,10 @@ type UsePreviewGeometryOptions = {
   applyPreviewLocalCssPatchAtPath: (
     elementPath: number[],
     styles: Partial<React.CSSProperties>,
-    options?: { syncSelectedElement?: boolean },
+    options?: {
+      syncSelectedElement?: boolean;
+      commitMode?: "move" | "fallback";
+    },
   ) => Promise<void>;
   applyPreviewStyleUpdateAtPath: (
     elementPath: number[],
@@ -319,6 +322,7 @@ export const usePreviewGeometry = ({
         }
         void applyPreviewLocalCssPatchAtPath(drag.path, stylePatch, {
           syncSelectedElement: true,
+          commitMode: "move",
         });
       };
 

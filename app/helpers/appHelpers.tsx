@@ -3556,6 +3556,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   var __previewSuppressClicksUntil = 0;
   var __previewViewportOrientation = 'landscape';
   var __previewOrientationAngle = 90;
+  var __previewMoveDraftRaf = 0;
+  var __previewMoveDraftPayload = null;
   var __previewEditableTags = {
     p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
     a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
@@ -3657,6 +3659,38 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
       window.parent.postMessage(message, '*');
     } catch (e) {}
+  }
+
+  function schedulePreviewMoveDraft(path, styles) {
+    if (!path || !path.length || !styles) return;
+    __previewMoveDraftPayload = {
+      path: path.slice ? path.slice() : path,
+      styles: styles
+    };
+    if (__previewMoveDraftRaf) return;
+    __previewMoveDraftRaf = requestAnimationFrame(function() {
+      __previewMoveDraftRaf = 0;
+      var payload = __previewMoveDraftPayload;
+      __previewMoveDraftPayload = null;
+      if (!payload) return;
+      postPreviewMessage('PREVIEW_MOVE_DRAFT', payload);
+    });
+  }
+
+  function toPreviewPresentationLength(pxValue) {
+    var numeric = Number(pxValue);
+    if (!isFinite(numeric)) return '0rem';
+    var rootFontSize = 1;
+    try {
+      var computedRoot = window.getComputedStyle(document.documentElement);
+      var parsedRoot = parseFloat(computedRoot && computedRoot.fontSize ? computedRoot.fontSize : '1');
+      if (isFinite(parsedRoot) && parsedRoot > 0) {
+        rootFontSize = parsedRoot;
+      }
+    } catch (e) {}
+    var remValue = numeric / rootFontSize;
+    var rounded = Math.round(remValue * 1000) / 1000;
+    return String(rounded) + 'rem';
   }
 
   function clearPreviewSelection() {
@@ -5117,11 +5151,6 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
       if (!resizeDrag.hasDragged) {
         resizeDrag.hasDragged = true;
-        resizeDrag.element.style.position = 'absolute';
-        resizeDrag.element.style.left = Math.round(resizeDrag.startLeft) + 'px';
-        resizeDrag.element.style.top = Math.round(resizeDrag.startTop) + 'px';
-        resizeDrag.element.style.width = Math.round(resizeDrag.startWidth) + 'px';
-        resizeDrag.element.style.height = Math.round(resizeDrag.startHeight) + 'px';
       }
       var direction = String(resizeDrag.direction || '');
       var nextWidth = resizeDrag.startWidth;
@@ -5146,10 +5175,13 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       resizeDrag.latestHeight = nextHeight;
       resizeDrag.latestLeft = nextLeft;
       resizeDrag.latestTop = nextTop;
-      resizeDrag.element.style.width = Math.round(nextWidth) + 'px';
-      resizeDrag.element.style.height = Math.round(nextHeight) + 'px';
-      resizeDrag.element.style.left = Math.round(nextLeft) + 'px';
-      resizeDrag.element.style.top = Math.round(nextTop) + 'px';
+      schedulePreviewMoveDraft(resizeDrag.path, {
+        position: 'absolute',
+        left: toPreviewPresentationLength(Math.round(nextLeft)),
+        top: toPreviewPresentationLength(Math.round(nextTop)),
+        width: toPreviewPresentationLength(Math.round(nextWidth)),
+        height: toPreviewPresentationLength(Math.round(nextHeight))
+      });
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
       event.stopPropagation();
       if (event.cancelable) event.preventDefault();
@@ -5164,13 +5196,6 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
       if (!drag.hasDragged) {
         drag.hasDragged = true;
-        drag.element.style.position = 'absolute';
-        drag.element.style.left = Math.round(drag.startLeft) + 'px';
-        drag.element.style.top = Math.round(drag.startTop) + 'px';
-        if (drag.lockSize) {
-          drag.element.style.width = Math.round(drag.width) + 'px';
-          drag.element.style.height = Math.round(drag.height) + 'px';
-        }
       }
       var maxLeft = Math.max(0, (drag.parent.clientWidth || drag.parentRect.width) - drag.width);
       var maxTop = Math.max(0, (drag.parent.clientHeight || drag.parentRect.height) - drag.height);
@@ -5178,8 +5203,16 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       var nextTop = Math.max(0, Math.min(maxTop, drag.startTop + dy));
       drag.latestLeft = nextLeft;
       drag.latestTop = nextTop;
-      drag.element.style.left = Math.round(nextLeft) + 'px';
-      drag.element.style.top = Math.round(nextTop) + 'px';
+      var draftMoveStyles = {
+        position: 'absolute',
+        left: toPreviewPresentationLength(Math.round(nextLeft)),
+        top: toPreviewPresentationLength(Math.round(nextTop))
+      };
+      if (drag.lockSize) {
+        draftMoveStyles.width = toPreviewPresentationLength(Math.round(drag.width));
+        draftMoveStyles.height = toPreviewPresentationLength(Math.round(drag.height));
+      }
+      schedulePreviewMoveDraft(drag.path, draftMoveStyles);
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
       event.stopPropagation();
       if (event.cancelable) event.preventDefault();
@@ -5247,10 +5280,10 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
           path: resizeDrag.path,
           styles: {
             position: 'absolute',
-            left: Math.round(resizeDrag.latestLeft) + 'px',
-            top: Math.round(resizeDrag.latestTop) + 'px',
-            width: Math.round(resizeDrag.latestWidth) + 'px',
-            height: Math.round(resizeDrag.latestHeight) + 'px'
+            left: toPreviewPresentationLength(Math.round(resizeDrag.latestLeft)),
+            top: toPreviewPresentationLength(Math.round(resizeDrag.latestTop)),
+            width: toPreviewPresentationLength(Math.round(resizeDrag.latestWidth)),
+            height: toPreviewPresentationLength(Math.round(resizeDrag.latestHeight))
           }
         });
       }
@@ -5272,12 +5305,12 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (drag.hasDragged && drag.path && drag.path.length) {
         var moveStyles = {
           position: 'absolute',
-          left: Math.round(drag.latestLeft) + 'px',
-          top: Math.round(drag.latestTop) + 'px'
+          left: toPreviewPresentationLength(Math.round(drag.latestLeft)),
+          top: toPreviewPresentationLength(Math.round(drag.latestTop))
         };
         if (drag.lockSize) {
-          moveStyles.width = Math.round(drag.width) + 'px';
-          moveStyles.height = Math.round(drag.height) + 'px';
+          moveStyles.width = toPreviewPresentationLength(Math.round(drag.width));
+          moveStyles.height = toPreviewPresentationLength(Math.round(drag.height));
         }
         postPreviewMessage('PREVIEW_MOVE_COMMIT', {
           path: drag.path,

@@ -96,7 +96,10 @@ type UsePreviewFrameMessagesOptions = {
   applyPreviewLocalCssPatchAtPath: (
     elementPath: number[],
     styles: Partial<React.CSSProperties>,
-    options?: { syncSelectedElement?: boolean },
+    options?: {
+      syncSelectedElement?: boolean;
+      commitMode?: "move" | "move-draft" | "fallback";
+    },
   ) => Promise<void>;
   closePendingPageSwitchPrompt: () => void;
   explorerSelectionLockRef: MutableRefObject<string | null>;
@@ -555,6 +558,26 @@ export const usePreviewFrameMessages = ({
         ) as Partial<React.CSSProperties>;
         void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
+          commitMode: "move",
+        });
+        return;
+      }
+
+      if (payload.type === "PREVIEW_MOVE_DRAFT") {
+        const nextPath = normalizePreviewPath(payload.path);
+        if (!nextPath) return;
+        if (!payload.styles || typeof payload.styles !== "object") return;
+        const stylePatch = normalizePresentationStylePatch(
+          Object.entries(payload.styles)
+            .map(([key, value]) => [key, value == null ? "" : String(value)])
+            .reduce<Record<string, string>>((acc, [key, value]) => {
+              acc[key] = value;
+              return acc;
+            }, {}),
+        ) as Partial<React.CSSProperties>;
+        void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
+          syncSelectedElement: true,
+          commitMode: "move-draft",
         });
         return;
       }
