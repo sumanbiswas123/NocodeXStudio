@@ -8,9 +8,11 @@ import {
 } from "../../runtime/projectFilesystem";
 import {
   getParentPath,
+  isExternalUrl,
   normalizePath,
   readElementByPath,
   relativePathBetweenVirtualFiles,
+  resolveProjectRelativePath,
 } from "../../helpers/appHelpers";
 import {
   extractAssetUrlFromCssValue,
@@ -192,10 +194,58 @@ export const usePreviewElementActions = ({
         .replace(/[^a-z0-9-_]+/g, "-")
         .replace(/^-+|-+$/g, "") || "asset";
     const uniqueFileName = `${safeBaseName}-${Date.now()}${extension}`;
-    const targetAbsolutePath = `${htmlDirAbsolute}/${uniqueFileName}`;
-    const targetRelativePath = htmlDirRelative
-      ? `${htmlDirRelative}/${uniqueFileName}`
-      : uniqueFileName;
+    const activeMatchedAssetRule = previewSelectedMatchedCssRules.find((rule) =>
+      rule.declarations.some((declaration) => {
+        const property = String(declaration.property || "").trim().toLowerCase();
+        if (
+          declaration.active === false ||
+          (property !== "background-image" && property !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrlFromCssValue(declaration.value));
+      }),
+    );
+    const activeMatchedAssetDeclaration =
+      activeMatchedAssetRule?.declarations.find((declaration) => {
+        const property = String(declaration.property || "").trim().toLowerCase();
+        if (
+          declaration.active === false ||
+          (property !== "background-image" && property !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrlFromCssValue(declaration.value));
+      }) || null;
+    const selectedElementTag = String(previewSelectedElement?.type || "")
+      .trim()
+      .toLowerCase();
+    const isDirectElementAssetTag =
+      selectedElementTag === "img" ||
+      selectedElementTag === "source" ||
+      selectedElementTag === "video";
+    const directElementSource = String(previewSelectedElement?.src || "").trim();
+    const directElementResolvedPath =
+      isDirectElementAssetTag &&
+      directElementSource &&
+      !isExternalUrl(directElementSource)
+        ? resolveProjectRelativePath(selectedPreviewHtml, directElementSource) ||
+          (directElementSource.startsWith("/")
+            ? directElementSource.replace(/^\/+/, "")
+            : directElementSource)
+        : null;
+    const preferredAssetRelativeDir =
+      isDirectElementAssetTag && directElementResolvedPath
+        ? getParentPath(directElementResolvedPath)
+        : null;
+    const targetRelativePath = preferredAssetRelativeDir
+      ? `${preferredAssetRelativeDir}/${uniqueFileName}`
+      : htmlDirRelative
+        ? `${htmlDirRelative}/${uniqueFileName}`
+        : uniqueFileName;
+    const targetAbsolutePath = filePathIndexRef.current[targetRelativePath]
+      ? normalizePath(filePathIndexRef.current[targetRelativePath])
+      : `${htmlDirAbsolute}/${targetRelativePath.slice(htmlDirRelative ? `${htmlDirRelative}/`.length : 0)}`;
 
     await ensureDirectoryForFile(targetAbsolutePath);
     try {
@@ -236,38 +286,8 @@ export const usePreviewElementActions = ({
       previewSelectedPath,
       previewSelectedElementSrc: previewSelectedElement?.src || "",
       matchedRuleCount: previewSelectedMatchedCssRules.length,
+      directElementResolvedPath: directElementResolvedPath || "",
     });
-
-    const activeMatchedAssetRule = previewSelectedMatchedCssRules.find((rule) =>
-      rule.declarations.some((declaration) => {
-        const property = String(declaration.property || "").trim().toLowerCase();
-        if (
-          declaration.active === false ||
-          (property !== "background-image" && property !== "background")
-        ) {
-          return false;
-        }
-        return Boolean(extractAssetUrlFromCssValue(declaration.value));
-      }),
-    );
-    const activeMatchedAssetDeclaration =
-      activeMatchedAssetRule?.declarations.find((declaration) => {
-        const property = String(declaration.property || "").trim().toLowerCase();
-        if (
-          declaration.active === false ||
-          (property !== "background-image" && property !== "background")
-        ) {
-          return false;
-        }
-        return Boolean(extractAssetUrlFromCssValue(declaration.value));
-      }) || null;
-    const selectedElementTag = String(previewSelectedElement?.type || "")
-      .trim()
-      .toLowerCase();
-    const isDirectElementAssetTag =
-      selectedElementTag === "img" ||
-      selectedElementTag === "source" ||
-      selectedElementTag === "video";
 
     if (
       activeMatchedAssetRule &&
@@ -317,11 +337,15 @@ export const usePreviewElementActions = ({
       return true;
     }
 
+    const htmlRelativeAssetPath =
+      relativePathBetweenVirtualFiles(selectedPreviewHtml, targetRelativePath) ||
+      uniqueFileName;
+
     const nextLiveSrc =
       typeof binaryAssetUrlCacheRef.current[targetRelativePath] === "string" &&
       binaryAssetUrlCacheRef.current[targetRelativePath].length > 0
         ? binaryAssetUrlCacheRef.current[targetRelativePath]
-        : resolvePreviewAssetUrl(uniqueFileName) || uniqueFileName;
+        : resolvePreviewAssetUrl(htmlRelativeAssetPath) || htmlRelativeAssetPath;
 
     debugPreviewAssetReplace("handleReplacePreviewAsset:direct-element-path", {
       uniqueFileName,
@@ -333,7 +357,7 @@ export const usePreviewElementActions = ({
     });
 
     await applyPreviewContentUpdate({
-      src: uniqueFileName,
+      src: isDirectElementAssetTag ? htmlRelativeAssetPath : uniqueFileName,
       liveSrc: nextLiveSrc,
     });
     return true;

@@ -10,6 +10,20 @@ import {
   toCssPropertyName,
 } from "./appHelpers";
 
+const isDomElement = (value: unknown): value is Element =>
+  Boolean(value) &&
+  typeof value === "object" &&
+  (value as Element).nodeType === 1 &&
+  typeof (value as Element).getAttribute === "function";
+
+const isHtmlElementLike = (value: unknown): value is HTMLElement =>
+  isDomElement(value) &&
+  typeof (value as HTMLElement).style !== "undefined" &&
+  typeof (value as HTMLElement).setAttribute === "function";
+
+const getElementTagName = (value: unknown) =>
+  isDomElement(value) ? String(value.tagName || "").toLowerCase() : "";
+
 const appendPreviewCacheBust = (assetUrl: string, token: string | number) => {
   const url = String(assetUrl || "").trim();
   const cacheToken = String(token || "").trim();
@@ -308,27 +322,27 @@ export const applyPreviewContentUpdate = async ({
   if (typeof data.html === "string") {
     const nextHtml = data.html;
     const currentHtml =
-      target instanceof HTMLElement
+      isHtmlElementLike(target)
         ? target.innerHTML
-        : liveTarget instanceof HTMLElement
+        : isHtmlElementLike(liveTarget)
           ? liveTarget.innerHTML
           : "";
     if (currentHtml !== nextHtml) {
-      if (target instanceof HTMLElement) {
+      if (isHtmlElementLike(target)) {
         target.innerHTML = nextHtml;
       }
-      if (liveTarget instanceof HTMLElement) {
+      if (isHtmlElementLike(liveTarget)) {
         liveTarget.innerHTML = nextHtml;
       }
       didChangeContent = true;
     }
     if (didChangeContent) {
       const baselineElement =
-        (target instanceof HTMLElement && target) ||
-        (liveTarget instanceof HTMLElement && liveTarget) ||
+        (isHtmlElementLike(target) && target) ||
+        (isHtmlElementLike(liveTarget) && liveTarget) ||
         null;
       nextResolvedHtml =
-        baselineElement instanceof HTMLElement
+        isHtmlElementLike(baselineElement)
           ? baselineElement.innerHTML
           : nextHtml;
       nextResolvedContent = baselineElement
@@ -373,26 +387,59 @@ export const applyPreviewContentUpdate = async ({
           sourceValue,
         previewAssetReloadToken,
       );
-    const lowerTag =
-      target instanceof HTMLElement
-        ? target.tagName.toLowerCase()
-        : liveTarget instanceof HTMLElement
-          ? liveTarget.tagName.toLowerCase()
-          : "";
+    const lowerTag = getElementTagName(target) || getElementTagName(liveTarget);
     const isDirectImageTag =
       lowerTag === "img" || lowerTag === "source" || lowerTag === "video";
     if (isDirectImageTag) {
-      if (target instanceof HTMLElement) {
+      if (isHtmlElementLike(target)) {
         const previousSrc = target.getAttribute("src") || "";
         if (previousSrc !== sourceValue) {
           target.setAttribute("src", sourceValue);
+          if (lowerTag === "img") {
+            (target as HTMLImageElement).src = sourceValue;
+            if (target.hasAttribute("srcset")) {
+              target.removeAttribute("srcset");
+            }
+          } else if (lowerTag === "source") {
+            (target as HTMLSourceElement).src = sourceValue;
+            if (target.hasAttribute("srcset")) {
+              target.removeAttribute("srcset");
+            }
+          } else if (lowerTag === "video") {
+            target.setAttribute("src", sourceValue);
+            (target as HTMLVideoElement).load?.();
+          }
           didChangeSrc = true;
         }
       }
-      if (liveTarget instanceof HTMLElement) {
+      if (isHtmlElementLike(liveTarget)) {
         const previousSrc = liveTarget.getAttribute("src") || "";
         if (previousSrc !== liveResolvedSource) {
           liveTarget.setAttribute("src", liveResolvedSource);
+          if (lowerTag === "img") {
+            (liveTarget as HTMLImageElement).src = liveResolvedSource;
+            if (liveTarget.hasAttribute("srcset")) {
+              liveTarget.removeAttribute("srcset");
+            }
+            (liveTarget as HTMLImageElement).loading = "eager";
+            (liveTarget as HTMLImageElement).decode?.().catch(() => undefined);
+          } else if (lowerTag === "source") {
+            (liveTarget as HTMLSourceElement).src = liveResolvedSource;
+            if (liveTarget.hasAttribute("srcset")) {
+              liveTarget.removeAttribute("srcset");
+            }
+            const pictureParent = liveTarget.parentElement;
+            if (isDomElement(pictureParent) && getElementTagName(pictureParent) === "picture") {
+              const img = pictureParent.querySelector("img");
+              if (isDomElement(img) && getElementTagName(img) === "img") {
+                (img as HTMLImageElement).src = liveResolvedSource;
+                img.removeAttribute("srcset");
+              }
+            }
+          } else if (lowerTag === "video") {
+            liveTarget.setAttribute("src", liveResolvedSource);
+            (liveTarget as HTMLVideoElement).load?.();
+          }
           didChangeSrc = true;
         }
       }
@@ -404,14 +451,14 @@ export const applyPreviewContentUpdate = async ({
             ? sourceValue
             : `url("${sourceValue}")`;
       if (nextBackground) {
-        if (target instanceof HTMLElement) {
+        if (isHtmlElementLike(target)) {
           const previous = target.style.getPropertyValue("background-image");
           if (previous !== nextBackground) {
             target.style.setProperty("background-image", nextBackground);
             didChangeSrc = true;
           }
         }
-        if (liveTarget instanceof HTMLElement) {
+        if (isHtmlElementLike(liveTarget)) {
           const liveBackground =
             sourceValue.length === 0
               ? ""
@@ -436,14 +483,14 @@ export const applyPreviewContentUpdate = async ({
           }
         }
       } else {
-        if (target instanceof HTMLElement) {
+        if (isHtmlElementLike(target)) {
           const previous = target.style.getPropertyValue("background-image");
           if (previous) {
             target.style.removeProperty("background-image");
             didChangeSrc = true;
           }
         }
-        if (liveTarget instanceof HTMLElement) {
+        if (isHtmlElementLike(liveTarget)) {
           const previous = liveTarget.style.getPropertyValue("background-image");
           if (previous) {
             liveTarget.style.removeProperty("background-image");
@@ -455,14 +502,14 @@ export const applyPreviewContentUpdate = async ({
   }
 
   if (typeof data.href === "string") {
-    if (target instanceof HTMLElement) {
+    if (isHtmlElementLike(target)) {
       const previousHref = target.getAttribute("href") || "";
       if (previousHref !== data.href) {
         target.setAttribute("href", data.href);
         didChangeHref = true;
       }
     }
-    if (liveTarget instanceof HTMLElement) {
+    if (isHtmlElementLike(liveTarget)) {
       const previousHref = liveTarget.getAttribute("href") || "";
       if (previousHref !== data.href) {
         liveTarget.setAttribute("href", data.href);

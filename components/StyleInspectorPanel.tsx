@@ -1264,6 +1264,40 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         ruleSource: undefined,
       };
     }
+    const matchedAssetRule = matchedCssRules.find((rule) =>
+      rule.declarations.some((declaration) => {
+        const normalizedProperty = normalizeKey(declaration.property);
+        if (
+          declaration.active === false ||
+          (normalizedProperty !== "background-image" &&
+            normalizedProperty !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrl(declaration.value));
+      }),
+    );
+    const matchedAssetDeclaration =
+      matchedAssetRule?.declarations.find((declaration) => {
+        const normalizedProperty = normalizeKey(declaration.property);
+        if (
+          declaration.active === false ||
+          (normalizedProperty !== "background-image" &&
+            normalizedProperty !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrl(declaration.value));
+      }) || null;
+    const matchedAssetSource = matchedAssetDeclaration
+      ? extractAssetUrl(matchedAssetDeclaration.value)
+      : "";
+    if (matchedAssetSource) {
+      return {
+        source: matchedAssetSource,
+        ruleSource: matchedAssetRule?.source,
+      };
+    }
     const backgroundImage =
       typeof element.styles?.backgroundImage === "string"
         ? String(element.styles.backgroundImage)
@@ -1281,18 +1315,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         : "",
     );
     if (computedSource) {
-      const matchedRule = matchedCssRules.find((rule) =>
-        rule.declarations.some(
-          (declaration) =>
-            declaration.active !== false &&
-            (normalizeKey(declaration.property) === "background-image" ||
-              normalizeKey(declaration.property) === "background") &&
-            extractAssetUrl(declaration.value),
-        ),
-      );
       return {
         source: computedSource,
-        ruleSource: matchedRule?.source,
+        ruleSource: matchedAssetRule?.source,
       };
     }
     if (typeof element.src === "string" && element.src.trim()) {
