@@ -30,6 +30,7 @@ type DeviceFrameToolbarProps = {
   runRedo: () => void;
   runUndo: () => void;
   screenshotCaptureBusy: boolean;
+  handleTabletRotateToConfiguredOrientation: () => void;
   setDeviceCtxMenu: React.Dispatch<
     React.SetStateAction<{
       type: "mobile" | "desktop" | "tablet";
@@ -71,6 +72,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
   runRedo,
   runUndo,
   screenshotCaptureBusy,
+  handleTabletRotateToConfiguredOrientation,
   setDeviceCtxMenu,
   setDeviceMode,
   setFrameZoom,
@@ -113,10 +115,7 @@ const DeviceFrameToolbar: React.FC<DeviceFrameToolbarProps> = ({
           <button
             className={`device-toolbar-icon-button ${deviceMode === "tablet" ? "device-toolbar-icon-button--active" : ""}`}
             onClick={() => {
-              setDeviceMode("tablet");
-              setTabletOrientation((prev) =>
-                prev === "landscape" ? "portrait" : "landscape",
-              );
+              handleTabletRotateToConfiguredOrientation();
             }}
             onContextMenu={(e) => {
               e.preventDefault();

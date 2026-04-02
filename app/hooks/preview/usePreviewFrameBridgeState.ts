@@ -5,6 +5,7 @@ import {
   handlePreviewFrameLoad as handlePreviewFrameLoadHelper,
   injectMountedPreviewBridge as injectMountedPreviewBridgeHelper,
   postPreviewFrameMessage,
+  postPreviewOrientationToFrame,
   postPreviewModeToFrame as postPreviewModeToFrameHelper,
   schedulePreviewModeSync,
 } from "../../runtime/previewFrameBridge";
@@ -68,6 +69,7 @@ type UsePreviewFrameBridgeStateOptions = {
     source: PreviewSyncSource,
     options?: { skipUnsavedPrompt?: boolean },
   ) => void;
+  tabletOrientation: "portrait" | "landscape";
   toolboxDragTypeRef: React.MutableRefObject<string>;
 };
 
@@ -129,6 +131,7 @@ export const usePreviewFrameBridgeState = ({
   shouldProcessPreviewPageSignal,
   sidebarToolMode,
   syncPreviewActiveFile,
+  tabletOrientation,
   toolboxDragTypeRef,
 }: UsePreviewFrameBridgeStateOptions): UsePreviewFrameBridgeStateResult => {
   useEffect(() => {
@@ -388,6 +391,13 @@ export const usePreviewFrameBridgeState = ({
     [previewFrameRef],
   );
 
+  const syncPreviewOrientationToFrame = useCallback(() => {
+    postPreviewOrientationToFrame({
+      frame: previewFrameRef.current,
+      tabletOrientation,
+    });
+  }, [previewFrameRef, tabletOrientation]);
+
   const handlePreviewFrameLoad = useCallback(
     (event: React.SyntheticEvent<HTMLIFrameElement>) => {
       handlePreviewFrameLoadHelper({
@@ -492,18 +502,25 @@ export const usePreviewFrameBridgeState = ({
       injectMountedPreviewBridge(previewFrameRef.current);
     }
     postPreviewModeToFrame();
+    syncPreviewOrientationToFrame();
     const timeoutIds = schedulePreviewModeSync(postPreviewModeToFrame, [
       0, 120, 360,
     ]);
+    const orientationTimeoutIds = [0, 120, 360].map((delay) =>
+      window.setTimeout(syncPreviewOrientationToFrame, delay),
+    );
     return () => {
       clearPreviewModeSync(timeoutIds);
+      orientationTimeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
     };
   }, [
     injectMountedPreviewBridge,
     postPreviewModeToFrame,
+    previewFrameLoadNonce,
     previewFrameRef,
     previewMode,
     selectedPreviewSrc,
+    syncPreviewOrientationToFrame,
   ]);
 
   return {

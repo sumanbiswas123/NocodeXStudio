@@ -48,6 +48,7 @@ type UseMainStageViewModelOptions = {
   runRedo: () => void;
   runUndo: () => void;
   screenshotCaptureBusy: boolean;
+  handleTabletRotateToConfiguredOrientation: () => void;
   setDeviceCtxMenu: React.Dispatch<
     React.SetStateAction<{
       x: number;
@@ -162,6 +163,7 @@ export const useMainStageViewModel = ({
   runRedo,
   runUndo,
   screenshotCaptureBusy,
+  handleTabletRotateToConfiguredOrientation,
   setDeviceCtxMenu,
   setDeviceMode,
   setFrameZoom,
@@ -272,6 +274,7 @@ export const useMainStageViewModel = ({
           runRedo,
           runUndo,
           screenshotCaptureBusy,
+          handleTabletRotateToConfiguredOrientation,
           setDeviceCtxMenu,
           setDeviceMode,
           setFrameZoom,
@@ -371,6 +374,7 @@ export const useMainStageViewModel = ({
       runRedo,
       runUndo,
       screenshotCaptureBusy,
+      handleTabletRotateToConfiguredOrientation,
       setDeviceCtxMenu,
       setDeviceMode,
       setFrameZoom,

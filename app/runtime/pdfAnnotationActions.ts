@@ -50,6 +50,7 @@ type RunPdfAnnotationMappingArgs = {
     fileName: string,
     records: PdfAnnotationUiRecord[],
   ) => void;
+  shouldCancel?: () => boolean;
 };
 
 export const runPdfAnnotationMapping = async ({
@@ -62,8 +63,16 @@ export const runPdfAnnotationMapping = async ({
   dispatch,
   readPdfAnnotationCache,
   writePdfAnnotationCache,
+  shouldCancel,
 }: RunPdfAnnotationMappingArgs) => {
   if (!projectPath || isPdfAnnotationLoading) return;
+  const isCancelled = () => shouldCancel?.() === true;
+  const throwIfCancelled = () => {
+    if (!isCancelled()) return;
+    const error = new Error("PDF annotation mapping stopped.");
+    error.name = "PdfAnnotationMappingCancelled";
+    throw error;
+  };
   const normalizedPdfPath = normalizePath(pdfPath);
   const normalizedProject = normalizePath(projectPath);
   dispatch(clearProcessingLogs());
@@ -98,14 +107,17 @@ export const runPdfAnnotationMapping = async ({
   dispatch(setFocusedAnnotation(null));
   dispatch(setRecords([]));
   try {
+    throwIfCancelled();
     appendPdfAnnotationLog(dispatch, "Reading PDF file into memory.");
     const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
       normalizedPdfPath,
     );
+    throwIfCancelled();
     const pdfData = toByteArray(binaryData);
     appendPdfAnnotationLog(dispatch, "Preparing PDF data for extraction.");
     let preExtractedAnnotations: PdfAnnotationRecord[] | null = null;
     try {
+      throwIfCancelled();
       appendPdfAnnotationLog(dispatch, "Running background extractor script.");
       const appRoot = normalizePath(String((window as any).NL_PATH || ""));
       const workerScriptPath = appRoot
@@ -131,11 +143,13 @@ export const runPdfAnnotationMapping = async ({
         );
         const command = `${nodeExecutable} "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
         const execResult = await (Neutralino as any).os.execCommand(command);
+        throwIfCancelled();
         if ((execResult?.exitCode ?? 1) === 0) {
           appendPdfAnnotationLog(dispatch, "Parsing extractor output.");
           const workerRaw = await (Neutralino as any).filesystem.readFile(
             workerOutputPath,
           );
+          throwIfCancelled();
           const parsed = JSON.parse(String(workerRaw || "{}"));
           if (Array.isArray(parsed?.annotations)) {
             preExtractedAnnotations = parsed.annotations;
@@ -165,6 +179,7 @@ export const runPdfAnnotationMapping = async ({
       );
       preExtractedAnnotations = null;
     }
+    throwIfCancelled();
     appendPdfAnnotationLog(dispatch, "Mapping annotations to project files.");
     const details = await buildMappedPdfAnnotations({
       pdfData,
@@ -181,6 +196,7 @@ export const runPdfAnnotationMapping = async ({
         return copy.buffer;
       },
     });
+    throwIfCancelled();
     const fileName =
       normalizePath(normalizedPdfPath).split("/").filter(Boolean).slice(-1)[0] ||
       normalizedPdfPath;
@@ -214,6 +230,10 @@ export const runPdfAnnotationMapping = async ({
       appendPdfAnnotationLog(dispatch, "Debug export failed (non-blocking).", "warn");
     }
   } catch (error) {
+    if ((error as Error | undefined)?.name === "PdfAnnotationMappingCancelled") {
+      appendPdfAnnotationLog(dispatch, "PDF import stopped.", "warn");
+      return;
+    }
     console.error("Failed to analyze annotated PDF:", error);
     dispatch(setRecords([]));
     dispatch(setClassifierMetrics(null));
@@ -233,7 +253,9 @@ export const runPdfAnnotationMapping = async ({
     );
   } finally {
     dispatch(setIsLoading(false));
-    appendPdfAnnotationLog(dispatch, "Processing finished.");
+    if (!isCancelled()) {
+      appendPdfAnnotationLog(dispatch, "Processing finished.");
+    }
   }
 };
 

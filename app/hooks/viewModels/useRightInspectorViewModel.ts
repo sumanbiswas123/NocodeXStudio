@@ -32,6 +32,7 @@ type UseRightInspectorViewModelOptions = {
   togglePdfAnnotations: () => void;
   handleOpenPdfAnnotationsPicker: () => void;
   handleRefreshPdfAnnotationMapping: () => void;
+  handleCancelPdfAnnotationMapping: () => void;
   handleJumpToPdfAnnotation: (annotation: PdfAnnotationUiRecord) => void;
   handleImmediatePreviewStyle: (styles: Partial<React.CSSProperties>) => void;
   handlePreviewContentUpdateStable: (data: {
@@ -82,6 +83,7 @@ export const useRightInspectorViewModel = ({
   togglePdfAnnotations,
   handleOpenPdfAnnotationsPicker,
   handleRefreshPdfAnnotationMapping,
+  handleCancelPdfAnnotationMapping,
   handleJumpToPdfAnnotation,
   handleImmediatePreviewStyle,
   handlePreviewContentUpdateStable,
@@ -131,6 +133,7 @@ export const useRightInspectorViewModel = ({
         onTogglePdfAnnotations: togglePdfAnnotations,
         onOpenPdfAnnotationsPicker: handleOpenPdfAnnotationsPicker,
         onRefreshPdfAnnotationMapping: handleRefreshPdfAnnotationMapping,
+        onCancelPdfAnnotationMapping: handleCancelPdfAnnotationMapping,
         onJumpToPdfAnnotation: handleJumpToPdfAnnotation,
         onImmediatePreviewStyle: handleImmediatePreviewStyle,
         onPreviewContentUpdate: handlePreviewContentUpdateStable,
@@ -171,6 +174,7 @@ export const useRightInspectorViewModel = ({
       togglePdfAnnotations,
       handleOpenPdfAnnotationsPicker,
       handleRefreshPdfAnnotationMapping,
+      handleCancelPdfAnnotationMapping,
       handleJumpToPdfAnnotation,
       handleImmediatePreviewStyle,
       handlePreviewContentUpdateStable,

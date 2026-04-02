@@ -1,5 +1,5 @@
 import React from "react";
-import { PanelRightClose, RotateCw, FileText, Upload } from "lucide-react";
+import { PanelRightClose, RotateCw, FileText, Upload, Square } from "lucide-react";
 import StyleInspectorPanel from "../../components/StyleInspectorPanel";
 import PdfAnnotationsOverlay from "../../src/components/PdfAnnotationsOverlay";
 import type { VirtualElement } from "../../types";
@@ -46,6 +46,7 @@ type RightInspectorShellProps = {
     onTogglePdfAnnotations: () => void;
     onOpenPdfAnnotationsPicker: () => void;
     onRefreshPdfAnnotationMapping: () => void;
+    onCancelPdfAnnotationMapping: () => void;
     onJumpToPdfAnnotation: (annotation: PdfAnnotationUiRecord) => void;
     onImmediatePreviewStyle: (
       styles: Partial<React.CSSProperties>,
@@ -112,6 +113,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
     onTogglePdfAnnotations,
     onOpenPdfAnnotationsPicker,
     onRefreshPdfAnnotationMapping,
+    onCancelPdfAnnotationMapping,
     onJumpToPdfAnnotation,
     onImmediatePreviewStyle,
     onPreviewContentUpdate,
@@ -267,6 +269,44 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
                 theme={theme}
                 onJumpToAnnotation={onJumpToPdfAnnotation}
                 embedded
+                footer={
+                  isPdfAnnotationLoading ? (
+                    <div
+                      style={{
+                        padding: "12px 14px",
+                        display: "flex",
+                        justifyContent: "center",
+                        background:
+                          theme === "dark"
+                            ? "rgba(2,6,23,0.45)"
+                            : "rgba(255,255,255,0.82)",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="right-inspector-toolbar-button right-inspector-toolbar-button--icon"
+                        style={{
+                          minWidth: 120,
+                          gap: 8,
+                          borderColor:
+                            theme === "dark"
+                              ? "rgba(248,113,113,0.35)"
+                              : "rgba(220,38,38,0.18)",
+                          color: theme === "dark" ? "#fecaca" : "#b91c1c",
+                          background:
+                            theme === "dark"
+                              ? "rgba(127,29,29,0.18)"
+                              : "rgba(254,226,226,0.85)",
+                        }}
+                        onClick={onCancelPdfAnnotationMapping}
+                        title="Stop PDF import"
+                      >
+                        <Square size={14} />
+                        <span>Stop Import</span>
+                      </button>
+                    </div>
+                  ) : undefined
+                }
               />
             </div>
             {showStyleInspectorSection ? (

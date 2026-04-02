@@ -90,11 +90,14 @@ const App: React.FC = () => {
   // --- Redux Dispatch Setup ---
   const dispatch = useDispatch();
   const {
+    classifierMetrics: pdfAnnotationClassifierMetrics,
+    fileName: pdfAnnotationFileName,
     records: pdfAnnotationRecords,
     error: pdfAnnotationError,
     isOpen: isPdfAnnotationPanelOpen,
     isLoading: isPdfAnnotationLoading,
     focusedAnnotation: focusedPdfAnnotation,
+    sourcePath: pdfAnnotationSourcePath,
     typeFilter: pdfAnnotationTypeFilter,
     processingLogs: pdfAnnotationProcessingLogs,
   } = useSelector((state: RootState) => state.annotations);
@@ -340,6 +343,7 @@ const App: React.FC = () => {
     elementPath: number[];
     styles: Partial<React.CSSProperties>;
   } | null>(null);
+  const manualTabletRotateAtRef = useRef<number>(0);
   const previewLocalCssDraftPendingRef = useRef<{
     elementPath: number[];
     rule: PreviewMatchedRuleMutation;
@@ -995,6 +999,7 @@ const App: React.FC = () => {
     currentPreviewSlideId,
     filteredAnnotationsForCurrentSlide,
     focusedAnnotationForCurrentSlide,
+    handleCancelPdfAnnotationMapping,
     handleJumpToPdfAnnotation,
     handleOpenPdfAnnotationsPicker,
     handleRefreshPdfAnnotationMapping,
@@ -1002,6 +1007,10 @@ const App: React.FC = () => {
     isPopupAnnotation,
   } = usePdfAnnotationWorkflow({
     cacheKey: PDF_ANNOTATION_CACHE_KEY,
+    pdfAnnotationClassifierMetrics,
+    pdfAnnotationFileName,
+    pdfAnnotationSourcePath,
+    isPdfAnnotationPanelOpen,
     dispatch,
     filePathIndexRef,
     files,
@@ -1028,19 +1037,29 @@ const App: React.FC = () => {
     setSidebarToolMode,
   });
 
+  const handleTabletRotateToConfiguredOrientation = useCallback(() => {
+    manualTabletRotateAtRef.current = Date.now();
+    setDeviceMode("tablet");
+    setTabletOrientation((prev) =>
+      prev === "landscape" ? "portrait" : "landscape",
+    );
+  }, [
+    setDeviceMode,
+    setTabletOrientation,
+  ]);
+
   // --- NEW: Automatic Tablet Orientation Switching ---
   useEffect(() => {
     if (!selectedPreviewHtml) return;
+    if (Date.now() - manualTabletRotateAtRef.current < 1200) return;
     const pathParts = selectedPreviewHtml.toLowerCase().split(/[\\/]/);
     const relevantSegments = pathParts.slice(-2).join("/");
-    const nextOrientation =
+    const shouldForcePortrait =
       relevantSegments.includes("vertical") ||
-      relevantSegments.includes("portrait")
-        ? "portrait"
-        : "landscape";
+      relevantSegments.includes("portrait");
 
-    if (tabletOrientation !== nextOrientation) {
-      setTabletOrientation(nextOrientation);
+    if (shouldForcePortrait && tabletOrientation !== "portrait") {
+      setTabletOrientation("portrait");
     }
   }, [selectedPreviewHtml, tabletOrientation]);
   // ----------------------------------------------------
@@ -1092,6 +1111,7 @@ const App: React.FC = () => {
     shouldProcessPreviewPageSignal,
     sidebarToolMode,
     syncPreviewActiveFile,
+    tabletOrientation,
     toolboxDragTypeRef,
   });
   const persistPreviewHtmlContent = useCallback(
@@ -1602,6 +1622,7 @@ const App: React.FC = () => {
     runRedo,
     runUndo,
     screenshotCaptureBusy,
+    handleTabletRotateToConfiguredOrientation,
     setDeviceCtxMenu,
     setDeviceMode,
     setFrameZoom,
@@ -1678,6 +1699,7 @@ const App: React.FC = () => {
     togglePdfAnnotations: () => dispatch(setIsOpen(!isPdfAnnotationPanelOpen)),
     handleOpenPdfAnnotationsPicker,
     handleRefreshPdfAnnotationMapping,
+    handleCancelPdfAnnotationMapping,
     handleJumpToPdfAnnotation,
     handleImmediatePreviewStyle,
     handlePreviewContentUpdateStable,

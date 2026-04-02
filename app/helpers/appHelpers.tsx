@@ -3457,11 +3457,83 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   var __previewDrawDraft = null;
   var __previewDrawState = null;
   var __previewSuppressClicksUntil = 0;
+  var __previewViewportOrientation = 'landscape';
+  var __previewOrientationAngle = 90;
   var __previewEditableTags = {
     p: true, span: true, h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
     a: true, button: true, label: true, strong: true, em: true, small: true, b: true,
     i: true, u: true, li: true, td: true, th: true, blockquote: true, pre: true
   };
+
+  function createPreviewEvent(name) {
+    try {
+      return new Event(name);
+    } catch (e) {
+      if (!document || !document.createEvent) return null;
+      var legacyEvent = document.createEvent('Event');
+      legacyEvent.initEvent(name, true, true);
+      return legacyEvent;
+    }
+  }
+
+  function ensurePreviewOrientationShim() {
+    try {
+      Object.defineProperty(window, 'orientation', {
+        configurable: true,
+        enumerable: false,
+        get: function() {
+          return __previewOrientationAngle;
+        }
+      });
+    } catch (e) {}
+
+    try {
+      if (!window.__nxPreviewScreenOrientationShim) {
+        window.__nxPreviewScreenOrientationShim = {
+          angle: __previewOrientationAngle,
+          type: __previewViewportOrientation === 'portrait' ? 'portrait-primary' : 'landscape-primary'
+        };
+      }
+      if (window.screen) {
+        Object.defineProperty(window.screen, 'orientation', {
+          configurable: true,
+          enumerable: false,
+          get: function() {
+            return window.__nxPreviewScreenOrientationShim;
+          }
+        });
+      }
+    } catch (e) {}
+  }
+
+  function applyPreviewViewportOrientation(nextOrientation, nextAngle) {
+    __previewViewportOrientation = nextOrientation === 'portrait' ? 'portrait' : 'landscape';
+    __previewOrientationAngle = typeof nextAngle === 'number'
+      ? nextAngle
+      : (__previewViewportOrientation === 'portrait' ? 0 : 90);
+    try {
+      window.__nxPreviewViewportOrientation = __previewViewportOrientation;
+    } catch (e) {}
+    ensurePreviewOrientationShim();
+    try {
+      if (window.__nxPreviewScreenOrientationShim) {
+        window.__nxPreviewScreenOrientationShim.angle = __previewOrientationAngle;
+        window.__nxPreviewScreenOrientationShim.type =
+          __previewViewportOrientation === 'portrait' ? 'portrait-primary' : 'landscape-primary';
+      }
+    } catch (e) {}
+  }
+
+  function dispatchPreviewOrientationChange() {
+    var orientationEvent = createPreviewEvent('orientationchange');
+    if (orientationEvent) {
+      try { window.dispatchEvent(orientationEvent); } catch (e) {}
+    }
+    var resizeEvent = createPreviewEvent('resize');
+    if (resizeEvent) {
+      try { window.dispatchEvent(resizeEvent); } catch (e) {}
+    }
+  }
 
   function syncModeFromHost() {
     try {
@@ -4365,6 +4437,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
 
   try {
     syncModeFromHost();
+    applyPreviewViewportOrientation(window.innerHeight > window.innerWidth ? 'portrait' : 'landscape');
     if (!document.querySelector('style[data-preview-inline-editor]')) {
       var __previewStyle = document.createElement('style');
       __previewStyle.setAttribute('data-preview-inline-editor', 'true');
@@ -4402,6 +4475,11 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       }
     }
     if (!payload || !payload.type) return;
+    if (payload.type === 'PREVIEW_SET_VIEWPORT_ORIENTATION') {
+      applyPreviewViewportOrientation(payload.orientation, payload.angle);
+      dispatchPreviewOrientationChange();
+      return;
+    }
     if (payload.type === 'PREVIEW_SET_MODE') {
       var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
       __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);

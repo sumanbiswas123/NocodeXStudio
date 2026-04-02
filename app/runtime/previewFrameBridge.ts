@@ -54,6 +54,21 @@ export const postPreviewFrameMessage = (
   }
 };
 
+export const postPreviewOrientationToFrame = ({
+  frame,
+  tabletOrientation,
+}: {
+  frame: HTMLIFrameElement | null;
+  tabletOrientation: "portrait" | "landscape";
+}): void => {
+  const angle = tabletOrientation === "portrait" ? 0 : 90;
+  postPreviewFrameMessage(frame, {
+    type: "PREVIEW_SET_VIEWPORT_ORIENTATION",
+    orientation: tabletOrientation,
+    angle,
+  });
+};
+
 export const postPreviewModeToFrame = ({
   frame,
   previewMode,

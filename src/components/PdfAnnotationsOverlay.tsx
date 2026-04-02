@@ -175,12 +175,12 @@ const PdfAnnotationsOverlay: React.FC<PdfAnnotationsOverlayProps> = ({
           <div className={`px-4 py-10 text-center text-sm ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
             {isLoading ? (
               <div className="flex flex-col gap-4 text-left">
-                <div className="flex items-center justify-center gap-3">
+                <div className="flex items-center justify-center gap-3 min-w-0">
                   <div className="relative w-7 h-7">
                     <div className={`absolute inset-0 rounded-full border-2 ${theme === 'dark' ? 'border-slate-700' : 'border-slate-200'}`} />
                     <div className={`absolute inset-0 rounded-full border-2 border-t-transparent animate-spin ${theme === 'dark' ? 'border-cyan-400' : 'border-cyan-500'}`} />
                   </div>
-                  <div className={`text-[12px] ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                  <div className={`min-w-0 flex-1 text-[12px] leading-5 break-words [overflow-wrap:anywhere] ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
                     {processingLogs[processingLogs.length - 1]?.message || 'Building annotations...'}
                   </div>
                 </div>
@@ -210,7 +210,7 @@ const PdfAnnotationsOverlay: React.FC<PdfAnnotationsOverlayProps> = ({
                                   : 'bg-cyan-500'
                             }`}
                           />
-                          <div className={theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}>
+                          <div className={`min-w-0 flex-1 break-words [overflow-wrap:anywhere] ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
                             {entry.message}
                           </div>
                         </div>

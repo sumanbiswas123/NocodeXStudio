@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { MutableRefObject } from "react";
 import {
   setClassifierMetrics,
@@ -15,6 +15,7 @@ import {
   PdfAnnotationUiRecord,
 } from "../../helpers/pdfAnnotationHelpers";
 import {
+  appendPdfAnnotationLog,
   runPdfAnnotationMapping as runPdfAnnotationMappingHelper,
   selectPdfAndRunMapping,
 } from "../../runtime/pdfAnnotationActions";
@@ -26,6 +27,15 @@ type PreviewToolMode = "edit" | "inspect" | "draw" | "move";
 
 type UsePdfAnnotationWorkflowOptions = {
   cacheKey: string;
+  pdfAnnotationClassifierMetrics: {
+    precision: number;
+    recall: number;
+    f1: number;
+    support: number;
+  } | null;
+  pdfAnnotationFileName: string;
+  pdfAnnotationSourcePath: string | null;
+  isPdfAnnotationPanelOpen: boolean;
   dispatch: any;
   filePathIndexRef: MutableRefObject<Record<string, string>>;
   files: FileMap;
@@ -65,12 +75,17 @@ type UsePdfAnnotationWorkflowResult = {
   handleJumpToPdfAnnotation: (annotation: PdfAnnotationUiRecord) => void;
   handleOpenPdfAnnotationsPicker: () => Promise<void>;
   handleRefreshPdfAnnotationMapping: () => Promise<void>;
+  handleCancelPdfAnnotationMapping: () => void;
   hasPdfAnnotationsLoaded: boolean;
   isPopupAnnotation: (annotation: PdfAnnotationUiRecord) => boolean;
 };
 
 export const usePdfAnnotationWorkflow = ({
   cacheKey,
+  pdfAnnotationClassifierMetrics,
+  pdfAnnotationFileName,
+  pdfAnnotationSourcePath,
+  isPdfAnnotationPanelOpen,
   dispatch,
   filePathIndexRef,
   files,
@@ -96,6 +111,21 @@ export const usePdfAnnotationWorkflow = ({
   setSelectedId,
   setSidebarToolMode,
 }: UsePdfAnnotationWorkflowOptions): UsePdfAnnotationWorkflowResult => {
+  const pdfAnnotationRunIdRef = useRef(0);
+  const cancelledPdfAnnotationRunIdRef = useRef<number | null>(null);
+  const previousPdfAnnotationSnapshotRef = useRef<{
+    records: PdfAnnotationUiRecord[];
+    fileName: string;
+    sourcePath: string | null;
+    classifierMetrics: {
+      precision: number;
+      recall: number;
+      f1: number;
+      support: number;
+    } | null;
+    isOpen: boolean;
+    focusedAnnotation: PdfAnnotationUiRecord | null;
+  } | null>(null);
   const readPdfAnnotationCache = useCallback(() => {
     try {
       const raw = localStorage.getItem(cacheKey);
@@ -164,6 +194,17 @@ export const usePdfAnnotationWorkflow = ({
 
   const runPdfAnnotationMapping = useCallback(
     async (pdfPath: string, useCache: boolean) => {
+      const runId = pdfAnnotationRunIdRef.current + 1;
+      pdfAnnotationRunIdRef.current = runId;
+      cancelledPdfAnnotationRunIdRef.current = null;
+      previousPdfAnnotationSnapshotRef.current = {
+        records: pdfAnnotationRecords,
+        fileName: pdfAnnotationFileName,
+        sourcePath: pdfAnnotationSourcePath,
+        classifierMetrics: pdfAnnotationClassifierMetrics,
+        isOpen: isPdfAnnotationPanelOpen,
+        focusedAnnotation: focusedPdfAnnotation,
+      };
       await runPdfAnnotationMappingHelper({
         projectPath,
         isPdfAnnotationLoading,
@@ -174,18 +215,51 @@ export const usePdfAnnotationWorkflow = ({
         dispatch,
         readPdfAnnotationCache,
         writePdfAnnotationCache,
+        shouldCancel: () =>
+          cancelledPdfAnnotationRunIdRef.current === runId ||
+          pdfAnnotationRunIdRef.current !== runId,
       });
+      if (cancelledPdfAnnotationRunIdRef.current !== runId) {
+        previousPdfAnnotationSnapshotRef.current = null;
+      }
     },
     [
       dispatch,
       filePathIndexRef,
       files,
+      focusedPdfAnnotation,
       isPdfAnnotationLoading,
+      isPdfAnnotationPanelOpen,
+      pdfAnnotationClassifierMetrics,
+      pdfAnnotationFileName,
       projectPath,
+      pdfAnnotationRecords,
+      pdfAnnotationSourcePath,
       readPdfAnnotationCache,
       writePdfAnnotationCache,
     ],
   );
+
+  const handleCancelPdfAnnotationMapping = useCallback(() => {
+    if (!isPdfAnnotationLoading) return;
+    cancelledPdfAnnotationRunIdRef.current = pdfAnnotationRunIdRef.current;
+    const previousSnapshot = previousPdfAnnotationSnapshotRef.current;
+    if (previousSnapshot) {
+      dispatch(setRecords(previousSnapshot.records));
+      dispatch(setFileName(previousSnapshot.fileName));
+      dispatch(setSourcePath(previousSnapshot.sourcePath));
+      dispatch(setClassifierMetrics(previousSnapshot.classifierMetrics as any));
+      dispatch(setFocusedAnnotation(previousSnapshot.focusedAnnotation));
+      dispatch(
+        setIsOpen(
+          previousSnapshot.isOpen || previousSnapshot.records.length > 0,
+        ),
+      );
+    }
+    dispatch(setIsLoading(false));
+    dispatch(setError(null));
+    appendPdfAnnotationLog(dispatch, "Stopping PDF import...", "warn");
+  }, [dispatch, isPdfAnnotationLoading]);
 
   const handleOpenPdfAnnotationsPicker = useCallback(async () => {
     await selectPdfAndRunMapping({
@@ -514,6 +588,7 @@ export const usePdfAnnotationWorkflow = ({
     handleJumpToPdfAnnotation,
     handleOpenPdfAnnotationsPicker,
     handleRefreshPdfAnnotationMapping,
+    handleCancelPdfAnnotationMapping,
     hasPdfAnnotationsLoaded: pdfAnnotationRecords.length > 0,
     isPopupAnnotation,
   };
