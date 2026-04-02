@@ -3186,12 +3186,8 @@ export const buildPreviewRuntimeScript = (
         __previewToolMode = normalizeToolMode(payload.toolMode);
         __previewDrawTag = normalizeDrawTag(payload.drawTag);
         __previewMode = nextMode;
-        if (__previewToolMode !== 'move' && __previewSelectedEl && __previewSelectedEl.style) {
-          __previewSelectedEl.style.cursor = '';
-        }
-        if (__previewToolMode !== 'move' && document.body) {
-          document.body.style.cursor = '';
-          document.body.style.userSelect = '';
+        if (__previewToolMode !== 'move') {
+          clearPreviewMoveCursors();
         }
         if (__previewToolMode !== 'move') {
           __previewMoveDrag = null;
@@ -3736,6 +3732,56 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       var extras = document.querySelectorAll('.__nx-preview-selected');
       for (var ci = 0; ci < extras.length; ci++) {
         extras[ci].classList.remove('__nx-preview-selected');
+      }
+    } catch (e) {}
+  }
+
+  function clearPreviewMoveCursors() {
+    try {
+      if (document.body) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+      var cursorEls = document.querySelectorAll('[style*="cursor"]');
+      for (var ci = 0; ci < cursorEls.length; ci++) {
+        var cursorEl = cursorEls[ci];
+        if (!cursorEl || !cursorEl.style) continue;
+        var currentCursor = String(cursorEl.style.cursor || '').toLowerCase();
+        if (
+          currentCursor === 'grab' ||
+          currentCursor === 'grabbing' ||
+          currentCursor === 'ns-resize' ||
+          currentCursor === 'ew-resize' ||
+          currentCursor === 'nesw-resize' ||
+          currentCursor === 'nwse-resize'
+        ) {
+          cursorEl.style.cursor = '';
+        }
+      }
+    } catch (e) {}
+  }
+
+  function clearPreviewMoveCursors() {
+    try {
+      if (document.body) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+      var cursorEls = document.querySelectorAll('[style*="cursor"]');
+      for (var ci = 0; ci < cursorEls.length; ci++) {
+        var cursorEl = cursorEls[ci];
+        if (!cursorEl || !cursorEl.style) continue;
+        var currentCursor = String(cursorEl.style.cursor || '').toLowerCase();
+        if (
+          currentCursor === 'grab' ||
+          currentCursor === 'grabbing' ||
+          currentCursor === 'ns-resize' ||
+          currentCursor === 'ew-resize' ||
+          currentCursor === 'nesw-resize' ||
+          currentCursor === 'nwse-resize'
+        ) {
+          cursorEl.style.cursor = '';
+        }
       }
     } catch (e) {}
   }
@@ -4765,12 +4811,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         __previewToolMode = normalizeToolMode(payload.toolMode);
         __previewDrawTag = normalizeDrawTag(payload.drawTag);
         __previewMode = nextMode;
-        if (__previewToolMode !== 'move' && __previewSelectedEl && __previewSelectedEl.style) {
-          __previewSelectedEl.style.cursor = '';
-        }
-        if (__previewToolMode !== 'move' && document.body) {
-          document.body.style.cursor = '';
-          document.body.style.userSelect = '';
+        if (__previewToolMode !== 'move') {
+          clearPreviewMoveCursors();
         }
         if (__previewToolMode !== 'move') {
           __previewMoveDrag = null;
@@ -5484,7 +5526,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   }, true);
 
   document.addEventListener('mousemove', function(event) {
-    if (!isPreviewEditMode() || __previewToolMode !== 'edit') return;
+    if (!isPreviewEditMode()) return;
     if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
     if (__previewEditingEl) return;
     var target = event && event.target;
