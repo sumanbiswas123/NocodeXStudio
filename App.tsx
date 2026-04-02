@@ -1669,9 +1669,6 @@ const App: React.FC = () => {
     scrollerRef,
     clearStageSelection: () => {
       setSelectedId(null);
-      setPreviewSelectedPath(null);
-      setPreviewSelectedElement(null);
-      setPreviewSelectedComputedStyles(null);
     },
   });
 
