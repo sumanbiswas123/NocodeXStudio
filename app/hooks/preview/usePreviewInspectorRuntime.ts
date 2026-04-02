@@ -61,6 +61,7 @@ type UsePreviewInspectorRuntimeOptions = {
   previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
   previewSelectedPath: number[] | null;
   previewSelectionMode: string;
+  sidebarInteractionMode: "edit" | "preview" | "inspect" | "draw" | "move";
   projectPath: string | null;
   resolvePreviewMatchedRuleSourcePath: (source?: string | null) => string | null;
   selectedPreviewHtml: string | null;
@@ -98,6 +99,7 @@ export const usePreviewInspectorRuntime = ({
   previewSelectedMatchedCssRules,
   previewSelectedPath,
   previewSelectionMode,
+  sidebarInteractionMode,
   projectPath,
   resolvePreviewMatchedRuleSourcePath,
   selectedPreviewHtml,
@@ -410,6 +412,10 @@ export const usePreviewInspectorRuntime = ({
       lastAutoAssetReplaceKeyRef.current = null;
       return;
     }
+    if (sidebarInteractionMode !== "edit") {
+      lastAutoAssetReplaceKeyRef.current = null;
+      return;
+    }
     if (
       interactionMode !== "preview" ||
       !previewSelectedElement ||
@@ -438,6 +444,7 @@ export const usePreviewInspectorRuntime = ({
     previewSelectedElement,
     previewSelectedPath,
     previewSelectionMode,
+    sidebarInteractionMode,
   ]);
 
   const applyPreviewAnimationUpdate = useCallback(

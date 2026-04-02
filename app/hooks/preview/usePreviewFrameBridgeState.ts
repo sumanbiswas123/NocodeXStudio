@@ -60,6 +60,9 @@ type UsePreviewFrameBridgeStateOptions = {
   >;
   setPreviewFrameLoadNonce: React.Dispatch<React.SetStateAction<number>>;
   setPreviewMode: React.Dispatch<React.SetStateAction<"edit" | "preview">>;
+  setPreviewSelectionMode: React.Dispatch<
+    React.SetStateAction<PreviewSelectionMode>
+  >;
   setSidebarToolMode: React.Dispatch<React.SetStateAction<PreviewToolMode>>;
   setIsToolboxDragging: React.Dispatch<React.SetStateAction<boolean>>;
   shouldProcessPreviewPageSignal: (path: string) => boolean;
@@ -126,6 +129,7 @@ export const usePreviewFrameBridgeState = ({
   setPendingPageSwitch,
   setPreviewFrameLoadNonce,
   setPreviewMode,
+  setPreviewSelectionMode,
   setSidebarToolMode,
   setIsToolboxDragging,
   shouldProcessPreviewPageSignal,
@@ -320,6 +324,9 @@ export const usePreviewFrameBridgeState = ({
         setInteractionMode("preview");
         return;
       }
+      if (nextMode === "move") {
+        setPreviewSelectionMode("default");
+      }
       setSidebarToolMode(nextMode);
       if (interactionModeRef.current === "preview") {
         setPreviewModeWithSync("edit");
@@ -345,6 +352,7 @@ export const usePreviewFrameBridgeState = ({
       projectPath,
       setInteractionMode,
       setPreviewMode,
+      setPreviewSelectionMode,
       setPreviewModeWithSync,
       setSidebarToolMode,
     ],
@@ -356,6 +364,41 @@ export const usePreviewFrameBridgeState = ({
     }
     return interactionMode;
   }, [interactionMode, previewMode, sidebarToolMode]);
+
+  useEffect(() => {
+    if (sidebarInteractionMode !== "move") return;
+    if (previewSelectionMode === "default") return;
+    setPreviewSelectionMode("default");
+  }, [previewSelectionMode, setPreviewSelectionMode, sidebarInteractionMode]);
+
+  useEffect(() => {
+    if (previewSelectionMode === "default") return;
+    if (sidebarInteractionMode !== "move" && sidebarInteractionMode !== "draw") {
+      return;
+    }
+    setSidebarToolMode("edit");
+    if (interactionModeRef.current === "preview") {
+      setPreviewMode("edit");
+      postPreviewModeToFrame({
+        mode: "edit",
+        toolMode: "edit",
+        selectionMode: previewSelectionMode,
+        drawTag: drawElementTag,
+        force: true,
+      });
+      return;
+    }
+    setInteractionMode("edit");
+  }, [
+    drawElementTag,
+    interactionModeRef,
+    postPreviewModeToFrame,
+    previewSelectionMode,
+    setInteractionMode,
+    setPreviewMode,
+    setSidebarToolMode,
+    sidebarInteractionMode,
+  ]);
 
   const isActivePreviewMessageSource = useCallback(
     (source: MessageEventSource | null): boolean => {

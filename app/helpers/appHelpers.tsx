@@ -2368,6 +2368,7 @@ export const buildPreviewRuntimeScript = (
         staleCss[sc].classList.remove('__nx-preview-css-candidate');
       }
       if (!isPreviewEditMode()) return;
+      if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
       if (__previewSelectionMode === 'image') {
         var all = document.querySelectorAll('*');
         for (var i = 0; i < all.length; i++) {
@@ -3151,7 +3152,8 @@ export const buildPreviewRuntimeScript = (
       __previewStyle.textContent =
         '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
         '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
+        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;box-shadow:0 0 0 2px rgba(245,158,11,0.28)!important;}' +
+        'video.__nx-preview-image-candidate{border:2px solid rgba(245,158,11,0.92)!important;box-sizing:border-box!important;}' +
         '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
         '.__nx-draw-new{outline:2px dashed rgba(99,102,241,0.85)!important;outline-offset:0;}' +
@@ -3181,7 +3183,24 @@ export const buildPreviewRuntimeScript = (
       if (payload.type === 'PREVIEW_SET_MODE') {
         var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
         __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
+        __previewToolMode = normalizeToolMode(payload.toolMode);
+        __previewDrawTag = normalizeDrawTag(payload.drawTag);
         __previewMode = nextMode;
+        if (__previewToolMode !== 'move' && __previewSelectedEl && __previewSelectedEl.style) {
+          __previewSelectedEl.style.cursor = '';
+        }
+        if (__previewToolMode !== 'move' && document.body) {
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+        if (__previewToolMode !== 'move') {
+          __previewMoveDrag = null;
+          __previewResizeDrag = null;
+        }
+        if (__previewToolMode !== 'draw') {
+          clearPreviewSelection();
+          clearPreviewHover();
+        }
         if (nextMode !== 'edit') {
           clearPreviewSelection();
         }
@@ -3852,7 +3871,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   function isElementImageCandidate(el) {
     if (!el || !isPreviewBaseSelectable(el)) return false;
     var tag = String(el.tagName || '').toLowerCase();
-    if (tag === 'img' || tag === 'picture' || tag === 'source') return true;
+    if (tag === 'img' || tag === 'picture' || tag === 'source' || tag === 'video') return true;
     try {
       var computed = window.getComputedStyle(el);
       var bg = computed ? String(computed.backgroundImage || '') : '';
@@ -3864,7 +3883,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   function extractImageSource(el) {
     if (!el) return '';
     var tag = String(el.tagName || '').toLowerCase();
-    if (tag === 'img' || tag === 'source') {
+    if (tag === 'img' || tag === 'source' || tag === 'video') {
       var attrSrc = el.getAttribute ? (el.getAttribute('src') || '') : '';
       if (attrSrc) return attrSrc;
     }
@@ -3939,6 +3958,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       staleCss[sc].classList.remove('__nx-preview-css-candidate');
     }
     if (!isPreviewEditMode()) return;
+    if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
     if (__previewSelectionMode === 'image') {
       var all = document.querySelectorAll('*');
       for (var i = 0; i < all.length; i++) {
@@ -4702,7 +4722,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       __previewStyle.textContent =
         '.__nx-preview-selected{outline:2px solid rgba(14,165,233,0.95)!important;outline-offset:1px;}' +
         '.__nx-preview-editing{outline:2px dashed rgba(249,115,22,0.95)!important;outline-offset:1px;}' +
-        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;}' +
+        '.__nx-preview-image-candidate{outline:2px solid rgba(245,158,11,0.92)!important;outline-offset:1px;box-shadow:0 0 0 2px rgba(245,158,11,0.28)!important;}' +
+        'video.__nx-preview-image-candidate{border:2px solid rgba(245,158,11,0.92)!important;box-sizing:border-box!important;}' +
         '.__nx-preview-css-candidate{outline:1px solid rgba(56,189,248,0.65)!important;outline-offset:0px;}' +
         '.__nx-preview-dirty{box-shadow:inset 0 0 0 2px rgba(245,158,11,0.95)!important;}' +
         '.__nx-draw-new{outline:2px dashed rgba(99,102,241,0.85)!important;outline-offset:0!important;}' +
@@ -4738,15 +4759,26 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       dispatchPreviewOrientationChange();
       return;
     }
-    if (payload.type === 'PREVIEW_SET_MODE') {
-      var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
-      __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
-      __previewToolMode = normalizeToolMode(payload.toolMode);
-      __previewDrawTag = normalizeDrawTag(payload.drawTag);
-      __previewMode = nextMode;
-      // Clear temporary draw-highlight and selection state
-      // whenever the user switches away from draw mode.
-      if (__previewToolMode !== 'draw') {
+      if (payload.type === 'PREVIEW_SET_MODE') {
+        var nextMode = payload.mode === 'preview' ? 'preview' : 'edit';
+        __previewSelectionMode = normalizeSelectionMode(payload.selectionMode);
+        __previewToolMode = normalizeToolMode(payload.toolMode);
+        __previewDrawTag = normalizeDrawTag(payload.drawTag);
+        __previewMode = nextMode;
+        if (__previewToolMode !== 'move' && __previewSelectedEl && __previewSelectedEl.style) {
+          __previewSelectedEl.style.cursor = '';
+        }
+        if (__previewToolMode !== 'move' && document.body) {
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+        if (__previewToolMode !== 'move') {
+          __previewMoveDrag = null;
+          __previewResizeDrag = null;
+        }
+        // Clear temporary draw-highlight and selection state
+        // whenever the user switches away from draw mode.
+        if (__previewToolMode !== 'draw') {
         var drawNewEls = document.querySelectorAll('.__nx-draw-new');
         for (var di = 0; di < drawNewEls.length; di++) {
           drawNewEls[di].classList.remove('__nx-draw-new');
@@ -5452,7 +5484,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   }, true);
 
   document.addEventListener('mousemove', function(event) {
-    if (!isPreviewEditMode()) return;
+    if (!isPreviewEditMode() || __previewToolMode !== 'edit') return;
     if (__previewToolMode === 'move' || __previewToolMode === 'draw') return;
     if (__previewEditingEl) return;
     var target = event && event.target;

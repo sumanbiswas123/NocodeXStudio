@@ -283,6 +283,13 @@ const extractUrlFromBackground = (raw?: string) => {
   return match?.[2] ? match[2] : "";
 };
 
+const isVideoAssetUrl = (raw?: string) => {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return false;
+  const cleaned = value.split("#")[0].split("?")[0];
+  return /\.(mp4|webm|mov|m4v|ogg)$/i.test(cleaned);
+};
+
 const normalizeCssValueInput = (value: string) =>
   String(value || "").replace(
     /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
@@ -1248,6 +1255,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   type AssetInfo = {
     source: string;
     ruleSource?: string;
+    mediaType?: "image" | "video";
   };
 
   const selectorLabel = useMemo(() => buildSelectorLabel(element), [element]);
@@ -1262,6 +1270,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return {
         source: element.src.trim(),
         ruleSource: undefined,
+        mediaType: elementTag === "video" ? "video" : "image",
       };
     }
     const matchedAssetRule = matchedCssRules.find((rule) =>
@@ -1296,6 +1305,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return {
         source: matchedAssetSource,
         ruleSource: matchedAssetRule?.source,
+        mediaType: isVideoAssetUrl(matchedAssetSource) ? "video" : "image",
       };
     }
     const backgroundImage =
@@ -1307,6 +1317,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return {
         source: inlineSource,
         ruleSource: "element.style",
+        mediaType: isVideoAssetUrl(inlineSource) ? "video" : "image",
       };
     }
     const computedSource = extractUrlFromBackground(
@@ -1318,20 +1329,24 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       return {
         source: computedSource,
         ruleSource: matchedAssetRule?.source,
+        mediaType: isVideoAssetUrl(computedSource) ? "video" : "image",
       };
     }
     if (typeof element.src === "string" && element.src.trim()) {
       return {
         source: element.src.trim(),
         ruleSource: undefined,
+        mediaType: isVideoAssetUrl(element.src) ? "video" : "image",
       };
     }
     return {
       source: "",
       ruleSource: undefined,
+      mediaType: "image",
     };
   }, [computedStyles, element, matchedCssRules]);
   const assetSource = assetInfo.source;
+  const assetMediaType = assetInfo.mediaType || "image";
   const assetPreviewSource = useMemo(
     () =>
       assetSource
@@ -2232,11 +2247,22 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 onMouseEnter={() => showAssetPreview(assetSource)}
                 onMouseLeave={() => setHoveredAssetPreview(null)}
               >
-                <img
-                  src={assetPreviewSource || assetSource}
-                  alt={getAssetLabel(assetSource) || "Selected asset"}
-                  className="style-inspector-asset-image"
-                />
+                {assetMediaType === "video" ? (
+                  <video
+                    src={assetPreviewSource || assetSource}
+                    className="style-inspector-asset-image"
+                    muted
+                    playsInline
+                    controls
+                    preload="metadata"
+                  />
+                ) : (
+                  <img
+                    src={assetPreviewSource || assetSource}
+                    alt={getAssetLabel(assetSource) || "Selected asset"}
+                    className="style-inspector-asset-image"
+                  />
+                )}
               </div>
               <div
                 className="style-inspector-asset-label"

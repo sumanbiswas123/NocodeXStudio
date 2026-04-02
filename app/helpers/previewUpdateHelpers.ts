@@ -376,7 +376,7 @@ export const applyPreviewContentUpdate = async ({
 
   if (
     typeof data.src === "string" &&
-    (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
+    (isHtmlElementLike(target) || isHtmlElementLike(liveTarget))
   ) {
     const sourceValue = data.src.trim();
     const previewAssetReloadToken = Date.now();
