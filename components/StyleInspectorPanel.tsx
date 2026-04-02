@@ -413,6 +413,9 @@ const filterRemSuggestions = (suggestions: string[]) =>
     ),
   );
 
+const getPropertySuggestions = (query: string, limit = 20) =>
+  filterAndSortProperties(String(query || ""), limit);
+
 const buildSelectorLabel = (element: VirtualElement | null) => {
   if (!element) return "";
   const tag = String(element.type || element.name || "div").toLowerCase();
@@ -952,6 +955,17 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         value: field === "value" ? value : current[ruleKey]?.value || "",
       },
     }));
+  };
+
+  const updatePropertySuggestionField = (
+    index: number,
+    value: string,
+    type: "key" = "key",
+    limit = 15,
+  ) => {
+    const matches = getPropertySuggestions(value, limit);
+    setFilteredSuggestions(matches);
+    setActiveSuggestionField(matches.length ? { index, type } : null);
   };
 
   const buildReactStylePatchFromDeclarations = (
@@ -1658,8 +1672,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   };
 
   const showKeySuggestions = (index: number) => {
-    setFilteredSuggestions(filterAndSortProperties("", 20));
-    setActiveSuggestionField({ index, type: "key" });
+    updatePropertySuggestionField(index, "", "key", 20);
   };
 
   const showValueSuggestions = (index: number, key: string, value: string) => {
@@ -1709,13 +1722,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
     // Suggestions logic...
     if (field === "key") {
-      const matches = value.trim()
-        ? CSS_PROPERTY_NAMES.filter((name) =>
-            name.toLowerCase().includes(value.toLowerCase())
-          ).slice(0, 15)
-        : CSS_PROPERTY_NAMES.slice(0, 20);
-      setFilteredSuggestions(matches);
-      setActiveSuggestionField(matches.length ? { index, type: "key" } : null);
+      updatePropertySuggestionField(index, value);
     } else {
       showValueSuggestions(index, nextKey, value);
     }
@@ -1724,11 +1731,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const handleNewPropertyChange = (field: "key" | "value", value: string) => {
     if (field === "key") {
       setNewPropName(value);
-      const matches = filterAndSortProperties(value, 15);
-      setFilteredSuggestions(matches);
-      setActiveSuggestionField(
-        matches.length ? { index: -1, type: "key" } : null,
-      );
+      updatePropertySuggestionField(-1, value);
       return;
     }
 
@@ -2492,6 +2495,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                                   ? { ...current, property: event.target.value }
                                   : current,
                               );
+                              updatePropertySuggestionField(
+                                -(ruleIndex + 2000),
+                                event.target.value,
+                              );
                             }}
                             onFocus={(event) => {
                               handleMatchedFieldFocus(
@@ -2796,10 +2803,16 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
                   <div className="style-inspector-rule-row">
                     <div className="style-inspector-rule-input-wrap">
-                      <input
-                        value={draft.key}
-                        onChange={(event) =>
-                          setRuleDraftValue(ruleKey, "key", event.target.value)
+                        <input
+                          value={draft.key}
+                          onChange={(event) =>
+                          {
+                            setRuleDraftValue(ruleKey, "key", event.target.value);
+                            updatePropertySuggestionField(
+                              -(ruleIndex + 2),
+                              event.target.value,
+                            );
+                          }
                         }
                         onPaste={(event) => {
                           const text =
