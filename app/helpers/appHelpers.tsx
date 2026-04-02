@@ -3976,6 +3976,27 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     return null;
   }
 
+  function isPreviewMoveLockedElement(el) {
+    if (!el || el.nodeType !== 1 || !el.classList) return false;
+    return (
+      el.classList.contains('maincontainer') ||
+      el.classList.contains('contentFrame') ||
+      el.classList.contains('mainContent')
+    );
+  }
+
+  function getPreviewMoveBoundsContainer(el) {
+    if (!el || !el.closest) return null;
+    return (
+      el.closest('.maincontainer') ||
+      el.closest('.contentFrame') ||
+      el.closest('.mainContent') ||
+      el.offsetParent ||
+      el.parentElement ||
+      document.body
+    );
+  }
+
   function getPreviewElementPath(el) {
     if (!el || !document.body || !document.body.contains(el)) return null;
     var path = [];
@@ -5034,11 +5055,17 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (__previewToolMode === 'move') {
       var selected = getPreviewSelectableTarget(target, event);
       if (!selected) return;
+      if (isPreviewMoveLockedElement(selected)) return;
       var path = getPreviewElementPath(selected);
       if (!path || !path.length) return;
       var parent = selected.offsetParent || selected.parentElement;
       if (!parent || !parent.getBoundingClientRect) return;
+      var boundsContainer = getPreviewMoveBoundsContainer(selected);
+      if (!boundsContainer || !boundsContainer.getBoundingClientRect) {
+        boundsContainer = parent;
+      }
       var parentRect = parent.getBoundingClientRect();
+      var boundsRect = boundsContainer.getBoundingClientRect();
       var selectedRect = selected.getBoundingClientRect();
       var computed = window.getComputedStyle(selected);
       var parsedLeft = parseFloat(computed.left || '');
@@ -5050,15 +5077,17 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       var resizeDir = getPreviewResizeDirection(selected, event);
       if (resizeDir) {
         __previewResizeDrag = {
-          element: selected,
-          path: path,
-          parent: parent,
-          parentRect: parentRect,
-          startClientX: event.clientX,
-          startClientY: event.clientY,
-          startLeft: startLeft,
-          startTop: startTop,
-          latestLeft: startLeft,
+        element: selected,
+        path: path,
+        parent: parent,
+        parentRect: parentRect,
+        boundsContainer: boundsContainer,
+        boundsRect: boundsRect,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startLeft: startLeft,
+        startTop: startTop,
+        latestLeft: startLeft,
           latestTop: startTop,
           startWidth: selectedRect.width || selected.offsetWidth || 0,
           startHeight: selectedRect.height || selected.offsetHeight || 0,
@@ -5084,6 +5113,8 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         path: path,
         parent: parent,
         parentRect: parentRect,
+        boundsContainer: boundsContainer,
+        boundsRect: boundsRect,
         parentScrollLeft: parent.scrollLeft || 0,
         parentScrollTop: parent.scrollTop || 0,
         startClientX: event.clientX,
@@ -5197,10 +5228,28 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (!drag.hasDragged) {
         drag.hasDragged = true;
       }
-      var maxLeft = Math.max(0, (drag.parent.clientWidth || drag.parentRect.width) - drag.width);
-      var maxTop = Math.max(0, (drag.parent.clientHeight || drag.parentRect.height) - drag.height);
-      var nextLeft = Math.max(0, Math.min(maxLeft, drag.startLeft + dx));
-      var nextTop = Math.max(0, Math.min(maxTop, drag.startTop + dy));
+      var liveParentRect = drag.parent && drag.parent.getBoundingClientRect ? drag.parent.getBoundingClientRect() : drag.parentRect;
+      var liveBoundsRect = drag.boundsContainer && drag.boundsContainer.getBoundingClientRect ? drag.boundsContainer.getBoundingClientRect() : drag.boundsRect;
+      var minLeft = 0;
+      var minTop = 0;
+      var maxLeft = Math.max(0, (drag.parent.clientWidth || liveParentRect.width) - drag.width);
+      var maxTop = Math.max(0, (drag.parent.clientHeight || liveParentRect.height) - drag.height);
+      if (liveParentRect && liveBoundsRect) {
+        minLeft = Math.max(0, liveBoundsRect.left - liveParentRect.left + (drag.parent.scrollLeft || 0));
+        minTop = Math.max(0, liveBoundsRect.top - liveParentRect.top + (drag.parent.scrollTop || 0));
+        maxLeft = Math.min(
+          maxLeft,
+          liveBoundsRect.right - liveParentRect.left + (drag.parent.scrollLeft || 0) - drag.width
+        );
+        maxTop = Math.min(
+          maxTop,
+          liveBoundsRect.bottom - liveParentRect.top + (drag.parent.scrollTop || 0) - drag.height
+        );
+        if (maxLeft < minLeft) maxLeft = minLeft;
+        if (maxTop < minTop) maxTop = minTop;
+      }
+      var nextLeft = Math.max(minLeft, Math.min(maxLeft, drag.startLeft + dx));
+      var nextTop = Math.max(minTop, Math.min(maxTop, drag.startTop + dy));
       drag.latestLeft = nextLeft;
       drag.latestTop = nextTop;
       var draftMoveStyles = {

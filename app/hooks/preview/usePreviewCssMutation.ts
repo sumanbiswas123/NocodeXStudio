@@ -1496,15 +1496,20 @@ export const usePreviewCssMutation = ({
             ...prev,
             [cssLocalVirtualPath]: cssFile,
           }));
-          if (absoluteCssPath) {
-            await (Neutralino as any).filesystem.writeFile(
-              absoluteCssPath,
-              nextCssContent,
-            );
-            delete pendingPreviewWritesRef.current[cssLocalVirtualPath];
-          } else {
-            pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+          pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+          if (!dirtyFilesRef.current.includes(cssLocalVirtualPath)) {
+            dirtyFilesRef.current = [
+              ...dirtyFilesRef.current,
+              cssLocalVirtualPath,
+            ];
           }
+          setDirtyFiles((prev) =>
+            prev.includes(cssLocalVirtualPath)
+              ? prev
+              : [...prev, cssLocalVirtualPath],
+          );
+          invalidatePreviewDocsForDependency(cssLocalVirtualPath);
+          schedulePreviewAutoSave();
           updatePreviewLiveStylesheetContent(
             cssLocalVirtualPath,
             nextCssContent,
