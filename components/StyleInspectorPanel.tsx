@@ -1253,7 +1253,12 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const selectorLabel = useMemo(() => buildSelectorLabel(element), [element]);
   const assetInfo = useMemo<AssetInfo>(() => {
     if (!element) return { source: "" };
-    if (typeof element.src === "string" && element.src.trim()) {
+    const elementTag = String(element.type || element.name || "")
+      .trim()
+      .toLowerCase();
+    const isDirectAssetElement =
+      elementTag === "img" || elementTag === "source" || elementTag === "video";
+    if (isDirectAssetElement && typeof element.src === "string" && element.src.trim()) {
       return {
         source: element.src.trim(),
         ruleSource: undefined,
@@ -1280,13 +1285,20 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         rule.declarations.some(
           (declaration) =>
             declaration.active !== false &&
-            normalizeKey(declaration.property) === "background-image" &&
+            (normalizeKey(declaration.property) === "background-image" ||
+              normalizeKey(declaration.property) === "background") &&
             extractAssetUrl(declaration.value),
         ),
       );
       return {
         source: computedSource,
         ruleSource: matchedRule?.source,
+      };
+    }
+    if (typeof element.src === "string" && element.src.trim()) {
+      return {
+        source: element.src.trim(),
+        ruleSource: undefined,
       };
     }
     return {

@@ -1731,8 +1731,19 @@ export const rewriteInlineAssetRefs = (
   raw: string,
   currentFile: string,
   fileMap: FileMap,
+  cacheBustToken?: string | number | null,
 ): string => {
   let content = raw;
+  const appendPreviewCacheBust = (assetUrl: string) => {
+    const url = String(assetUrl || "").trim();
+    const token = String(cacheBustToken ?? "").trim();
+    if (!url || !token) return url;
+    const [basePart, hashPart] = url.split("#", 2);
+    const joiner = basePart.includes("?") ? "&" : "?";
+    return `${basePart}${joiner}nx_preview_asset=${encodeURIComponent(token)}${
+      hashPart ? `#${hashPart}` : ""
+    }`;
+  };
 
   content = content.replace(
     /\b(src|href)=["']([^"']+)["']/gi,
@@ -1772,7 +1783,9 @@ export const rewriteInlineAssetRefs = (
         return `url("${file.content}")`;
       }
       if (file.type === "image" || file.type === "font") {
-        return `url("${encodeURI(`${PREVIEW_MOUNT_PATH}/${matchedPath}`)}")`;
+        return `url("${appendPreviewCacheBust(
+          encodeURI(`${PREVIEW_MOUNT_PATH}/${matchedPath}`),
+        )}")`;
       }
       return full;
     },

@@ -846,6 +846,7 @@ export const usePreviewCssMutation = ({
         cssContent,
         normalizedSourcePath,
         filesRef.current,
+        Date.now(),
       );
       let didUpdate = false;
       const styleNodes = Array.from(
@@ -1097,6 +1098,17 @@ export const usePreviewCssMutation = ({
         sourceText.slice(0, ruleRange.start) +
         nextRuleBlock +
         sourceText.slice(ruleRange.end);
+      if (typeof window !== "undefined" && (window as any).__NX_DEBUG_PREVIEW_CSS !== false) {
+        console.log("[PreviewAssetDebug] buildPreviewMatchedRulePatchedSource:result", {
+          selector: rule.selector,
+          source: rule.source,
+          sourcePath: rule.sourcePath || "",
+          resolvedSourcePath: sourcePath,
+          styles,
+          ruleHeader: ruleRange.selectorText,
+          nextRuleBlock,
+        });
+      }
       debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
         selector: rule.selector,
         source: rule.source,
@@ -1873,6 +1885,18 @@ export const usePreviewCssMutation = ({
         appliedLiveRule,
         inlinePreviewDisabledForMatchedRuleEdits: true,
       });
+      if (typeof window !== "undefined" && (window as any).__NX_DEBUG_PREVIEW_CSS !== false) {
+        console.log("[PreviewAssetDebug] queuePreviewLocalCssPatch:live-preview", {
+          selector: rule.selector,
+          source: rule.source,
+          sourcePath: rule.sourcePath || "",
+          styles,
+          hasPatchedSource: Boolean(patchedSource),
+          patchedSourcePath: patchedSource?.sourcePath || "",
+          updatedLiveStylesheet,
+          appliedLiveRule,
+        });
+      }
       const currentPending = previewLocalCssDraftPendingRef.current;
       const sameTarget =
         currentPending &&

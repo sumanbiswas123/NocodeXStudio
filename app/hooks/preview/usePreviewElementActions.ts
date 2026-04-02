@@ -10,7 +10,12 @@ import {
   getParentPath,
   normalizePath,
   readElementByPath,
+  relativePathBetweenVirtualFiles,
 } from "../../helpers/appHelpers";
+import {
+  extractAssetUrlFromCssValue,
+  type PreviewMatchedCssRule,
+} from "../../helpers/previewCssHelpers";
 
 type PersistPreviewHtmlContentFn = (
   path: string,
@@ -44,6 +49,19 @@ type UsePreviewElementActionsOptions = {
   selectedPreviewHtml: string | null;
   selectedPreviewSrc: string | null;
   selectPreviewElementAtPath: (path: number[]) => void;
+  previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
+  resolvePreviewMatchedRuleSourcePath?: (source: string) => string | null;
+  handlePreviewMatchedRulePropertyAdd?: (
+    rule: {
+      selector: string;
+      source: string;
+      sourcePath?: string;
+      occurrenceIndex?: number;
+      originalProperty?: string;
+      isActive?: boolean;
+    },
+    styles: Partial<React.CSSProperties>,
+  ) => void;
   setFiles: Dispatch<SetStateAction<FileMap>>;
   setInteractionMode: Dispatch<
     SetStateAction<"edit" | "preview" | "inspect" | "draw" | "move">
@@ -81,6 +99,9 @@ export const usePreviewElementActions = ({
   selectedPreviewHtml,
   selectedPreviewSrc,
   selectPreviewElementAtPath,
+  previewSelectedMatchedCssRules,
+  resolvePreviewMatchedRuleSourcePath,
+  handlePreviewMatchedRulePropertyAdd,
   setFiles,
   setInteractionMode,
   setIsCodePanelOpen,
@@ -92,6 +113,20 @@ export const usePreviewElementActions = ({
   setSelectedId,
   setSidebarToolMode,
 }: UsePreviewElementActionsOptions) => {
+  const debugPreviewAssetReplace = (
+    label: string,
+    payload: Record<string, unknown>,
+  ) => {
+    if (typeof window === "undefined") return;
+    if ((window as any).__NX_DEBUG_PREVIEW_CSS === false) return;
+    console.log(`[PreviewAssetDebug] ${label}`, payload);
+  };
+
+  const toReactStyleName = (raw: string) =>
+    String(raw || "").replace(/-([a-z])/g, (_all, char: string) =>
+      char.toUpperCase(),
+    );
+
   const handleReplacePreviewAsset = useCallback(async () => {
     if (
       !projectPath ||
@@ -195,11 +230,107 @@ export const usePreviewElementActions = ({
       // Ignore preview cache warmup failures; the HTML patch below is the source of truth.
     }
 
+    debugPreviewAssetReplace("handleReplacePreviewAsset:selected-file", {
+      selectedPreviewHtml,
+      targetRelativePath,
+      previewSelectedPath,
+      previewSelectedElementSrc: previewSelectedElement?.src || "",
+      matchedRuleCount: previewSelectedMatchedCssRules.length,
+    });
+
+    const activeMatchedAssetRule = previewSelectedMatchedCssRules.find((rule) =>
+      rule.declarations.some((declaration) => {
+        const property = String(declaration.property || "").trim().toLowerCase();
+        if (
+          declaration.active === false ||
+          (property !== "background-image" && property !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrlFromCssValue(declaration.value));
+      }),
+    );
+    const activeMatchedAssetDeclaration =
+      activeMatchedAssetRule?.declarations.find((declaration) => {
+        const property = String(declaration.property || "").trim().toLowerCase();
+        if (
+          declaration.active === false ||
+          (property !== "background-image" && property !== "background")
+        ) {
+          return false;
+        }
+        return Boolean(extractAssetUrlFromCssValue(declaration.value));
+      }) || null;
+    const selectedElementTag = String(previewSelectedElement?.type || "")
+      .trim()
+      .toLowerCase();
+    const isDirectElementAssetTag =
+      selectedElementTag === "img" ||
+      selectedElementTag === "source" ||
+      selectedElementTag === "video";
+
+    if (
+      activeMatchedAssetRule &&
+      activeMatchedAssetDeclaration &&
+      !isDirectElementAssetTag &&
+      handlePreviewMatchedRulePropertyAdd
+    ) {
+      const cssSourcePath =
+        (typeof resolvePreviewMatchedRuleSourcePath === "function"
+          ? resolvePreviewMatchedRuleSourcePath(
+              activeMatchedAssetRule.sourcePath || activeMatchedAssetRule.source,
+            )
+          : null) ||
+        activeMatchedAssetRule.sourcePath ||
+        selectedPreviewHtml;
+      const replacementUrl =
+        relativePathBetweenVirtualFiles(cssSourcePath, targetRelativePath) ||
+        uniqueFileName;
+      const nextRuleValue = String(activeMatchedAssetDeclaration.value || "").replace(
+        /url\((['"]?)(.*?)\1\)/i,
+        (_match, quote) => {
+          const nextQuote = quote || '"';
+          return `url(${nextQuote}${replacementUrl}${nextQuote})`;
+        },
+      );
+      debugPreviewAssetReplace("handleReplacePreviewAsset:css-rule-path", {
+        selector: activeMatchedAssetRule.selector,
+        source: activeMatchedAssetRule.source,
+        sourcePath: activeMatchedAssetRule.sourcePath || "",
+        resolvedCssSourcePath: cssSourcePath,
+        originalProperty: activeMatchedAssetDeclaration.property,
+        originalValue: activeMatchedAssetDeclaration.value,
+        replacementUrl,
+        nextRuleValue,
+      });
+      handlePreviewMatchedRulePropertyAdd(
+        {
+          selector: activeMatchedAssetRule.selector,
+          source: activeMatchedAssetRule.source,
+          sourcePath: activeMatchedAssetRule.sourcePath,
+          originalProperty: activeMatchedAssetDeclaration.property,
+        },
+        {
+          [toReactStyleName(activeMatchedAssetDeclaration.property)]: nextRuleValue,
+        },
+      );
+      return true;
+    }
+
     const nextLiveSrc =
       typeof binaryAssetUrlCacheRef.current[targetRelativePath] === "string" &&
       binaryAssetUrlCacheRef.current[targetRelativePath].length > 0
         ? binaryAssetUrlCacheRef.current[targetRelativePath]
         : resolvePreviewAssetUrl(uniqueFileName) || uniqueFileName;
+
+    debugPreviewAssetReplace("handleReplacePreviewAsset:direct-element-path", {
+      uniqueFileName,
+      targetRelativePath,
+      nextLiveSrc,
+      selectedElementType: previewSelectedElement?.type || "",
+      selectedElementSrc: previewSelectedElement?.src || "",
+      isDirectElementAssetTag,
+    });
 
     await applyPreviewContentUpdate({
       src: uniqueFileName,
@@ -209,11 +340,14 @@ export const usePreviewElementActions = ({
   }, [
     applyPreviewContentUpdate,
     binaryAssetUrlCacheRef,
+    handlePreviewMatchedRulePropertyAdd,
     filePathIndexRef,
     loadFileContent,
+    previewSelectedMatchedCssRules,
     previewSelectedElement,
     previewSelectedPath,
     projectPath,
+    resolvePreviewMatchedRuleSourcePath,
     resolvePreviewAssetUrl,
     selectedPreviewHtml,
     setFiles,

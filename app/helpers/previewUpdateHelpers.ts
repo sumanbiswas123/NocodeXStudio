@@ -10,6 +10,17 @@ import {
   toCssPropertyName,
 } from "./appHelpers";
 
+const appendPreviewCacheBust = (assetUrl: string, token: string | number) => {
+  const url = String(assetUrl || "").trim();
+  const cacheToken = String(token || "").trim();
+  if (!url || !cacheToken) return url;
+  const [basePart, hashPart] = url.split("#", 2);
+  const joiner = basePart.includes("?") ? "&" : "?";
+  return `${basePart}${joiner}nx_preview_asset=${encodeURIComponent(cacheToken)}${
+    hashPart ? `#${hashPart}` : ""
+  }`;
+};
+
 type PersistPreviewHtmlContent = (
   updatedPath: string,
   serialized: string,
@@ -354,10 +365,14 @@ export const applyPreviewContentUpdate = async ({
     (target instanceof HTMLElement || liveTarget instanceof HTMLElement)
   ) {
     const sourceValue = data.src.trim();
+    const previewAssetReloadToken = Date.now();
     const liveResolvedSource =
-      (typeof data.liveSrc === "string" && data.liveSrc.trim()) ||
+      appendPreviewCacheBust(
+        (typeof data.liveSrc === "string" && data.liveSrc.trim()) ||
       resolvePreviewAssetUrl(sourceValue) ||
-      sourceValue;
+          sourceValue,
+        previewAssetReloadToken,
+      );
     const lowerTag =
       target instanceof HTMLElement
         ? target.tagName.toLowerCase()
@@ -405,8 +420,12 @@ export const applyPreviewContentUpdate = async ({
                     /url\((['"]?)(.*?)\1\)/i,
                     (_match, quote, rawUrl) => {
                       const resolved = resolvePreviewAssetUrl(rawUrl) || rawUrl;
+                      const busted = appendPreviewCacheBust(
+                        resolved,
+                        previewAssetReloadToken,
+                      );
                       const nextQuote = quote || '"';
-                      return `url(${nextQuote}${resolved}${nextQuote})`;
+                      return `url(${nextQuote}${busted}${nextQuote})`;
                     },
                   )
                 : `url("${liveResolvedSource}")`;
