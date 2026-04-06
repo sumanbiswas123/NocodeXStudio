@@ -595,6 +595,7 @@ export const usePreviewFrameBridgeState = ({
       postPreviewFrameMessage(previewFrameRef.current, {
         type: "PREVIEW_SET_RUNTIME_CSS",
         styleId: "__nx-preview-runtime-local-css",
+        sourcePath: cssLocalVirtualPath,
         cssText: rewriteInlineAssetRefs(
           pendingCss,
           cssLocalVirtualPath,

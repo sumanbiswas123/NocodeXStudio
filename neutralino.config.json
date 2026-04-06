@@ -2,13 +2,15 @@
   "applicationId": "js.neutralino.nocodexstudio",
   "version": "1.0.0",
   "defaultMode": "window",
-  "documentRoot": "/dist",
-  "url": "/index.html",
+  "documentRoot": "dist/",
+  "url": "/",
   "enableServer": true,
   "singlePageServe": true,
   "enableNativeAPI": true,
   "tokenSecurity": "none",
-  "allowedOrigins": ["http://localhost:3000"],
+  "allowedOrigins": [
+    "http://localhost:3000"
+  ],
   "nativeBlockList": [],
   "nativeAllowList": [
     "app.*",

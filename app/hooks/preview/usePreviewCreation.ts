@@ -796,6 +796,18 @@ export const usePreviewCreation = ({
         if (host === host.ownerDocument.body) return [];
         return computePathFromBody(host);
       };
+      const resolveMirroredHost = (
+        sourceHost: HTMLElement | null,
+        targetDocument: Document | null,
+      ): HTMLElement | null => {
+        if (!sourceHost || !targetDocument?.body) return null;
+        if (sourceHost === sourceHost.ownerDocument.body) {
+          return targetDocument.body;
+        }
+        const sourceHostPath = computePathFromHost(sourceHost);
+        const mirroredHost = readElementByPath(targetDocument.body, sourceHostPath);
+        return mirroredHost instanceof HTMLElement ? mirroredHost : null;
+      };
       const ensureRelativePositionedHost = (host: HTMLElement | null) => {
         if (!host || host === host.ownerDocument.body) return;
         const inlinePosition = String(host.style.position || "").trim().toLowerCase();
@@ -900,6 +912,39 @@ export const usePreviewCreation = ({
             );
           });
       };
+      const clearElementStyleMap = (
+        element: HTMLElement,
+        styles: React.CSSProperties,
+      ) => {
+        Object.keys(styles).forEach((key) => {
+          element.style.removeProperty(toCssPropertyName(key));
+        });
+        if (!element.getAttribute("style")?.trim()) {
+          element.removeAttribute("style");
+        }
+      };
+      const applyRuntimeCssToDocument = (
+        doc: Document,
+        styleId: string,
+        cssText: string,
+        sourcePath?: string | null,
+      ) => {
+        const head = doc.head || doc.documentElement || doc.body;
+        if (!head) return;
+        let styleNode = doc.getElementById(styleId) as HTMLStyleElement | null;
+        if (!(styleNode instanceof HTMLStyleElement)) {
+          styleNode = doc.createElement("style");
+          styleNode.setAttribute("id", styleId);
+          head.appendChild(styleNode);
+        }
+        const normalizedSourcePath = normalizeProjectRelative(sourcePath || "");
+        if (normalizedSourcePath) {
+          styleNode.setAttribute("data-source", normalizedSourcePath);
+          styleNode.setAttribute("data-href", normalizedSourcePath);
+          styleNode.setAttribute("data-nx-live-source", normalizedSourcePath);
+        }
+        styleNode.textContent = cssText;
+      };
 
       const dropClassName = `nx-${String(nextElement.id || dropType)
         .trim()
@@ -923,10 +968,14 @@ export const usePreviewCreation = ({
       const parsedPlacement = isSimpleDroppedElement
         ? { host: pickDropHost(parsed), insertAfter: null as HTMLElement | null }
         : resolveDropPlacement(parsed, clientX, clientY);
+      const mirroredLiveHost = resolveMirroredHost(
+        parsedPlacement.host,
+        liveDocument,
+      );
       const livePlacement =
         liveDocument && isSimpleDroppedElement
           ? {
-              host: pickDropHost(liveDocument),
+              host: mirroredLiveHost || pickDropHost(liveDocument),
               insertAfter: null as HTMLElement | null,
             }
           : liveDocument
@@ -1002,6 +1051,7 @@ export const usePreviewCreation = ({
       const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
 
       let appliedLive = false;
+      let insertedLiveNode: HTMLElement | null = null;
       if (liveDocument?.body) {
         const liveNode = materializeVirtualElement(liveDocument, {
           ...nextElement,
@@ -1023,6 +1073,7 @@ export const usePreviewCreation = ({
               liveNode,
             );
           }
+          insertedLiveNode = liveNode;
           appliedLive = true;
         }
       }
@@ -1033,16 +1084,29 @@ export const usePreviewCreation = ({
         });
         appliedLive = true;
       }
-      if (isMountedPreviewDrop && latestLocalCssContent) {
+      if (latestLocalCssContent) {
+        const runtimeCssText = rewriteInlineAssetRefs(
+          latestLocalCssContent,
+          cssLocalVirtualPath,
+          filesRef.current,
+        );
+        if (liveDocument) {
+          applyRuntimeCssToDocument(
+            liveDocument,
+            "__nx-preview-runtime-local-css",
+            runtimeCssText,
+            cssLocalVirtualPath,
+          );
+        }
         postPreviewPatchToFrame({
           type: "PREVIEW_SET_RUNTIME_CSS",
           styleId: "__nx-preview-runtime-local-css",
-          cssText: rewriteInlineAssetRefs(
-            latestLocalCssContent,
-            cssLocalVirtualPath,
-            filesRef.current,
-          ),
+          sourcePath: cssLocalVirtualPath,
+          cssText: runtimeCssText,
         });
+        if (isSimpleDroppedElement && insertedLiveNode) {
+          clearElementStyleMap(insertedLiveNode, effectiveElementStyles);
+        }
       }
       if (isMountedPreviewDrop && requiresAddToolAssets) {
         postPreviewPatchToFrame({

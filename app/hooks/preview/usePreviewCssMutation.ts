@@ -877,6 +877,15 @@ export const usePreviewCssMutation = ({
         filesRef.current,
         options?.cacheBustAssets === false ? null : Date.now(),
       );
+      const htmlDirVirtual = selectedPreviewHtmlRef.current?.includes("/")
+        ? selectedPreviewHtmlRef.current.slice(
+            0,
+            selectedPreviewHtmlRef.current.lastIndexOf("/"),
+          )
+        : "";
+      const localCssVirtualPath = normalizeProjectRelative(
+        htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+      );
       let didUpdate = false;
       const styleNodes = Array.from(
         frameDocument.querySelectorAll<HTMLStyleElement>("style[data-source]"),
@@ -1009,6 +1018,16 @@ export const usePreviewCssMutation = ({
           overrideNode.setAttribute("data-href", normalizedSourcePath);
           overrideNode.textContent = nextCssText;
           didUpdate = true;
+        }
+      }
+
+      if (cssRuleSourcesMatch(normalizedSourcePath, localCssVirtualPath)) {
+        const runtimeLocalCssNode =
+          frameDocument.getElementById(
+            "__nx-preview-runtime-local-css",
+          ) as HTMLStyleElement | null;
+        if (runtimeLocalCssNode instanceof HTMLStyleElement) {
+          runtimeLocalCssNode.textContent = nextCssText;
         }
       }
 
@@ -1335,6 +1354,50 @@ export const usePreviewCssMutation = ({
             return acc;
           }, {});
       };
+      const applyLiveStylePatch = (
+        element: HTMLElement,
+        stylePatch: Partial<React.CSSProperties>,
+      ) => {
+        const styleDocument = element.ownerDocument || null;
+        const positionalKeys = new Set([
+          "left",
+          "top",
+          "right",
+          "bottom",
+          "width",
+          "height",
+        ]);
+        const hasPositionalPatch = Object.keys(stylePatch).some((key) =>
+          positionalKeys.has(toCssPropertyName(key)),
+        );
+        Object.entries(stylePatch).forEach(([key, rawValue]) => {
+          const cssKey = toCssPropertyName(key);
+          const value = normalizePresentationCssValue(
+            cssKey,
+            rawValue,
+            styleDocument,
+          );
+          if (!value) {
+            element.style.removeProperty(cssKey);
+            return;
+          }
+          element.style.setProperty(cssKey, value);
+        });
+        if (
+          hasPositionalPatch &&
+          !Object.prototype.hasOwnProperty.call(stylePatch, "position")
+        ) {
+          const computedPosition =
+            element.ownerDocument?.defaultView?.getComputedStyle(element).position ||
+            "";
+          if (!computedPosition || computedPosition === "static") {
+            element.style.setProperty("position", "absolute");
+          }
+        }
+        if (!element.getAttribute("style")?.trim()) {
+          element.removeAttribute("style");
+        }
+      };
       const collectStableClassTokens = (value: string | null | undefined) =>
         String(value || "")
           .split(/\s+/)
@@ -1539,12 +1602,7 @@ export const usePreviewCssMutation = ({
             cssLocalVirtualPath,
           );
           if (liveTarget instanceof HTMLElement) {
-            Object.keys(styles).forEach((key) => {
-              liveTarget.style.removeProperty(toCssPropertyName(key));
-            });
-            if (!liveTarget.getAttribute("style")?.trim()) {
-              liveTarget.removeAttribute("style");
-            }
+            applyLiveStylePatch(liveTarget, styles);
           }
           setPreviewSelectedElement((prev) =>
             prev
@@ -1572,12 +1630,7 @@ export const usePreviewCssMutation = ({
           const nextCssContent = movePatch.nextCssContent;
           await persistResolvedCssPatch(nextCssContent, elementPath);
           if (liveTarget instanceof HTMLElement) {
-            Object.keys(styles).forEach((key) => {
-              liveTarget.style.removeProperty(toCssPropertyName(key));
-            });
-            if (!liveTarget.getAttribute("style")?.trim()) {
-              liveTarget.removeAttribute("style");
-            }
+            applyLiveStylePatch(liveTarget, styles);
           }
           if (target instanceof HTMLElement) {
             Object.keys(styles).forEach((key) => {
@@ -1620,12 +1673,7 @@ export const usePreviewCssMutation = ({
           }
         }
         if (liveTarget instanceof HTMLElement) {
-          Object.keys(styles).forEach((key) => {
-            liveTarget.style.removeProperty(toCssPropertyName(key));
-          });
-          if (!liveTarget.getAttribute("style")?.trim()) {
-            liveTarget.removeAttribute("style");
-          }
+          applyLiveStylePatch(liveTarget, styles);
         }
         const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {

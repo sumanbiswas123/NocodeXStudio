@@ -4953,6 +4953,7 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
     if (payload.type === 'PREVIEW_SET_RUNTIME_CSS') {
       var runtimeCssText = typeof payload.cssText === 'string' ? payload.cssText : '';
       var runtimeCssId = typeof payload.styleId === 'string' && payload.styleId ? payload.styleId : '__nx-preview-runtime-css';
+      var runtimeCssSourcePath = typeof payload.sourcePath === 'string' ? payload.sourcePath : '';
       var runtimeHead = document.head || document.documentElement || document.body;
       if (!runtimeHead) return;
       var runtimeStyleEl = document.getElementById(runtimeCssId);
@@ -4960,6 +4961,11 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
         runtimeStyleEl = document.createElement('style');
         runtimeStyleEl.setAttribute('id', runtimeCssId);
         runtimeHead.appendChild(runtimeStyleEl);
+      }
+      if (runtimeCssSourcePath) {
+        runtimeStyleEl.setAttribute('data-source', runtimeCssSourcePath);
+        runtimeStyleEl.setAttribute('data-href', runtimeCssSourcePath);
+        runtimeStyleEl.setAttribute('data-nx-live-source', runtimeCssSourcePath);
       }
       runtimeStyleEl.textContent = runtimeCssText;
       return;
