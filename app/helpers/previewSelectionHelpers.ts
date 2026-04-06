@@ -319,6 +319,25 @@ export const persistPreviewHtmlContent = async ({
       element.removeAttribute("style");
     });
     const extractedStyleTags = Array.from(parsed.querySelectorAll("style"))
+      .filter((node) => {
+        const id = String(node.getAttribute("id") || "").trim();
+        if (
+          node.hasAttribute("data-preview-inline-editor") ||
+          node.hasAttribute("data-nx-local-drop") ||
+          id === "__nx-preview-runtime-local-css" ||
+          id === "__nx-preview-runtime-css"
+        ) {
+          return false;
+        }
+        const text = String(node.textContent || "");
+        return !(
+          text.includes(".__nx-preview-selected") ||
+          text.includes(".__nx-preview-editing") ||
+          text.includes("[data-preview-hover-outline") ||
+          text.includes("[data-preview-hover-badge") ||
+          text.includes("[data-preview-draw-draft")
+        );
+      })
       .map((node) => node.textContent || "")
       .map((content) => content.trim())
       .filter(Boolean)

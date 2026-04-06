@@ -185,7 +185,7 @@ export const usePreviewCreation = ({
           });
         doc
           .querySelectorAll<HTMLElement>(
-            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop]",
+            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop],style[data-preview-inline-editor],style#__nx-preview-runtime-local-css,style#__nx-preview-runtime-css,.ui-dialog,.ui-widget-overlay",
           )
           .forEach((el) => el.remove());
       };
@@ -387,7 +387,7 @@ export const usePreviewCreation = ({
           });
         doc
           .querySelectorAll<HTMLElement>(
-            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop]",
+            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop],style[data-preview-inline-editor],style#__nx-preview-runtime-local-css,style#__nx-preview-runtime-css,.ui-dialog,.ui-widget-overlay",
           )
           .forEach((el) => el.remove());
       };
@@ -801,7 +801,13 @@ export const usePreviewCreation = ({
       ) => {
         const styleRules = Object.entries(styles)
           .filter(([, value]) => value !== undefined && value !== null && value !== "")
-          .map(([key, value]) => `  ${toCssPropertyName(key)}: ${String(value)};`);
+          .map(([key, value]) => {
+            const cssProperty = toCssPropertyName(key);
+            return `  ${cssProperty}: ${normalizePresentationCssValue(
+              cssProperty,
+              value,
+            )};`;
+          });
         if (styleRules.length === 0) return "";
         return `${selector} {\n${styleRules.join("\n")}\n}`;
       };
@@ -925,7 +931,6 @@ export const usePreviewCreation = ({
       setPreviewSelectedMatchedCssRules([]);
       setSelectedId(null);
       setIsCodePanelOpen(false);
-      setIsRightPanelOpen(true);
       setSidebarToolMode("edit");
       setPreviewMode("edit");
       setInteractionMode("preview");
