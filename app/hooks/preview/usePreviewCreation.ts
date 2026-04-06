@@ -24,9 +24,11 @@ import {
   normalizePreviewDrawTag,
   normalizeProjectRelative,
   parseInlineStyleText,
+  PREVIEW_MOUNT_PATH,
   readElementByPath,
   relativePathBetweenVirtualFiles,
   resolveProjectRelativePath,
+  toMountRelativePath,
   toCssPropertyName,
 } from "../../helpers/appHelpers";
 import {
@@ -55,6 +57,7 @@ type UsePreviewCreationOptions = {
   ) => Promise<void>;
   postPreviewPatchToFrame: (payload: Record<string, unknown>) => void;
   previewFrameRef: MutableRefObject<HTMLIFrameElement | null>;
+  previewMountBasePath: string | null;
   selectedPreviewHtml: string | null;
   selectedPreviewSrc: string | null;
   setFiles: Dispatch<SetStateAction<FileMap>>;
@@ -65,6 +68,7 @@ type UsePreviewCreationOptions = {
   setIsRightPanelOpen: Dispatch<SetStateAction<boolean>>;
   setIsToolboxDragging: Dispatch<SetStateAction<boolean>>;
   setPreviewMode: Dispatch<SetStateAction<"edit" | "preview">>;
+  setPreviewNavigationFile: Dispatch<SetStateAction<string | null>>;
   setPreviewSelectedComputedStyles: Dispatch<
     SetStateAction<React.CSSProperties | null>
   >;
@@ -89,6 +93,7 @@ export const usePreviewCreation = ({
   persistPreviewHtmlContent,
   postPreviewPatchToFrame,
   previewFrameRef,
+  previewMountBasePath,
   selectedPreviewHtml,
   selectedPreviewSrc,
   setFiles,
@@ -97,6 +102,7 @@ export const usePreviewCreation = ({
   setIsRightPanelOpen,
   setIsToolboxDragging,
   setPreviewMode,
+  setPreviewNavigationFile,
   setPreviewSelectedComputedStyles,
   setPreviewSelectedElement,
   setPreviewSelectedMatchedCssRules,
@@ -106,6 +112,48 @@ export const usePreviewCreation = ({
   textFileCacheRef,
   toolboxDragTypeRef,
 }: UsePreviewCreationOptions) => {
+  const resolveMountedPreviewPathFromFrame = useCallback((): string | null => {
+    if (!previewMountBasePath) return null;
+    const frameWindow =
+      previewFrameRef.current?.contentWindow ??
+      previewFrameRef.current?.contentDocument?.defaultView ??
+      null;
+    const frameSrc =
+      frameWindow?.location?.href ||
+      previewFrameRef.current?.getAttribute("src") ||
+      previewFrameRef.current?.src ||
+      "";
+    if (!frameSrc) return null;
+    let pathname = "";
+    try {
+      pathname = new URL(frameSrc, window.location.href).pathname || "";
+    } catch {
+      return null;
+    }
+    if (!pathname.startsWith(`${PREVIEW_MOUNT_PATH}/`)) return null;
+    const mountRelative = normalizeProjectRelative(
+      decodeURIComponent(pathname.slice(PREVIEW_MOUNT_PATH.length + 1)).replace(
+        /^\/+|\/+$/g,
+        "",
+      ),
+    ).toLowerCase();
+    if (!mountRelative) return null;
+    for (const [virtualPath, absolutePath] of Object.entries(
+      filePathIndexRef.current,
+    )) {
+      const candidate = toMountRelativePath(previewMountBasePath, absolutePath);
+      if (!candidate) continue;
+      const candidateLower = candidate.toLowerCase();
+      if (
+        candidateLower === mountRelative ||
+        candidateLower === `${mountRelative}/index.html`
+      ) {
+        return virtualPath;
+      }
+    }
+    return null;
+  }, [filePathIndexRef, previewFrameRef, previewMountBasePath]);
+
   const applyPreviewDrawCreate = useCallback(
     async (
       parentPath: number[],
@@ -120,12 +168,47 @@ export const usePreviewCreation = ({
       if (normalizedParentPath.length !== parentPath.length) return;
 
       const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
+      const sanitizePreviewDocument = (doc: Document) => {
+        doc.documentElement?.removeAttribute("data-nx-mounted-preview-bridge");
+        doc.querySelectorAll<HTMLElement>("[contenteditable]").forEach((el) => {
+          el.removeAttribute("contenteditable");
+        });
+        doc
+          .querySelectorAll<HTMLElement>(
+            ".__nx-preview-editing, .__nx-preview-selected, .__nx-preview-dirty",
+          )
+          .forEach((el) => {
+            el.classList.remove("__nx-preview-editing");
+            el.classList.remove("__nx-preview-selected");
+            el.classList.remove("__nx-preview-dirty");
+          });
+        doc
+          .querySelectorAll<HTMLElement>(
+            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop]",
+          )
+          .forEach((el) => el.remove());
+      };
+      const readCurrentPreviewHtml = (): string => {
+        const liveDocument =
+          previewFrameRef.current?.contentDocument ??
+          previewFrameRef.current?.contentWindow?.document ??
+          null;
+        if (liveDocument?.documentElement) {
+          const liveSerialized = `<!DOCTYPE html>\n${liveDocument.documentElement.outerHTML}`;
+          const liveParsed = new DOMParser().parseFromString(
+            liveSerialized,
+            "text/html",
+          );
+          sanitizePreviewDocument(liveParsed);
+          return `<!DOCTYPE html>\n${liveParsed.documentElement.outerHTML}`;
+        }
+        return typeof loaded === "string" && loaded.length > 0
           ? loaded
           : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
             ? (filesRef.current[selectedPreviewHtml]?.content as string)
             : "";
+      };
+      const sourceHtml = readCurrentPreviewHtml();
       if (!sourceHtml) return;
 
       const parser = new DOMParser();
@@ -287,12 +370,47 @@ export const usePreviewCreation = ({
         buildStandardElement(dropType, idFor("element"));
 
       const loaded = await loadFileContent(selectedPreviewHtml);
-      const sourceHtml =
-        typeof loaded === "string" && loaded.length > 0
+      const sanitizePreviewDocument = (doc: Document) => {
+        doc.documentElement?.removeAttribute("data-nx-mounted-preview-bridge");
+        doc.querySelectorAll<HTMLElement>("[contenteditable]").forEach((el) => {
+          el.removeAttribute("contenteditable");
+        });
+        doc
+          .querySelectorAll<HTMLElement>(
+            ".__nx-preview-editing, .__nx-preview-selected, .__nx-preview-dirty",
+          )
+          .forEach((el) => {
+            el.classList.remove("__nx-preview-editing");
+            el.classList.remove("__nx-preview-selected");
+            el.classList.remove("__nx-preview-dirty");
+          });
+        doc
+          .querySelectorAll<HTMLElement>(
+            "#__edit-highlight__,#__tag-badge__,#__inspect-tooltip__,.__nx-preview-runtime-helper,[data-preview-hover-outline],[data-preview-hover-badge],[data-preview-draw-draft],style[data-nx-local-drop]",
+          )
+          .forEach((el) => el.remove());
+      };
+      const readCurrentPreviewHtml = (): string => {
+        const liveDocument =
+          previewFrameRef.current?.contentDocument ??
+          previewFrameRef.current?.contentWindow?.document ??
+          null;
+        if (liveDocument?.documentElement) {
+          const liveSerialized = `<!DOCTYPE html>\n${liveDocument.documentElement.outerHTML}`;
+          const liveParsed = new DOMParser().parseFromString(
+            liveSerialized,
+            "text/html",
+          );
+          sanitizePreviewDocument(liveParsed);
+          return `<!DOCTYPE html>\n${liveParsed.documentElement.outerHTML}`;
+        }
+        return typeof loaded === "string" && loaded.length > 0
           ? loaded
           : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
             ? (filesRef.current[selectedPreviewHtml]?.content as string)
             : "";
+      };
+      const sourceHtml = readCurrentPreviewHtml();
       if (!sourceHtml) return;
 
       const parser = new DOMParser();
@@ -447,20 +565,22 @@ export const usePreviewCreation = ({
           ...prev,
           [assetVirtualPath]: nextFile,
         }));
-        if (absoluteAssetPath) {
-          await (Neutralino as any).filesystem.writeFile(
-            absoluteAssetPath,
-            nextContent,
-          );
-          delete pendingPreviewWritesRef.current[assetVirtualPath];
-        } else {
-          pendingPreviewWritesRef.current[assetVirtualPath] = nextContent;
-        }
+        pendingPreviewWritesRef.current[assetVirtualPath] = nextContent;
         return nextContent;
       };
 
-      ensureAssetLinkInHead(parsed, selectedPreviewHtml, cssLocalVirtualPath, "link");
-      ensureAssetLinkInHead(parsed, selectedPreviewHtml, jsLocalVirtualPath, "script");
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        cssLocalVirtualPath,
+        "link",
+      );
+      ensureAssetLinkInHead(
+        parsed,
+        selectedPreviewHtml,
+        jsLocalVirtualPath,
+        "script",
+      );
 
       if (requiresAddToolAssets) {
         const removeLegacySharedAssetRefs = (doc: Document, htmlPath: string) => {
@@ -560,204 +680,222 @@ export const usePreviewCreation = ({
         }
         return path;
       };
-      const ensurePositionableHost = (host: HTMLElement) => {
-        const computed = host.ownerDocument.defaultView?.getComputedStyle(host);
-        if (!computed) return;
-        if (!computed.position || computed.position === "static") {
-          host.style.setProperty("position", "relative");
+      const appendNodeWithSpacing = (host: HTMLElement, node: HTMLElement) => {
+        const doc = host.ownerDocument;
+        let depth = 1;
+        let cursor: HTMLElement | null = host;
+        while (cursor && cursor !== doc.body) {
+          depth += 1;
+          cursor = cursor.parentElement;
         }
+        const childIndent = `\n${"  ".repeat(depth)}`;
+        const closingIndent = `\n${"  ".repeat(Math.max(0, depth - 1))}`;
+        const lastChild = host.lastChild;
+        if (!lastChild) {
+          host.appendChild(doc.createTextNode(childIndent));
+          host.appendChild(node);
+          host.appendChild(doc.createTextNode(closingIndent));
+          return;
+        }
+        if (
+          lastChild.nodeType === Node.TEXT_NODE &&
+          (lastChild.textContent || "").trim().length === 0
+        ) {
+          lastChild.textContent = childIndent;
+        } else {
+          host.appendChild(doc.createTextNode(childIndent));
+        }
+        host.appendChild(node);
+        host.appendChild(doc.createTextNode(closingIndent));
+      };
+      const insertNodeAfterWithSpacing = (
+        target: HTMLElement,
+        node: HTMLElement,
+      ) => {
+        const doc = target.ownerDocument;
+        const parent = target.parentElement;
+        if (!parent) {
+          appendNodeWithSpacing(target, node);
+          return;
+        }
+        let depth = 1;
+        let cursor: HTMLElement | null = parent;
+        while (cursor && cursor !== doc.body) {
+          depth += 1;
+          cursor = cursor.parentElement;
+        }
+        const childIndent = `\n${"  ".repeat(depth)}`;
+        const nextSibling = target.nextSibling;
+        if (nextSibling?.nodeType === Node.TEXT_NODE) {
+          (nextSibling as Text).textContent = childIndent;
+        } else {
+          parent.insertBefore(doc.createTextNode(childIndent), nextSibling);
+        }
+        parent.insertBefore(node, nextSibling);
+      };
+      const canReceiveChildren = (element: HTMLElement | null): boolean => {
+        if (!element) return false;
+        return !VOID_HTML_TAGS.has(String(element.tagName || "").toLowerCase());
+      };
+      const resolveDropPlacement = (
+        doc: Document,
+        mouseClientX: number,
+        mouseClientY: number,
+      ): { host: HTMLElement; insertAfter: HTMLElement | null } => {
+        const frameRect = previewFrameRef.current?.getBoundingClientRect();
+        const defaultHost = pickDropHost(doc);
+        if (!frameRect) {
+          return { host: defaultHost, insertAfter: null };
+        }
+        const viewportWidth = Math.max(
+          1,
+          previewFrameRef.current?.clientWidth || doc.documentElement.clientWidth || 1,
+        );
+        const viewportHeight = Math.max(
+          1,
+          previewFrameRef.current?.clientHeight || doc.documentElement.clientHeight || 1,
+        );
+        const frameX = mouseClientX - frameRect.left;
+        const frameY = mouseClientY - frameRect.top;
+        const innerClientX = frameX * (viewportWidth / Math.max(frameRect.width, 1));
+        const innerClientY =
+          frameY * (viewportHeight / Math.max(frameRect.height, 1));
+        let rawTarget = doc.elementFromPoint(innerClientX, innerClientY);
+        if (rawTarget instanceof HTMLElement) {
+          rawTarget = rawTarget.closest(
+            ":not(#__edit-highlight__):not(#__tag-badge__):not(#__inspect-tooltip__):not([data-preview-hover-outline]):not([data-preview-hover-badge]):not([data-preview-draw-draft])",
+          );
+        }
+        const target =
+          rawTarget instanceof HTMLElement
+            ? rawTarget.closest(
+                "[data-v-id], #maincontainer, .maincontainer, #mainContainer, .mainContainer, #contentFrame, .contentFrame, .mainContent, #container, body",
+              ) || rawTarget
+            : null;
+        if (!(target instanceof HTMLElement)) {
+          return { host: defaultHost, insertAfter: null };
+        }
+        if (target === doc.body || target === defaultHost) {
+          return { host: defaultHost, insertAfter: null };
+        }
+        if (canReceiveChildren(target)) {
+          return { host: target, insertAfter: null };
+        }
+        if (target.parentElement instanceof HTMLElement) {
+          return { host: target.parentElement, insertAfter: target };
+        }
+        return { host: defaultHost, insertAfter: null };
+      };
+      const computePathFromHost = (host: HTMLElement): number[] => {
+        if (host === host.ownerDocument.body) return [];
+        return computePathFromBody(host);
+      };
+      const styleObjectToCssBlock = (
+        selector: string,
+        styles: Record<string, unknown>,
+      ) => {
+        const styleRules = Object.entries(styles)
+          .filter(([, value]) => value !== undefined && value !== null && value !== "")
+          .map(([key, value]) => `  ${toCssPropertyName(key)}: ${String(value)};`);
+        if (styleRules.length === 0) return "";
+        return `${selector} {\n${styleRules.join("\n")}\n}`;
       };
 
-      const liveDocument =
-        previewFrameRef.current?.contentDocument ??
-        previewFrameRef.current?.contentWindow?.document ??
-        null;
-      const liveWindow = liveDocument?.defaultView ?? null;
-      const frameRect = previewFrameRef.current?.getBoundingClientRect();
-      const parsedDropHost = pickDropHost(parsed);
-      const liveDropHost = liveDocument ? pickDropHost(liveDocument) : null;
-      ensurePositionableHost(parsedDropHost);
-      if (liveDropHost) {
-        ensurePositionableHost(liveDropHost);
-      }
-      const getDocumentOffset = (
-        element: HTMLElement,
-      ): { left: number; top: number } => {
-        let left = 0;
-        let top = 0;
-        let cursor: HTMLElement | null = element;
-        while (cursor) {
-          left += cursor.offsetLeft || 0;
-          top += cursor.offsetTop || 0;
-          cursor = cursor.offsetParent as HTMLElement | null;
-        }
-        return { left, top };
-      };
-
-      let nextLeft = 0;
-      let nextTop = 0;
-      let normalizedDropX: number | null = null;
-      let normalizedDropY: number | null = null;
-      if (frameRect && liveDropHost) {
-        const liveViewportWidth = Math.max(
-          1,
-          previewFrameRef.current?.clientWidth ||
-            liveDocument?.documentElement?.clientWidth ||
-            0,
-        );
-        const liveViewportHeight = Math.max(
-          1,
-          previewFrameRef.current?.clientHeight ||
-            liveDocument?.documentElement?.clientHeight ||
-            0,
-        );
-        const scaleX =
-          liveViewportWidth > 0 ? frameRect.width / liveViewportWidth : 1;
-        const scaleY =
-          liveViewportHeight > 0 ? frameRect.height / liveViewportHeight : 1;
-        normalizedDropX =
-          frameRect.width > 0
-            ? Math.max(0, Math.min(1, (clientX - frameRect.left) / frameRect.width))
-            : null;
-        normalizedDropY =
-          frameRect.height > 0
-            ? Math.max(0, Math.min(1, (clientY - frameRect.top) / frameRect.height))
-            : null;
-        const innerClientX = (clientX - frameRect.left) / (scaleX || 1);
-        const innerClientY = (clientY - frameRect.top) / (scaleY || 1);
-        const innerDocX = innerClientX + (liveWindow?.scrollX || 0);
-        const innerDocY = innerClientY + (liveWindow?.scrollY || 0);
-        const hostOffset = getDocumentOffset(liveDropHost);
-        nextLeft = Math.max(0, Math.round(innerDocX - hostOffset.left));
-        nextTop = Math.max(0, Math.round(innerDocY - hostOffset.top));
-      }
-      const hostWidth = Math.max(
-        0,
-        liveDropHost?.scrollWidth || liveDropHost?.clientWidth || parsedDropHost.clientWidth || 0,
-      );
-      const hostHeight = Math.max(
-        0,
-        liveDropHost?.scrollHeight || liveDropHost?.clientHeight || parsedDropHost.clientHeight || 0,
-      );
-      if (hostWidth > 0) {
-        if (normalizedDropX !== null && nextLeft === 0 && normalizedDropX > 0.04) {
-          nextLeft = Math.round(normalizedDropX * hostWidth);
-        }
-        nextLeft = Math.max(0, Math.min(nextLeft, Math.max(0, hostWidth - 24)));
-      }
-      if (hostHeight > 0) {
-        if (normalizedDropY !== null && nextTop === 0 && normalizedDropY > 0.04) {
-          nextTop = Math.round(normalizedDropY * hostHeight);
-        }
-        nextTop = Math.max(0, Math.min(nextTop, Math.max(0, hostHeight - 24)));
-      }
-      const instanceClassName = `nx-local-drop-${String(
-        nextElement.id || `drop-${Date.now()}`,
-      )
+      const dropClassName = `nx-${String(nextElement.id || dropType)
+        .trim()
         .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "-")}`;
-      const nextLeftValue = normalizePresentationCssValue("left", `${nextLeft}px`);
-      const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
-      const styleRules: string[] = [
-        "position: absolute",
-        `left: ${nextLeftValue}`,
-        `top: ${nextTopValue}`,
-      ];
-      for (const [key, value] of Object.entries(nextElement.styles || {})) {
-        if (value === undefined || value === null || value === "") continue;
-        styleRules.push(`${toCssPropertyName(key)}: ${String(value)}`);
-      }
-      if (requiresAddToolAssets) {
-        styleRules.push("max-width: 100%");
-        styleRules.push("box-sizing: border-box");
-      }
-      const dropMarkerStart = `/* nocodex-local-drop:${instanceClassName}:start */`;
-      const dropMarkerEnd = `/* nocodex-local-drop:${instanceClassName}:end */`;
-      const dropCssBlock = `.${instanceClassName} {\n  ${styleRules.join(";\n  ")};\n}`;
-      try {
-        await upsertLocalAsset(
-          cssLocalVirtualPath,
-          "css/local.css",
-          (existingContent) =>
-            mergeMarkerBlock(
-              existingContent,
-              dropMarkerStart,
-              dropMarkerEnd,
-              dropCssBlock,
-            ),
-        );
-        await upsertLocalAsset(
-          jsLocalVirtualPath,
-          "js/local.js",
-          (existingContent) => existingContent || "// local page interactions\n",
-          "// local page interactions\n",
-        );
-      } catch (error) {
-        console.warn("Failed wiring local drop assets:", error);
-      }
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")}`;
       const currentClassTokens = new Set(
         String(parsedNode.getAttribute("class") || "")
           .split(/\s+/)
           .map((token) => token.trim())
           .filter(Boolean),
       );
-      currentClassTokens.add(instanceClassName);
+      currentClassTokens.add(dropClassName);
       parsedNode.setAttribute("class", Array.from(currentClassTokens).join(" "));
       parsedNode.removeAttribute("style");
-      parsedDropHost.appendChild(parsedNode);
+
+      const liveDocument =
+        previewFrameRef.current?.contentDocument ??
+        previewFrameRef.current?.contentWindow?.document ??
+        null;
+      const parsedPlacement = resolveDropPlacement(parsed, clientX, clientY);
+      if (parsedPlacement.insertAfter) {
+        insertNodeAfterWithSpacing(parsedPlacement.insertAfter, parsedNode);
+      } else {
+        appendNodeWithSpacing(parsedPlacement.host, parsedNode);
+      }
       const newPath = computePathFromBody(parsedNode);
+
+      const cssBlock = styleObjectToCssBlock(
+        `#${nextElement.id}`,
+        nextElement.styles || {},
+      );
+      if (cssBlock) {
+        try {
+          await upsertLocalAsset(
+            cssLocalVirtualPath,
+            "css/local.css",
+            (existingContent) =>
+              mergeMarkerBlock(
+                existingContent,
+                `/* nocodex-local-drop:${nextElement.id}:start */`,
+                `/* nocodex-local-drop:${nextElement.id}:end */`,
+                cssBlock,
+              ),
+            "",
+          );
+        } catch (error) {
+          console.warn("Failed writing dropped element CSS:", error);
+        }
+      }
+
       const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
 
       let appliedLive = false;
       if (liveDocument?.body) {
-        const liveHead = liveDocument.head || liveDocument.documentElement;
-        if (liveHead) {
-          let runtimeStyle = liveHead.querySelector<HTMLStyleElement>(
-            `style[data-nx-local-drop="${instanceClassName}"]`,
-          );
-          if (!runtimeStyle) {
-            runtimeStyle = liveDocument.createElement("style");
-            runtimeStyle.setAttribute("data-nx-local-drop", instanceClassName);
-            liveHead.appendChild(runtimeStyle);
-          }
-          runtimeStyle.textContent = dropCssBlock;
-        }
         const liveNode = materializeVirtualElement(liveDocument, nextElement);
         if (liveNode instanceof HTMLElement) {
-          const liveDropHostNext = pickDropHost(liveDocument);
-          ensurePositionableHost(liveDropHostNext);
-          liveNode.classList.add(instanceClassName);
-          liveNode.style.setProperty("position", "absolute");
-          liveNode.style.setProperty("left", nextLeftValue);
-          liveNode.style.setProperty("top", nextTopValue);
-          if (requiresAddToolAssets) {
-            liveNode.style.setProperty("max-width", "100%");
-            liveNode.style.setProperty("box-sizing", "border-box");
+          liveNode.className = Array.from(currentClassTokens).join(" ");
+          liveNode.removeAttribute("style");
+          const livePlacement = resolveDropPlacement(liveDocument, clientX, clientY);
+          if (livePlacement.insertAfter) {
+            insertNodeAfterWithSpacing(livePlacement.insertAfter, liveNode);
+          } else {
+            appendNodeWithSpacing(livePlacement.host, liveNode);
           }
-          liveDropHostNext.appendChild(liveNode);
           appliedLive = true;
         }
       }
-
-      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
-      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc:
-          needsAssetReload || (!appliedLive && !isMountedPreviewDrop),
-        saveNow: isMountedPreviewDrop,
-        skipAutoSave: !isMountedPreviewDrop,
-        elementPath: newPath,
-      });
-      if (isMountedPreviewDrop && parsed.body && !needsAssetReload) {
+      if (!appliedLive && isMountedPreviewDrop && parsed.body) {
         postPreviewPatchToFrame({
           type: "PREVIEW_APPLY_HTML",
           html: parsed.body.innerHTML,
         });
+        appliedLive = true;
       }
+
+      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
+      const mountedPathAtDrop = isMountedPreviewDrop
+        ? resolveMountedPreviewPathFromFrame()
+        : null;
+      if (mountedPathAtDrop) {
+        setPreviewNavigationFile((prev) =>
+          prev === mountedPathAtDrop ? prev : mountedPathAtDrop,
+        );
+      }
+      await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+        refreshPreviewDoc: needsAssetReload ? true : false,
+        saveNow: false,
+        skipAutoSave: isMountedPreviewDrop,
+        elementPath: newPath,
+      });
 
       setPreviewSelectedPath(newPath);
       setPreviewSelectedElement({
         ...nextElement,
-        className: instanceClassName,
+        className: Array.from(currentClassTokens).join(" "),
         styles: {
           ...nextElement.styles,
         },
@@ -780,6 +918,8 @@ export const usePreviewCreation = ({
       persistPreviewHtmlContent,
       postPreviewPatchToFrame,
       previewFrameRef,
+      previewMountBasePath,
+      resolveMountedPreviewPathFromFrame,
       selectedPreviewHtml,
       selectedPreviewSrc,
       setFiles,
@@ -787,6 +927,7 @@ export const usePreviewCreation = ({
       setIsCodePanelOpen,
       setIsRightPanelOpen,
       setPreviewMode,
+      setPreviewNavigationFile,
       setPreviewSelectedComputedStyles,
       setPreviewSelectedElement,
       setPreviewSelectedMatchedCssRules,

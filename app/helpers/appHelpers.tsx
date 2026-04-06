@@ -4943,6 +4943,20 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
       if (document.body) document.body.innerHTML = payload.html;
       return;
     }
+    if (payload.type === 'PREVIEW_SET_RUNTIME_CSS') {
+      var runtimeCssText = typeof payload.cssText === 'string' ? payload.cssText : '';
+      var runtimeCssId = typeof payload.styleId === 'string' && payload.styleId ? payload.styleId : '__nx-preview-runtime-css';
+      var runtimeHead = document.head || document.documentElement || document.body;
+      if (!runtimeHead) return;
+      var runtimeStyleEl = document.getElementById(runtimeCssId);
+      if (!runtimeStyleEl) {
+        runtimeStyleEl = document.createElement('style');
+        runtimeStyleEl.setAttribute('id', runtimeCssId);
+        runtimeHead.appendChild(runtimeStyleEl);
+      }
+      runtimeStyleEl.textContent = runtimeCssText;
+      return;
+    }
     if (payload.type === 'PREVIEW_GLOBAL_REPLACE' && payload.search) {
       if (!document.body) return;
       // Do a simple html replacement, same as the server
@@ -5026,6 +5040,43 @@ export const MOUNTED_PREVIEW_BRIDGE_SCRIPT = `
   for (var __blockIdx = 0; __blockIdx < __BLOCK_INTERACTION_EVENTS.length; __blockIdx++) {
     document.addEventListener(__BLOCK_INTERACTION_EVENTS[__blockIdx], swallowInteraction, true);
   }
+
+  function isPreviewToolboxDropEvent(event) {
+    if (!event || !event.dataTransfer) return false;
+    try {
+      var types = Array.prototype.slice.call(event.dataTransfer.types || []);
+      for (var ti = 0; ti < types.length; ti++) {
+        var lowerType = String(types[ti] || '').toLowerCase();
+        if (
+          lowerType === 'application/x-nocodex-element' ||
+          lowerType === 'text/plain' ||
+          lowerType === 'text'
+        ) {
+          return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function swallowPreviewToolboxDrop(event) {
+    if (!isPreviewEditMode()) return;
+    if (!isPreviewToolboxDropEvent(event)) return;
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    event.stopPropagation();
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    if (event.dataTransfer) {
+      try { event.dataTransfer.dropEffect = 'copy'; } catch (e) {}
+    }
+  }
+
+  document.addEventListener('dragenter', swallowPreviewToolboxDrop, true);
+  document.addEventListener('dragover', swallowPreviewToolboxDrop, true);
+  document.addEventListener('drop', swallowPreviewToolboxDrop, true);
 
   var __NAV_KEYS = {
     ArrowLeft: true,
@@ -5990,14 +6041,24 @@ export const getToolboxDragPayload = (dataTransfer: DataTransfer | null): string
   );
 };
 
+let readableElementIdCounter = 0;
+
 export const createPresetIdFactory = (
   prefix: string,
 ): ((segment: string) => string) => {
-  const base = `${prefix.replace(/[^a-z0-9_-]/gi, "-")}-${Date.now()}`;
-  let counter = 0;
+  const base = String(prefix || "element")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "element";
   return (segment: string) => {
-    counter += 1;
-    return `${base}-${segment}-${counter}`;
+    readableElementIdCounter += 1;
+    const normalizedSegment = String(segment || "item")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "item";
+    return `${base}-${normalizedSegment}-${readableElementIdCounter}`;
   };
 };
 

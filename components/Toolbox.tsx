@@ -8,6 +8,26 @@ interface ToolboxProps {
 }
 
 const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
+  const createDragGhost = (label: string) => {
+    const ghost = document.createElement('div');
+    ghost.textContent = label;
+    ghost.style.position = 'fixed';
+    ghost.style.top = '-1000px';
+    ghost.style.left = '-1000px';
+    ghost.style.padding = '8px 12px';
+    ghost.style.borderRadius = '10px';
+    ghost.style.background = 'rgba(15, 23, 42, 0.94)';
+    ghost.style.color = '#fff';
+    ghost.style.fontSize = '12px';
+    ghost.style.fontWeight = '600';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.boxShadow = '0 10px 24px rgba(15, 23, 42, 0.32)';
+    ghost.style.zIndex = '999999';
+    document.body.appendChild(ghost);
+    window.setTimeout(() => ghost.remove(), 0);
+    return ghost;
+  };
+
   const categories = [
     {
       title: 'Layout',
@@ -64,11 +84,20 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
                 <button
                   key={item.type}
                   onClick={() => onAddElement(item.type)}
+                  onMouseDown={() => {
+                    window.dispatchEvent(
+                      new CustomEvent('nocodex-toolbox-drag-state', {
+                        detail: { active: true, type: item.type },
+                      }),
+                    );
+                  }}
                   draggable
                   onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = 'copy';
                     event.dataTransfer.setData('application/x-nocodex-element', item.type);
                     event.dataTransfer.setData('text/plain', item.type);
+                    const ghost = createDragGhost(`Add ${item.label}`);
+                    event.dataTransfer.setDragImage(ghost, 18, 18);
                     window.dispatchEvent(
                       new CustomEvent('nocodex-toolbox-drag-state', {
                         detail: { active: true, type: item.type },

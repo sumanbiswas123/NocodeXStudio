@@ -41,6 +41,7 @@ type UsePreviewFrameBridgeStateOptions = {
     selector: string;
     popupId: string;
   } | null>;
+  pendingPreviewWritesRef: React.MutableRefObject<Record<string, string>>;
   positionQuickTextEditAtRange: (range: Range) => void;
   previewFrameLoadNonce: number;
   previewFrameRef: React.MutableRefObject<HTMLIFrameElement | null>;
@@ -112,6 +113,7 @@ export const usePreviewFrameBridgeState = ({
   isPreviewMountReady,
   openPopupInPreview,
   pendingPopupOpenRef,
+  pendingPreviewWritesRef,
   positionQuickTextEditAtRange,
   previewFrameLoadNonce,
   previewFrameRef,
@@ -559,11 +561,48 @@ export const usePreviewFrameBridgeState = ({
   }, [
     injectMountedPreviewBridge,
     postPreviewModeToFrame,
+    pendingPreviewWritesRef,
     previewFrameLoadNonce,
     previewFrameRef,
     previewMode,
+    selectedPreviewHtml,
     selectedPreviewSrc,
     syncPreviewOrientationToFrame,
+  ]);
+
+  useEffect(() => {
+    if (!selectedPreviewSrc || !selectedPreviewHtml) return;
+    const pendingHtml = pendingPreviewWritesRef.current[selectedPreviewHtml];
+    if (typeof pendingHtml !== "string" || !pendingHtml.trim()) return;
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(pendingHtml, "text/html");
+    const bodyHtml = parsed.body?.innerHTML || "";
+    if (bodyHtml) {
+      postPreviewFrameMessage(previewFrameRef.current, {
+        type: "PREVIEW_APPLY_HTML",
+        html: bodyHtml,
+      });
+    }
+    const htmlDirVirtual = selectedPreviewHtml.includes("/")
+      ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
+      : "";
+    const cssLocalVirtualPath = normalizeProjectRelative(
+      htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+    );
+    const pendingCss = pendingPreviewWritesRef.current[cssLocalVirtualPath];
+    if (typeof pendingCss === "string") {
+      postPreviewFrameMessage(previewFrameRef.current, {
+        type: "PREVIEW_SET_RUNTIME_CSS",
+        styleId: "__nx-preview-runtime-local-css",
+        cssText: pendingCss,
+      });
+    }
+  }, [
+    pendingPreviewWritesRef,
+    previewFrameLoadNonce,
+    previewFrameRef,
+    selectedPreviewHtml,
+    selectedPreviewSrc,
   ]);
 
   return {

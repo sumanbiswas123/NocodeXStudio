@@ -1,13 +1,20 @@
 import React from "react";
+import * as Neutralino from "@neutralinojs/lib";
 import { FileMap, VirtualElement } from "../../types";
 import {
   createPreviewDocument,
   extractComputedStylesFromElement,
   extractCustomAttributesFromElement,
   extractTextWithBreaks,
+  getParentPath,
+  joinPath,
   normalizeEditorMultilineText,
+  normalizePath,
+  normalizeProjectRelative,
   parseInlineStyleText,
   readElementByPath,
+  relativePathBetweenVirtualFiles,
+  toCssPropertyName,
 } from "./appHelpers";
 import {
   collectMatchedCssRulesFromElement,
@@ -42,10 +49,12 @@ type PersistPreviewHtmlContentArgs = {
   textFileCacheRef: React.MutableRefObject<Record<string, string>>;
   pendingPreviewWritesRef: React.MutableRefObject<Record<string, string>>;
   previewDependencyIndexRef: React.MutableRefObject<Record<string, string[]>>;
+  filePathIndexRef?: React.MutableRefObject<Record<string, string>>;
   setFiles: React.Dispatch<React.SetStateAction<FileMap>>;
   setDirtyFiles: React.Dispatch<React.SetStateAction<string[]>>;
   setSelectedPreviewDoc: React.Dispatch<React.SetStateAction<string>>;
   setPreviewRefreshNonce: React.Dispatch<React.SetStateAction<number>>;
+  ensureDirectoryTreeStable?: (path: string) => Promise<void> | void;
   invalidatePreviewDocCache: (path: string) => void;
   markPreviewPathDirty: (path: string, elementPath: number[]) => void;
   pushPreviewHistory: (
@@ -213,6 +222,7 @@ export const buildPreviewSelectionSnapshot = ({
 export const persistPreviewHtmlContent = async ({
   updatedPath,
   serialized,
+  filePathIndexRef,
   filesRef,
   textFileCacheRef,
   pendingPreviewWritesRef,
@@ -221,6 +231,7 @@ export const persistPreviewHtmlContent = async ({
   setDirtyFiles,
   setSelectedPreviewDoc,
   setPreviewRefreshNonce,
+  ensureDirectoryTreeStable,
   invalidatePreviewDocCache,
   markPreviewPathDirty,
   pushPreviewHistory,
@@ -263,9 +274,166 @@ export const persistPreviewHtmlContent = async ({
     .replace(/\s*__nx-preview-selected/g, "")
     .replace(/\s*__nx-preview-dirty/g, "")
     .replace(/\s*__nx-preview-editing/g, "")
+    .replace(/\s+style=(["'])\s*\1/gi, "")
     .replace(/\s+class=(["'])\s*\1/g, "");
 
-  textFileCacheRef.current[updatedPath] = sanitizedSerialized;
+  const htmlDirVirtual = updatedPath.includes("/")
+    ? updatedPath.slice(0, updatedPath.lastIndexOf("/"))
+    : "";
+  const cssLocalVirtualPath = normalizeProjectRelative(
+    htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
+  );
+  const needsCssExtraction =
+    /<style\b/i.test(sanitizedSerialized) || /\sstyle=(["']).+?\1/i.test(sanitizedSerialized);
+  let finalSerialized = sanitizedSerialized;
+
+  if (needsCssExtraction) {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(sanitizedSerialized, "text/html");
+    const cssSelectorBlocks: string[] = [];
+    let generatedIdCounter = 0;
+    parsed.querySelectorAll<HTMLElement>("[style]").forEach((element) => {
+      const inlineStyle = String(element.getAttribute("style") || "").trim();
+      if (!inlineStyle) {
+        element.removeAttribute("style");
+        return;
+      }
+      let elementId = String(element.getAttribute("id") || "").trim();
+      if (!elementId) {
+        generatedIdCounter += 1;
+        const tagName = String(element.tagName || "element")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "element";
+        elementId = `${tagName}-element-auto-${generatedIdCounter}`;
+        element.setAttribute("id", elementId);
+      }
+      const declarations = Object.entries(parseInlineStyleText(inlineStyle))
+        .filter(([, value]) => value !== undefined && value !== null && value !== "")
+        .map(([property, value]) => `  ${toCssPropertyName(property)}: ${String(value)};`);
+      if (declarations.length > 0) {
+        cssSelectorBlocks.push(`#${elementId} {\n${declarations.join("\n")}\n}`);
+      }
+      element.removeAttribute("style");
+    });
+    const extractedStyleTags = Array.from(parsed.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .map((content) => content.trim())
+      .filter(Boolean);
+    parsed.querySelectorAll("style").forEach((node) => node.remove());
+    const ensureLocalCssLink = () => {
+      const head = parsed.head || parsed.documentElement?.querySelector("head");
+      if (!head) return;
+      const expectedHref =
+        relativePathBetweenVirtualFiles(updatedPath, cssLocalVirtualPath) ||
+        "css/local.css";
+      const hasLink = Array.from(
+        head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]'),
+      ).some(
+        (link) => String(link.getAttribute("href") || "").trim() === expectedHref,
+      );
+      if (hasLink) return;
+      const link = parsed.createElement("link");
+      link.setAttribute("rel", "stylesheet");
+      link.setAttribute("href", expectedHref);
+      head.appendChild(link);
+    };
+    finalSerialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    if (cssSelectorBlocks.length === 0 && extractedStyleTags.length === 0) {
+      finalSerialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    } else {
+    ensureLocalCssLink();
+    finalSerialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    const managedCssBlock = [
+      "/* nocodex-managed-local-css:start */",
+      ...cssSelectorBlocks,
+      ...extractedStyleTags,
+      "/* nocodex-managed-local-css:end */",
+    ].join("\n\n");
+    const absoluteHtmlPath = filePathIndexRef?.current?.[updatedPath];
+    const absoluteHtmlDir = absoluteHtmlPath ? getParentPath(absoluteHtmlPath) : "";
+    const absoluteCssPath =
+      absoluteHtmlDir && cssLocalVirtualPath
+        ? normalizePath(
+            joinPath(
+              absoluteHtmlDir,
+              cssLocalVirtualPath.startsWith(`${htmlDirVirtual}/`) && htmlDirVirtual
+                ? cssLocalVirtualPath.slice(htmlDirVirtual.length + 1)
+                : cssLocalVirtualPath,
+            ),
+          )
+        : "";
+    const currentCssContent =
+      typeof pendingPreviewWritesRef.current[cssLocalVirtualPath] === "string"
+        ? pendingPreviewWritesRef.current[cssLocalVirtualPath]
+        : typeof filesRef.current[cssLocalVirtualPath]?.content === "string"
+          ? (filesRef.current[cssLocalVirtualPath]?.content as string)
+          : typeof textFileCacheRef.current[cssLocalVirtualPath] === "string"
+            ? textFileCacheRef.current[cssLocalVirtualPath]
+            : absoluteCssPath
+              ? await (async () => {
+                  try {
+                    const loaded = await (Neutralino as any).filesystem.readFile(
+                      absoluteCssPath,
+                    );
+                    return typeof loaded === "string" ? loaded : "";
+                  } catch {
+                    return "";
+                  }
+                })()
+              : "";
+    let nextCssContent = currentCssContent;
+    const managedStart = "/* nocodex-managed-local-css:start */";
+    const managedEnd = "/* nocodex-managed-local-css:end */";
+    if (
+      nextCssContent.includes(managedStart) &&
+      nextCssContent.includes(managedEnd)
+    ) {
+      const startIndex = nextCssContent.indexOf(managedStart);
+      const endIndex =
+        nextCssContent.indexOf(managedEnd, startIndex) + managedEnd.length;
+      nextCssContent = `${nextCssContent.slice(0, startIndex).trimEnd()}${
+        startIndex > 0 ? "\n\n" : ""
+      }${managedCssBlock}${nextCssContent.slice(endIndex).trimStart() ? `\n\n${nextCssContent.slice(endIndex).trimStart()}` : ""}`;
+    } else {
+      nextCssContent = `${nextCssContent.trimEnd()}${
+        nextCssContent.trim() ? "\n\n" : ""
+      }${managedCssBlock}\n`;
+    }
+    if (absoluteCssPath && filePathIndexRef) {
+      const absoluteCssDir = getParentPath(absoluteCssPath);
+      if (absoluteCssDir && ensureDirectoryTreeStable) {
+        await ensureDirectoryTreeStable(absoluteCssDir);
+      }
+      filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
+    }
+    const cssFileEntry = filesRef.current[cssLocalVirtualPath];
+    const nextCssFile = cssFileEntry
+      ? { ...cssFileEntry, content: nextCssContent, type: "css" as const }
+      : {
+          path: cssLocalVirtualPath,
+          name: "local.css",
+          type: "css" as const,
+          content: nextCssContent,
+        };
+    textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
+    pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+    filesRef.current = {
+      ...filesRef.current,
+      [cssLocalVirtualPath]: nextCssFile,
+    };
+    setFiles((prev) => ({
+      ...prev,
+      [cssLocalVirtualPath]: nextCssFile,
+    }));
+    setDirtyFiles((prev) =>
+      prev.includes(cssLocalVirtualPath) ? prev : [...prev, cssLocalVirtualPath],
+    );
+    }
+  }
+
+  textFileCacheRef.current[updatedPath] = finalSerialized;
   setFiles((prev) => {
     const current = prev[updatedPath];
     if (!current) return prev;
@@ -273,7 +441,7 @@ export const persistPreviewHtmlContent = async ({
       ...prev,
       [updatedPath]: {
         ...current,
-        content: sanitizedSerialized,
+        content: finalSerialized,
       },
     };
   });
@@ -282,12 +450,12 @@ export const persistPreviewHtmlContent = async ({
   if (existingRefEntry) {
     filesRef.current = {
       ...filesRef.current,
-      [updatedPath]: { ...existingRefEntry, content: sanitizedSerialized },
+      [updatedPath]: { ...existingRefEntry, content: finalSerialized },
     };
   }
 
   invalidatePreviewDocCache(updatedPath);
-  pendingPreviewWritesRef.current[updatedPath] = sanitizedSerialized;
+  pendingPreviewWritesRef.current[updatedPath] = finalSerialized;
   setDirtyFiles((prev) =>
     prev.includes(updatedPath) ? prev : [...prev, updatedPath],
   );
@@ -296,7 +464,7 @@ export const persistPreviewHtmlContent = async ({
     markPreviewPathDirty(updatedPath, options.elementPath);
   }
   if (shouldPushToHistory) {
-    pushPreviewHistory(updatedPath, sanitizedSerialized, previousSerialized);
+    pushPreviewHistory(updatedPath, finalSerialized, previousSerialized);
   }
 
   const currentEntry = filesRef.current[updatedPath];
@@ -306,7 +474,7 @@ export const persistPreviewHtmlContent = async ({
         ...filesRef.current,
         [updatedPath]: {
           ...currentEntry,
-          content: sanitizedSerialized,
+          content: finalSerialized,
         },
       };
       setSelectedPreviewDoc(
