@@ -18,6 +18,7 @@ import {
   hasToolboxDragType,
   normalizeProjectRelative,
   readElementByPath,
+  rewriteInlineAssetRefs,
   toMountRelativePath,
 } from "../../helpers/appHelpers";
 
@@ -594,10 +595,15 @@ export const usePreviewFrameBridgeState = ({
       postPreviewFrameMessage(previewFrameRef.current, {
         type: "PREVIEW_SET_RUNTIME_CSS",
         styleId: "__nx-preview-runtime-local-css",
-        cssText: pendingCss,
+        cssText: rewriteInlineAssetRefs(
+          pendingCss,
+          cssLocalVirtualPath,
+          filesRef.current,
+        ),
       });
     }
   }, [
+    filesRef,
     pendingPreviewWritesRef,
     previewFrameLoadNonce,
     previewFrameRef,

@@ -14,6 +14,7 @@ import {
   parseInlineStyleText,
   readElementByPath,
   relativePathBetweenVirtualFiles,
+  rewriteInlineAssetRefs,
   toCssPropertyName,
 } from "./appHelpers";
 import {
@@ -320,7 +321,8 @@ export const persistPreviewHtmlContent = async ({
     const extractedStyleTags = Array.from(parsed.querySelectorAll("style"))
       .map((node) => node.textContent || "")
       .map((content) => content.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((content) => rewriteInlineAssetRefs(content, updatedPath, filesRef.current));
     parsed.querySelectorAll("style").forEach((node) => node.remove());
     const ensureLocalCssLink = () => {
       const head = parsed.head || parsed.documentElement?.querySelector("head");

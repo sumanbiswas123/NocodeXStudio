@@ -28,6 +28,7 @@ import {
   readElementByPath,
   relativePathBetweenVirtualFiles,
   resolveProjectRelativePath,
+  rewriteInlineAssetRefs,
   toMountRelativePath,
   toCssPropertyName,
 } from "../../helpers/appHelpers";
@@ -418,6 +419,7 @@ export const usePreviewCreation = ({
       const parsedNode = materializeVirtualElement(parsed, nextElement);
       if (!(parsedNode instanceof HTMLElement)) return;
       const requiresAddToolAssets = ADD_TOOL_COMPONENT_PRESETS.has(dropType);
+      let latestLocalCssContent: string | null = null;
       const htmlDirVirtual = selectedPreviewHtml.includes("/")
         ? selectedPreviewHtml.slice(0, selectedPreviewHtml.lastIndexOf("/"))
         : "";
@@ -632,7 +634,7 @@ export const usePreviewCreation = ({
         ] as const;
         for (const asset of assetDefs) {
           try {
-            await upsertLocalAsset(
+            const nextAssetContent = await upsertLocalAsset(
               asset.path,
               asset.relativePath,
               (existingContent) =>
@@ -643,6 +645,9 @@ export const usePreviewCreation = ({
                   asset.block,
                 ),
             );
+            if (asset.path === cssLocalVirtualPath) {
+              latestLocalCssContent = nextAssetContent;
+            }
           } catch (error) {
             console.warn("Failed writing slide local asset file:", error);
           }
@@ -792,7 +797,7 @@ export const usePreviewCreation = ({
       };
       const styleObjectToCssBlock = (
         selector: string,
-        styles: Record<string, unknown>,
+        styles: React.CSSProperties,
       ) => {
         const styleRules = Object.entries(styles)
           .filter(([, value]) => value !== undefined && value !== null && value !== "")
@@ -834,7 +839,7 @@ export const usePreviewCreation = ({
       );
       if (cssBlock) {
         try {
-          await upsertLocalAsset(
+          latestLocalCssContent = await upsertLocalAsset(
             cssLocalVirtualPath,
             "css/local.css",
             (existingContent) =>
@@ -875,8 +880,24 @@ export const usePreviewCreation = ({
         });
         appliedLive = true;
       }
+      if (isMountedPreviewDrop && latestLocalCssContent) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_SET_RUNTIME_CSS",
+          styleId: "__nx-preview-runtime-local-css",
+          cssText: rewriteInlineAssetRefs(
+            latestLocalCssContent,
+            cssLocalVirtualPath,
+            filesRef.current,
+          ),
+        });
+      }
+      if (isMountedPreviewDrop && requiresAddToolAssets) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_EVAL_JS",
+          jsText: ADD_TOOL_COMPONENTS_JS_CONTENT,
+        });
+      }
 
-      const needsAssetReload = requiresAddToolAssets && isMountedPreviewDrop;
       const mountedPathAtDrop = isMountedPreviewDrop
         ? resolveMountedPreviewPathFromFrame()
         : null;
@@ -886,7 +907,7 @@ export const usePreviewCreation = ({
         );
       }
       await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
-        refreshPreviewDoc: needsAssetReload ? true : false,
+        refreshPreviewDoc: false,
         saveNow: false,
         skipAutoSave: isMountedPreviewDrop,
         elementPath: newPath,
