@@ -1274,9 +1274,43 @@ export const extractAssetUrlFromCssValue = (raw: string) => {
   return match[2].trim();
 };
 
+const getPresentationRootFontSize = (
+  context?: Document | Window | null,
+) => {
+  const resolvedDocument =
+    context && "document" in context
+      ? context.document
+      : context && "defaultView" in context
+        ? context
+        : typeof window !== "undefined"
+          ? window.document
+          : null;
+  const resolvedWindow =
+    context && "document" in context
+      ? context
+      : resolvedDocument?.defaultView ||
+        (typeof window !== "undefined" ? window : null);
+  if (!resolvedDocument?.documentElement || !resolvedWindow) {
+    return 16;
+  }
+  try {
+    const computedRoot = resolvedWindow.getComputedStyle(
+      resolvedDocument.documentElement,
+    );
+    const parsedRoot = parseFloat(computedRoot?.fontSize || "16");
+    if (Number.isFinite(parsedRoot) && parsedRoot > 0) {
+      return parsedRoot;
+    }
+  } catch {
+    // Fall back to the default browser root font size.
+  }
+  return 16;
+};
+
 export const normalizePresentationCssValue = (
   cssProperty: string,
   rawValue: unknown,
+  context?: Document | Window | null,
 ) => {
   const valueRaw =
     rawValue === undefined || rawValue === null ? "" : String(rawValue);
@@ -1284,19 +1318,26 @@ export const normalizePresentationCssValue = (
     cssProperty === "font-family"
       ? normalizeFontFamilyCssValue(valueRaw)
       : valueRaw;
+  const rootFontSize = getPresentationRootFontSize(context);
   return normalizedFontValue.replace(
     /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
-    (_match, amount) => `${amount}rem`,
+    (_match, amount) => {
+      const numericAmount = parseFloat(String(amount));
+      if (!Number.isFinite(numericAmount)) return "0rem";
+      const remValue = Math.round((numericAmount / rootFontSize) * 1000) / 1000;
+      return `${remValue}rem`;
+    },
   );
 };
 
 export const normalizePresentationStylePatch = (
   styles: Record<string, unknown>,
+  context?: Document | Window | null,
 ): Record<string, string> =>
   Object.fromEntries(
     Object.entries(styles).map(([key, value]) => {
       const cssProperty = toCssPropertyName(key);
-      return [key, normalizePresentationCssValue(cssProperty, value)];
+      return [key, normalizePresentationCssValue(cssProperty, value, context)];
     }),
   );
 

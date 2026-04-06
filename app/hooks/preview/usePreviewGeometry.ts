@@ -274,10 +274,27 @@ export const usePreviewGeometry = ({
         const consumedTopDelta = affectsNorth ? drag.startHeight - height : 0;
         const nextLeft = Math.round(drag.startLeft + consumedLeftDelta);
         const nextTop = Math.round(drag.startTop + consumedTopDelta);
-        const widthValue = normalizePresentationCssValue("width", `${width}px`);
-        const heightValue = normalizePresentationCssValue("height", `${height}px`);
-        const nextLeftValue = normalizePresentationCssValue("left", `${nextLeft}px`);
-        const nextTopValue = normalizePresentationCssValue("top", `${nextTop}px`);
+        const targetDocument = drag.target.ownerDocument || null;
+        const widthValue = normalizePresentationCssValue(
+          "width",
+          `${width}px`,
+          targetDocument,
+        );
+        const heightValue = normalizePresentationCssValue(
+          "height",
+          `${height}px`,
+          targetDocument,
+        );
+        const nextLeftValue = normalizePresentationCssValue(
+          "left",
+          `${nextLeft}px`,
+          targetDocument,
+        );
+        const nextTopValue = normalizePresentationCssValue(
+          "top",
+          `${nextTop}px`,
+          targetDocument,
+        );
         drag.target.style.setProperty("width", widthValue);
         drag.target.style.setProperty("height", heightValue);
         if (affectsWest && drag.canMoveLeft) {

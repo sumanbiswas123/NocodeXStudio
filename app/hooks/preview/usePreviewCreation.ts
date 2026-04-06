@@ -366,9 +366,10 @@ export const usePreviewCreation = ({
       const isMountedPreviewDrop = Boolean(selectedPreviewSrc);
 
       const idFor = createPresetIdFactory(dropType);
+      const presetElement = buildPresetElementV2(dropType, idFor);
+      const isSimpleDroppedElement = !dropType.startsWith("preset:");
       const nextElement =
-        buildPresetElementV2(dropType, idFor) ??
-        buildStandardElement(dropType, idFor("element"));
+        presetElement ?? buildStandardElement(dropType, idFor("element"));
 
       const loaded = await loadFileContent(selectedPreviewHtml);
       const sanitizePreviewDocument = (doc: Document) => {
@@ -795,9 +796,51 @@ export const usePreviewCreation = ({
         if (host === host.ownerDocument.body) return [];
         return computePathFromBody(host);
       };
+      const ensureRelativePositionedHost = (host: HTMLElement | null) => {
+        if (!host || host === host.ownerDocument.body) return;
+        const inlinePosition = String(host.style.position || "").trim().toLowerCase();
+        if (!inlinePosition || inlinePosition === "static") {
+          host.style.position = "relative";
+        }
+      };
+      const computeFreeDropStyles = (
+        doc: Document,
+        host: HTMLElement | null,
+      ): React.CSSProperties => {
+        const frameRect = previewFrameRef.current?.getBoundingClientRect();
+        const isElementHost =
+          Boolean(host) &&
+          host?.nodeType === Node.ELEMENT_NODE &&
+          typeof (host as Element).getBoundingClientRect === "function";
+        if (!frameRect || !isElementHost) return {};
+        const viewportWidth = Math.max(
+          1,
+          previewFrameRef.current?.clientWidth || doc.documentElement.clientWidth || 1,
+        );
+        const viewportHeight = Math.max(
+          1,
+          previewFrameRef.current?.clientHeight || doc.documentElement.clientHeight || 1,
+        );
+        const frameX = clientX - frameRect.left;
+        const frameY = clientY - frameRect.top;
+        const innerClientX = frameX * (viewportWidth / Math.max(frameRect.width, 1));
+        const innerClientY = frameY * (viewportHeight / Math.max(frameRect.height, 1));
+        const hostRect = host.getBoundingClientRect();
+        const leftPx = Math.max(0, Math.round(innerClientX - hostRect.left));
+        const topPx = Math.max(0, Math.round(innerClientY - hostRect.top));
+        return {
+          position: "absolute",
+          left: normalizePresentationCssValue("left", `${leftPx}px`, doc),
+          top: normalizePresentationCssValue("top", `${topPx}px`, doc),
+          display: "inline-block",
+          width: "auto",
+          maxWidth: "100%",
+        };
+      };
       const styleObjectToCssBlock = (
         selector: string,
         styles: React.CSSProperties,
+        doc?: Document | null,
       ) => {
         const styleRules = Object.entries(styles)
           .filter(([, value]) => value !== undefined && value !== null && value !== "")
@@ -806,10 +849,56 @@ export const usePreviewCreation = ({
             return `  ${cssProperty}: ${normalizePresentationCssValue(
               cssProperty,
               value,
+              doc,
             )};`;
           });
         if (styleRules.length === 0) return "";
         return `${selector} {\n${styleRules.join("\n")}\n}`;
+      };
+      const buildSimpleDropCssBlock = (
+        selector: string,
+        styles: React.CSSProperties,
+        doc?: Document | null,
+      ) => {
+        const orderedProperties = [
+          "position",
+          "left",
+          "top",
+          "display",
+          "width",
+          "maxWidth",
+          "padding",
+          "minHeight",
+        ] as const;
+        const styleRules = orderedProperties
+          .map((key) => {
+            const value = styles[key];
+            if (value === undefined || value === null || value === "") return "";
+            const cssProperty = toCssPropertyName(String(key));
+            return `  ${cssProperty}: ${normalizePresentationCssValue(
+              cssProperty,
+              value,
+              doc,
+            )};`;
+          })
+          .filter(Boolean);
+        if (styleRules.length === 0) return "";
+        return `${selector} {\n${styleRules.join("\n")}\n}`;
+      };
+      const applyElementStyleMap = (
+        element: HTMLElement,
+        styles: React.CSSProperties,
+      ) => {
+        const styleDocument = element.ownerDocument || null;
+        Object.entries(styles)
+          .filter(([, value]) => value !== undefined && value !== null && value !== "")
+          .forEach(([key, value]) => {
+            const cssProperty = toCssPropertyName(key);
+            element.style.setProperty(
+              cssProperty,
+              normalizePresentationCssValue(cssProperty, value, styleDocument),
+            );
+          });
       };
 
       const dropClassName = `nx-${String(nextElement.id || dropType)
@@ -831,7 +920,42 @@ export const usePreviewCreation = ({
         previewFrameRef.current?.contentDocument ??
         previewFrameRef.current?.contentWindow?.document ??
         null;
-      const parsedPlacement = resolveDropPlacement(parsed, clientX, clientY);
+      const parsedPlacement = isSimpleDroppedElement
+        ? { host: pickDropHost(parsed), insertAfter: null as HTMLElement | null }
+        : resolveDropPlacement(parsed, clientX, clientY);
+      const livePlacement =
+        liveDocument && isSimpleDroppedElement
+          ? {
+              host: pickDropHost(liveDocument),
+              insertAfter: null as HTMLElement | null,
+            }
+          : liveDocument
+            ? resolveDropPlacement(liveDocument, clientX, clientY)
+            : null;
+      const effectiveElementStyles: React.CSSProperties = {
+        ...(nextElement.styles || {}),
+        ...(isSimpleDroppedElement
+          ? computeFreeDropStyles(
+              liveDocument || parsed,
+              (livePlacement?.host as HTMLElement | null) || parsedPlacement.host,
+            )
+          : {}),
+      };
+      console.log("[PreviewDrop] effectiveElementStyles", {
+        dropType,
+        elementId: nextElement.id,
+        isSimpleDroppedElement,
+        parsedHost: parsedPlacement.host?.id || parsedPlacement.host?.className || parsedPlacement.host?.tagName,
+        liveHost:
+          livePlacement?.host?.id ||
+          livePlacement?.host?.className ||
+          livePlacement?.host?.tagName ||
+          null,
+        styles: effectiveElementStyles,
+      });
+      if (isSimpleDroppedElement) {
+        ensureRelativePositionedHost(parsedPlacement.host);
+      }
       if (parsedPlacement.insertAfter) {
         insertNodeAfterWithSpacing(parsedPlacement.insertAfter, parsedNode);
       } else {
@@ -839,10 +963,23 @@ export const usePreviewCreation = ({
       }
       const newPath = computePathFromBody(parsedNode);
 
-      const cssBlock = styleObjectToCssBlock(
-        `#${nextElement.id}`,
-        nextElement.styles || {},
-      );
+      const cssBlock = isSimpleDroppedElement
+        ? buildSimpleDropCssBlock(
+            `#${nextElement.id}`,
+            effectiveElementStyles,
+            liveDocument || null,
+          )
+        : styleObjectToCssBlock(
+            `#${nextElement.id}`,
+            effectiveElementStyles,
+            liveDocument || null,
+          );
+      console.log("[PreviewDrop] cssBlock", {
+        dropType,
+        elementId: nextElement.id,
+        isSimpleDroppedElement,
+        cssBlock,
+      });
       if (cssBlock) {
         try {
           latestLocalCssContent = await upsertLocalAsset(
@@ -866,15 +1003,25 @@ export const usePreviewCreation = ({
 
       let appliedLive = false;
       if (liveDocument?.body) {
-        const liveNode = materializeVirtualElement(liveDocument, nextElement);
+        const liveNode = materializeVirtualElement(liveDocument, {
+          ...nextElement,
+          styles: effectiveElementStyles,
+        });
         if (liveNode instanceof HTMLElement) {
           liveNode.className = Array.from(currentClassTokens).join(" ");
-          liveNode.removeAttribute("style");
-          const livePlacement = resolveDropPlacement(liveDocument, clientX, clientY);
+          if (isSimpleDroppedElement) {
+            ensureRelativePositionedHost(livePlacement?.host || null);
+            applyElementStyleMap(liveNode, effectiveElementStyles);
+          } else {
+            liveNode.removeAttribute("style");
+          }
           if (livePlacement.insertAfter) {
             insertNodeAfterWithSpacing(livePlacement.insertAfter, liveNode);
           } else {
-            appendNodeWithSpacing(livePlacement.host, liveNode);
+            appendNodeWithSpacing(
+              (livePlacement?.host as HTMLElement | null) || pickDropHost(liveDocument),
+              liveNode,
+            );
           }
           appliedLive = true;
         }
@@ -915,7 +1062,7 @@ export const usePreviewCreation = ({
       await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
         refreshPreviewDoc: false,
         saveNow: false,
-        skipAutoSave: isMountedPreviewDrop,
+        skipAutoSave: false,
         elementPath: newPath,
       });
 
@@ -924,7 +1071,7 @@ export const usePreviewCreation = ({
         ...nextElement,
         className: Array.from(currentClassTokens).join(" "),
         styles: {
-          ...nextElement.styles,
+          ...effectiveElementStyles,
         },
       });
       setPreviewSelectedComputedStyles(null);

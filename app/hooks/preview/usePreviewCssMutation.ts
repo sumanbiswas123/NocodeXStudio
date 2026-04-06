@@ -190,7 +190,11 @@ export const usePreviewCssMutation = ({
 
       Object.entries(styles).forEach(([key, rawValue]) => {
         const cssKey = toCssPropertyName(key);
-        const value = normalizePresentationCssValue(cssKey, rawValue);
+        const value = normalizePresentationCssValue(
+          cssKey,
+          rawValue,
+          frameDocument,
+        );
 
         previewStylePatch[key] = value;
         if (!(liveTarget instanceof HTMLElement)) return;
@@ -470,7 +474,11 @@ export const usePreviewCssMutation = ({
         }
         Object.entries(styles).forEach(([key, rawValue]) => {
           const cssKey = toCssPropertyName(key);
-          const value = normalizePresentationCssValue(cssKey, rawValue);
+          const value = normalizePresentationCssValue(
+            cssKey,
+            rawValue,
+            frameDocument,
+          );
           if (!value) {
             styleRule.style.removeProperty(cssKey);
             return;
@@ -687,6 +695,11 @@ export const usePreviewCssMutation = ({
           ? getLivePreviewSelectedElement(targetPath)
           : null;
 
+      const previewDocument =
+        getLivePreviewSelectedElement(elementPath)?.ownerDocument ||
+        previewFrameRef.current?.contentDocument ||
+        previewFrameRef.current?.contentWindow?.document ||
+        null;
       setPreviewSelectedMatchedCssRules((current) => {
         const beforeRuleSnapshot = current.find(
           (currentRule) =>
@@ -762,6 +775,11 @@ export const usePreviewCssMutation = ({
         previewSelectedPath.length === elementPath.length &&
         previewSelectedPath.every((segment, index) => segment === elementPath[index]);
       if (!pathMatchesSelection) return;
+      const previewDocument =
+        getLivePreviewSelectedElement(elementPath)?.ownerDocument ||
+        previewFrameRef.current?.contentDocument ||
+        previewFrameRef.current?.contentWindow?.document ||
+        null;
 
       setPreviewSelectedMatchedCssRules((current) => {
         let didPatch = false;
@@ -794,7 +812,11 @@ export const usePreviewCssMutation = ({
         const declarations: PreviewMatchedCssDeclaration[] = Object.entries(styles)
           .map(([key, rawValue]) => {
             const property = toCssPropertyName(key);
-            const value = normalizePresentationCssValue(property, rawValue);
+            const value = normalizePresentationCssValue(
+              property,
+              rawValue,
+              previewDocument,
+            );
             if (!value) return null;
             return {
               property,
@@ -1323,12 +1345,19 @@ export const usePreviewCssMutation = ({
               !token.startsWith("__nx-") &&
               !token.startsWith("nx-local-style-"),
           );
-      const buildMoveModeCssPatch = (
+      const buildDirectSelectorCssPatch = (
         cssSource: string,
       ): {
         nextCssContent: string;
         selector: string;
       } | null => {
+        const idCandidates = [
+          target instanceof HTMLElement ? target.id : "",
+          liveTarget instanceof HTMLElement ? liveTarget.id : "",
+          previewSelectedElement?.id || "",
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
         const classTokens = [
           ...(target instanceof HTMLElement
             ? collectStableClassTokens(target.getAttribute("class"))
@@ -1337,20 +1366,23 @@ export const usePreviewCssMutation = ({
             ? collectStableClassTokens(liveTarget.getAttribute("class"))
             : []),
         ];
-        const uniqueTokens = Array.from(new Set(classTokens));
-        if (uniqueTokens.length === 0) return null;
+        const candidateSelectors = Array.from(
+          new Set([
+            ...idCandidates.map((id) => `#${id}`),
+            ...classTokens.map((token) => `.${token}`),
+          ]),
+        );
+        if (candidateSelectors.length === 0) return null;
 
         const chooseSelector = () => {
-          for (const token of uniqueTokens) {
-            const selector = `.${token}`;
+          for (const selector of candidateSelectors) {
             const exactRange = findCssRuleRange(cssSource, selector, 0);
             if (exactRange) return selector;
           }
-          for (const token of uniqueTokens) {
-            const selector = `.${token}`;
+          for (const selector of candidateSelectors) {
             if (cssSource.includes(selector)) return selector;
           }
-          return `.${uniqueTokens[0]}`;
+          return candidateSelectors[0];
         };
 
         const selector = chooseSelector();
@@ -1418,6 +1450,49 @@ export const usePreviewCssMutation = ({
             : `${nextRuleBlock}\n`,
         };
       };
+      const persistResolvedCssPatch = async (
+        nextCssContent: string,
+        elementPath: number[],
+      ) => {
+        textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
+        const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
+          ? {
+              ...filesRef.current[cssLocalVirtualPath],
+              content: nextCssContent,
+              type: "css",
+            }
+          : {
+              path: cssLocalVirtualPath,
+              name: "local.css",
+              type: "css",
+              content: nextCssContent,
+            };
+        filesRef.current = {
+          ...filesRef.current,
+          [cssLocalVirtualPath]: cssFile,
+        };
+        setFiles((prev) => ({
+          ...prev,
+          [cssLocalVirtualPath]: cssFile,
+        }));
+        pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+        if (!dirtyFilesRef.current.includes(cssLocalVirtualPath)) {
+          dirtyFilesRef.current = [...dirtyFilesRef.current, cssLocalVirtualPath];
+        }
+        setDirtyFiles((prev) =>
+          prev.includes(cssLocalVirtualPath)
+            ? prev
+            : [...prev, cssLocalVirtualPath],
+        );
+        invalidatePreviewDocsForDependency(cssLocalVirtualPath);
+        schedulePreviewAutoSave();
+        updatePreviewLiveStylesheetContent(
+          cssLocalVirtualPath,
+          nextCssContent,
+          elementPath,
+          { cacheBustAssets: false },
+        );
+      };
       const absoluteHtmlPath = filePathIndexRef.current[selectedPreviewHtml];
       const absoluteHtmlDir = absoluteHtmlPath
         ? getParentPath(absoluteHtmlPath)
@@ -1449,7 +1524,7 @@ export const usePreviewCssMutation = ({
 
       ensureCssLinkInHead(parsed, selectedPreviewHtml);
       if (options?.commitMode === "move-draft") {
-        const movePatch = buildMoveModeCssPatch(cssContent);
+        const movePatch = buildDirectSelectorCssPatch(cssContent);
         if (movePatch) {
           updatePreviewLiveStylesheetContent(
             cssLocalVirtualPath,
@@ -1492,50 +1567,10 @@ export const usePreviewCssMutation = ({
         }
       }
       if (options?.commitMode === "move") {
-        const movePatch = buildMoveModeCssPatch(cssContent);
+        const movePatch = buildDirectSelectorCssPatch(cssContent);
         if (movePatch) {
           const nextCssContent = movePatch.nextCssContent;
-          textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
-          const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
-            ? {
-                ...filesRef.current[cssLocalVirtualPath],
-                content: nextCssContent,
-                type: "css",
-              }
-            : {
-                path: cssLocalVirtualPath,
-                name: "local.css",
-                type: "css",
-                content: nextCssContent,
-              };
-          filesRef.current = {
-            ...filesRef.current,
-            [cssLocalVirtualPath]: cssFile,
-          };
-          setFiles((prev) => ({
-            ...prev,
-            [cssLocalVirtualPath]: cssFile,
-          }));
-          pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
-          if (!dirtyFilesRef.current.includes(cssLocalVirtualPath)) {
-            dirtyFilesRef.current = [
-              ...dirtyFilesRef.current,
-              cssLocalVirtualPath,
-            ];
-          }
-          setDirtyFiles((prev) =>
-            prev.includes(cssLocalVirtualPath)
-              ? prev
-              : [...prev, cssLocalVirtualPath],
-          );
-          invalidatePreviewDocsForDependency(cssLocalVirtualPath);
-          schedulePreviewAutoSave();
-          updatePreviewLiveStylesheetContent(
-            cssLocalVirtualPath,
-            nextCssContent,
-            elementPath,
-            { cacheBustAssets: false },
-          );
+          await persistResolvedCssPatch(nextCssContent, elementPath);
           if (liveTarget instanceof HTMLElement) {
             Object.keys(styles).forEach((key) => {
               liveTarget.style.removeProperty(toCssPropertyName(key));
@@ -1572,6 +1607,45 @@ export const usePreviewCssMutation = ({
           return;
         }
       }
+      const directPatch = buildDirectSelectorCssPatch(cssContent);
+      if (directPatch) {
+        const nextCssContent = directPatch.nextCssContent;
+        await persistResolvedCssPatch(nextCssContent, elementPath);
+        if (target instanceof HTMLElement) {
+          Object.keys(styles).forEach((key) => {
+            target.style.removeProperty(toCssPropertyName(key));
+          });
+          if (!target.getAttribute("style")?.trim()) {
+            target.removeAttribute("style");
+          }
+        }
+        if (liveTarget instanceof HTMLElement) {
+          Object.keys(styles).forEach((key) => {
+            liveTarget.style.removeProperty(toCssPropertyName(key));
+          });
+          if (!liveTarget.getAttribute("style")?.trim()) {
+            liveTarget.removeAttribute("style");
+          }
+        }
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath,
+        });
+
+        const pathMatchesSelection =
+          Array.isArray(previewSelectedPath) &&
+          previewSelectedPath.length === elementPath.length &&
+          previewSelectedPath.every(
+            (segment, idx) => segment === elementPath[idx],
+          );
+        const shouldSyncSelected =
+          options?.syncSelectedElement ?? pathMatchesSelection;
+        if (shouldSyncSelected) {
+          syncPreviewSelectionSnapshotFromLiveElement(elementPath);
+        }
+        return;
+      }
       const classBase =
         (target instanceof HTMLElement && target.id) ||
         (liveTarget instanceof HTMLElement && liveTarget.id) ||
@@ -1590,9 +1664,21 @@ export const usePreviewCssMutation = ({
           ? cssContent.slice(existingStart + markerStart.length, existingEnd)
           : "";
       const mergedRules = parseRuleBlock(existingBlock);
+      const previewDocument =
+        (target instanceof HTMLElement
+          ? target.ownerDocument
+          : liveTarget instanceof HTMLElement
+            ? liveTarget.ownerDocument
+            : previewFrameRef.current?.contentDocument ||
+              previewFrameRef.current?.contentWindow?.document ||
+              null) || null;
       for (const [key, rawValue] of Object.entries(styles)) {
         const cssKey = toCssPropertyName(key);
-        const value = normalizePresentationCssValue(cssKey, rawValue);
+        const value = normalizePresentationCssValue(
+          cssKey,
+          rawValue,
+          previewDocument,
+        );
         if (value) {
           mergedRules[cssKey] = value;
         } else {

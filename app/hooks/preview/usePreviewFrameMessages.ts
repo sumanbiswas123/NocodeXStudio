@@ -548,6 +548,8 @@ export const usePreviewFrameMessages = ({
         const nextPath = normalizePreviewPath(payload.path);
         if (!nextPath) return;
         if (!payload.styles || typeof payload.styles !== "object") return;
+        const previewDocument =
+          getLivePreviewSelectedElement(nextPath)?.ownerDocument || null;
         const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles)
             .map(([key, value]) => [key, value == null ? "" : String(value)])
@@ -555,6 +557,7 @@ export const usePreviewFrameMessages = ({
               acc[key] = value;
               return acc;
             }, {}),
+          previewDocument,
         ) as Partial<React.CSSProperties>;
         void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
@@ -567,6 +570,8 @@ export const usePreviewFrameMessages = ({
         const nextPath = normalizePreviewPath(payload.path);
         if (!nextPath) return;
         if (!payload.styles || typeof payload.styles !== "object") return;
+        const previewDocument =
+          getLivePreviewSelectedElement(nextPath)?.ownerDocument || null;
         const stylePatch = normalizePresentationStylePatch(
           Object.entries(payload.styles)
             .map(([key, value]) => [key, value == null ? "" : String(value)])
@@ -574,6 +579,7 @@ export const usePreviewFrameMessages = ({
               acc[key] = value;
               return acc;
             }, {}),
+          previewDocument,
         ) as Partial<React.CSSProperties>;
         void applyPreviewLocalCssPatchAtPath(nextPath, stylePatch, {
           syncSelectedElement: true,
