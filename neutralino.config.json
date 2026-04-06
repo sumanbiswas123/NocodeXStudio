@@ -1,6 +1,6 @@
 {
   "applicationId": "js.neutralino.nocodexstudio",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "defaultMode": "window",
   "documentRoot": "dist/",
   "url": "/",
