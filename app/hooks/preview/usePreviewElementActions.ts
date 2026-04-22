@@ -8,8 +8,13 @@ import {
 } from "../../runtime/projectFilesystem";
 import {
   getParentPath,
+  extractComputedStylesFromElement,
+  extractCustomAttributesFromElement,
+  extractTextWithBreaks,
   isExternalUrl,
   normalizePath,
+  normalizeEditorMultilineText,
+  parseInlineStyleText,
   readElementByPath,
   relativePathBetweenVirtualFiles,
   resolveConfigPathFromFiles,
@@ -554,6 +559,55 @@ export const usePreviewElementActions = ({
     [previewSelectedElement?.attributes, previewSelectedElement?.className],
   );
 
+  const syncSelectedElementFromLiveNode = useCallback(
+    (node: Element | null, path?: number[] | null) => {
+      if (!(node instanceof HTMLElement)) return;
+      const inlineStyles = parseInlineStyleText(node.getAttribute("style") || "");
+      const computedStyles = extractComputedStylesFromElement(node);
+      const attributes = extractCustomAttributesFromElement(node) || undefined;
+      const tagName = String(node.tagName || "div").toLowerCase();
+      setPreviewSelectedElement((prev) => ({
+        ...(prev || {
+          id:
+            node.getAttribute("id") ||
+            (Array.isArray(path) && path.length > 0
+              ? path.join("-")
+              : `${tagName}-${Date.now()}`),
+          children: [],
+        }),
+        id:
+          node.getAttribute("id") ||
+          prev?.id ||
+          (Array.isArray(path) && path.length > 0
+            ? path.join("-")
+            : `${tagName}-${Date.now()}`),
+        type: tagName,
+        name: tagName.toUpperCase(),
+        content: normalizeEditorMultilineText(extractTextWithBreaks(node)),
+        html: node.innerHTML || "",
+        ...(node.getAttribute("src") ? { src: node.getAttribute("src") || "" } : {}),
+        ...(node.getAttribute("href")
+          ? { href: node.getAttribute("href") || "" }
+          : {}),
+        ...(node.getAttribute("class")
+          ? { className: node.getAttribute("class") || "" }
+          : { className: undefined }),
+        ...(attributes ? { attributes } : { attributes: undefined }),
+        styles: inlineStyles,
+        children: [],
+      }));
+      setPreviewSelectedComputedStyles(computedStyles);
+      if (Array.isArray(path) && path.length > 0) {
+        setPreviewSelectedPath(path);
+      }
+    },
+    [
+      setPreviewSelectedComputedStyles,
+      setPreviewSelectedElement,
+      setPreviewSelectedPath,
+    ],
+  );
+
   const insertSelectionBoundaryMarkers = useCallback((range: Range): {
     startMarker: HTMLElement;
     endMarker: HTMLElement;
@@ -846,6 +900,14 @@ export const usePreviewElementActions = ({
           });
         }
       }
+
+      if (nextSelectionPath?.length) {
+        const nextLiveNode =
+          getLivePreviewSelectedElement(nextSelectionPath) || updatedNode;
+        syncSelectedElementFromLiveNode(nextLiveNode, nextSelectionPath);
+      } else if (liveTarget instanceof HTMLElement) {
+        syncSelectedElementFromLiveNode(liveTarget, previewSelectedPath);
+      }
     },
     [
       applyPreviewContentUpdate,
@@ -865,6 +927,7 @@ export const usePreviewElementActions = ({
       selectPreviewElementAtPath,
       selectedPreviewHtml,
       showQuickTextHighlight,
+      syncSelectedElementFromLiveNode,
       unwrapInlineElement,
     ],
   );
