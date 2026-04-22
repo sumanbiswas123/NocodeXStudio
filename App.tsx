@@ -234,6 +234,28 @@ const App: React.FC = () => {
     x: number;
     y: number;
   } | null>(null);
+  const [createFileModalState, setCreateFileModalState] = useState<{
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  }>({
+    isOpen: false,
+    parentPath: "",
+    value: "",
+    error: null,
+  });
+  const [createFolderModalState, setCreateFolderModalState] = useState<{
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  }>({
+    isOpen: false,
+    parentPath: "",
+    value: "",
+    error: null,
+  });
 
   const [isToolboxDragging, setIsToolboxDragging] = useState(false);
   const toolboxDragTypeRef = useRef("");
@@ -372,6 +394,8 @@ const App: React.FC = () => {
   );
   const previewStyleDraftTimerRef = useRef<number | null>(null);
   const previewLocalCssDraftTimerRef = useRef<number | null>(null);
+  const createFileNameResolverRef = useRef<((value: string | null) => void) | null>(null);
+  const createFolderNameResolverRef = useRef<((value: string | null) => void) | null>(null);
   const BASE_STAGE_PADDING = 40;
   const EXPLORER_LOCK_TTL_MS = 6000;
   const {
@@ -839,6 +863,114 @@ const App: React.FC = () => {
     window.addEventListener("mousedown", handlePointer);
     return () => window.removeEventListener("mousedown", handlePointer);
   }, [hideQuickTextEdit]);
+
+  const requestCreateFileName = useCallback(
+    (parentPath: string, suggestedName: string) =>
+      new Promise<string | null>((resolve) => {
+        if (createFileNameResolverRef.current) {
+          createFileNameResolverRef.current(null);
+        }
+        createFileNameResolverRef.current = resolve;
+        setCreateFileModalState({
+          isOpen: true,
+          parentPath: String(parentPath || ""),
+          value: String(suggestedName || "new-file.html"),
+          error: null,
+        });
+      }),
+    [],
+  );
+
+  const closeCreateFileModal = useCallback(() => {
+    const resolver = createFileNameResolverRef.current;
+    createFileNameResolverRef.current = null;
+    setCreateFileModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      error: null,
+    }));
+    resolver?.(null);
+  }, []);
+
+  const confirmCreateFileModal = useCallback(() => {
+    const nextValue = createFileModalState.value.trim();
+    if (!nextValue) {
+      setCreateFileModalState((prev) => ({
+        ...prev,
+        error: "File name is required.",
+      }));
+      return;
+    }
+    const resolver = createFileNameResolverRef.current;
+    createFileNameResolverRef.current = null;
+    setCreateFileModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      error: null,
+    }));
+    resolver?.(nextValue);
+  }, [createFileModalState.value]);
+
+  const requestCreateFolderName = useCallback(
+    (parentPath: string, suggestedName: string) =>
+      new Promise<string | null>((resolve) => {
+        if (createFolderNameResolverRef.current) {
+          createFolderNameResolverRef.current(null);
+        }
+        createFolderNameResolverRef.current = resolve;
+        setCreateFolderModalState({
+          isOpen: true,
+          parentPath: String(parentPath || ""),
+          value: String(suggestedName || "new-folder"),
+          error: null,
+        });
+      }),
+    [],
+  );
+
+  const closeCreateFolderModal = useCallback(() => {
+    const resolver = createFolderNameResolverRef.current;
+    createFolderNameResolverRef.current = null;
+    setCreateFolderModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      error: null,
+    }));
+    resolver?.(null);
+  }, []);
+
+  const confirmCreateFolderModal = useCallback(() => {
+    const nextValue = createFolderModalState.value.trim();
+    if (!nextValue) {
+      setCreateFolderModalState((prev) => ({
+        ...prev,
+        error: "Folder name is required.",
+      }));
+      return;
+    }
+    const resolver = createFolderNameResolverRef.current;
+    createFolderNameResolverRef.current = null;
+    setCreateFolderModalState((prev) => ({
+      ...prev,
+      isOpen: false,
+      error: null,
+    }));
+    resolver?.(nextValue);
+  }, [createFolderModalState.value]);
+
+  useEffect(() => {
+    return () => {
+      if (createFileNameResolverRef.current) {
+        createFileNameResolverRef.current(null);
+        createFileNameResolverRef.current = null;
+      }
+      if (createFolderNameResolverRef.current) {
+        createFolderNameResolverRef.current(null);
+        createFolderNameResolverRef.current = null;
+      }
+    };
+  }, []);
+
   const {
     ensureDirectoryForFileStable,
     ensureDirectoryTreeStable,
@@ -871,6 +1003,8 @@ const App: React.FC = () => {
     previewMountBasePath,
     previewRootAliasPathRef,
     projectPath,
+    requestCreateFileName,
+    requestCreateFolderName,
     revokeBinaryAssetUrls,
     selectedFolderCloneSource,
     selectedPreviewHtmlRef,
@@ -1037,8 +1171,6 @@ const App: React.FC = () => {
     setPreviewNavigationFile,
     setPreviewSelectedComputedStyles,
     setPreviewSelectedElement,
-    setPreviewSelectedMatchedCssRules,
-    setPreviewSelectionMode,
     setPreviewSelectedPath,
     setPreviewSyncedFile,
     setSelectedId,
@@ -1280,6 +1412,8 @@ const App: React.FC = () => {
     setPreviewMode,
     setPreviewSelectedComputedStyles,
     setPreviewSelectedElement,
+    setPreviewSelectedMatchedCssRules,
+    setPreviewSelectionMode,
     setPreviewSelectedPath,
     setSelectedId,
     setSidebarToolMode,
@@ -1586,6 +1720,26 @@ const App: React.FC = () => {
     tabletModel,
     tabletOrientation,
     setTabletModel,
+    createFileModalState,
+    closeCreateFileModal,
+    confirmCreateFileModal,
+    setCreateFileModalValue: (value: string) => {
+      setCreateFileModalState((prev) => ({
+        ...prev,
+        value,
+        error: null,
+      }));
+    },
+    createFolderModalState,
+    closeCreateFolderModal,
+    confirmCreateFolderModal,
+    setCreateFolderModalValue: (value: string) => {
+      setCreateFolderModalState((prev) => ({
+        ...prev,
+        value,
+        error: null,
+      }));
+    },
     setDeviceCtxMenu,
   });
 

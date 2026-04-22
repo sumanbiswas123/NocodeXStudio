@@ -45,6 +45,14 @@ type UseProjectFileActionsOptions = {
   previewMountBasePath: string | null;
   previewRootAliasPathRef: MutableRefObject<string | null>;
   projectPath: string | null;
+  requestCreateFileName?: (
+    parentPath: string,
+    suggestedName: string,
+  ) => Promise<string | null>;
+  requestCreateFolderName?: (
+    parentPath: string,
+    suggestedName: string,
+  ) => Promise<string | null>;
   revokeBinaryAssetUrls: () => void;
   selectedFolderCloneSource: string | null;
   selectedPreviewHtmlRef: MutableRefObject<string | null>;
@@ -85,6 +93,205 @@ type UseProjectFileActionsResult = {
   resolvePreviewAssetUrl: (rawUrl: string | null | undefined) => string;
 };
 
+type ConfigWrapper = {
+  draft: Record<string, any>;
+  prefix: string;
+  suffix: string;
+};
+
+const CONFIG_ARRAY_KEYS = [
+  "pageReferencesAll",
+  "pageFootnotesAll",
+  "pageAbbreviationsAll",
+  "pageAbbreviationAll",
+] as const;
+
+function extractAssignedObject(
+  raw: string,
+  assignmentPattern: RegExp,
+): ConfigWrapper | null {
+  const content = String(raw || "");
+  const match = assignmentPattern.exec(content);
+  if (!match || match.index < 0) return null;
+  const objectStart = content.indexOf("{", match.index);
+  if (objectStart < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let stringQuote = "";
+  let escaped = false;
+  let objectEnd = -1;
+
+  for (let index = objectStart; index < content.length; index += 1) {
+    const char = content[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === stringQuote) {
+        inString = false;
+        stringQuote = "";
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      inString = true;
+      stringQuote = char;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        objectEnd = index;
+        break;
+      }
+    }
+  }
+
+  if (objectEnd < objectStart) return null;
+  const prefix = content.slice(0, objectStart);
+  const objectText = content.slice(objectStart, objectEnd + 1);
+  const suffix = content.slice(objectEnd + 1);
+
+  try {
+    return {
+      draft: JSON.parse(objectText),
+      prefix,
+      suffix,
+    };
+  } catch (error) {
+    console.warn("Failed to parse assigned config object:", error);
+    return null;
+  }
+}
+
+function parseConfigWrapper(raw: string, kind: "config" | "portfolio") {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return {
+        draft: JSON.parse(trimmed),
+        prefix: "",
+        suffix: raw.slice(raw.lastIndexOf("}") + 1),
+      } satisfies ConfigWrapper;
+    } catch (error) {
+      console.warn("Failed to parse JSON config:", error);
+    }
+  }
+
+  const assignmentPattern =
+    kind === "portfolio"
+      ? /com\.gsk\.portfolioconfig\s*=\s*/i
+      : /com\.gsk\.mtconfig\s*=\s*/i;
+  return extractAssignedObject(raw, assignmentPattern);
+}
+
+function serializeConfigWrapper(wrapper: ConfigWrapper): string {
+  return `${wrapper.prefix}${JSON.stringify(wrapper.draft, null, 4)}${wrapper.suffix}`;
+}
+
+function cloneNestedValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function updateCustomMenuSlideIndexes(
+  draft: Record<string, any>,
+  sourceIndex: number,
+): void {
+  if (!Array.isArray(draft.customMenu)) return;
+  const sourcePosition = sourceIndex + 1;
+  draft.customMenu = draft.customMenu.map((entry: any) => {
+    if (!entry || !Array.isArray(entry.slides)) return entry;
+    return {
+      ...entry,
+      slides: entry.slides.map((slideNumber: any) => {
+        const numeric = Number(slideNumber);
+        if (!Number.isFinite(numeric)) return slideNumber;
+        return numeric > sourcePosition ? numeric + 1 : numeric;
+      }),
+    };
+  });
+}
+
+function insertClonedSlideIntoConfigDraft(
+  draft: Record<string, any>,
+  sourceSlideId: string,
+  nextSlideId: string,
+): boolean {
+  const pagesAll = Array.isArray(draft.pagesAll)
+    ? [...draft.pagesAll]
+    : [];
+  if (!nextSlideId || pagesAll.includes(nextSlideId)) return false;
+
+  const sourceIndex = pagesAll.findIndex(
+    (entry) => String(entry || "").trim() === sourceSlideId,
+  );
+  const insertIndex =
+    sourceIndex >= 0 ? sourceIndex + 1 : pagesAll.length;
+
+  pagesAll.splice(insertIndex, 0, nextSlideId);
+  draft.pagesAll = pagesAll;
+
+  CONFIG_ARRAY_KEYS.forEach((key) => {
+    const existing = Array.isArray(draft[key]) ? [...draft[key]] : [];
+    const sourceRow =
+      sourceIndex >= 0 && sourceIndex < existing.length
+        ? cloneNestedValue(existing[sourceIndex])
+        : [];
+    existing.splice(insertIndex, 0, Array.isArray(sourceRow) ? sourceRow : []);
+    draft[key] = existing;
+  });
+
+  if (sourceIndex >= 0) {
+    updateCustomMenuSlideIndexes(draft, sourceIndex);
+  }
+
+  if (!draft.homepage && pagesAll.length > 0) {
+    draft.homepage = pagesAll[0];
+  }
+
+  return true;
+}
+
+function updatePortfolioSlideRanges(
+  value: unknown,
+  sourceSlideId: string,
+  nextSlideId: string,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) =>
+      updatePortfolioSlideRanges(entry, sourceSlideId, nextSlideId),
+    );
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const nextValue: Record<string, any> = { ...(value as Record<string, any>) };
+  if (nextValue.lastSlide === sourceSlideId) {
+    nextValue.lastSlide = nextSlideId;
+  }
+
+  Object.keys(nextValue).forEach((key) => {
+    const child = nextValue[key];
+    if (child && typeof child === "object") {
+      nextValue[key] = updatePortfolioSlideRanges(
+        child,
+        sourceSlideId,
+        nextSlideId,
+      );
+    }
+  });
+
+  return nextValue;
+}
+
 export const useProjectFileActions = ({
   activeFileRef,
   binaryAssetUrlCacheRef,
@@ -105,6 +312,8 @@ export const useProjectFileActions = ({
   previewMountBasePath,
   previewRootAliasPathRef,
   projectPath,
+  requestCreateFileName,
+  requestCreateFolderName,
   revokeBinaryAssetUrls,
   selectedFolderCloneSource,
   selectedPreviewHtmlRef,
@@ -131,6 +340,25 @@ export const useProjectFileActions = ({
   const ensureDirectoryTreeStable = useCallback(ensureDirectoryTree, []);
   const ensureDirectoryForFileStable = useCallback(ensureDirectoryForFile, []);
 
+  const getMainParentSeed = useCallback(
+    (parentPath: string) => {
+      const normalizedParent = normalizeProjectRelative(parentPath || "");
+      const parentFolderName =
+        normalizedParent.split("/").filter(Boolean).slice(-1)[0] || "";
+      const normalizedProject = normalizePath(projectPath || "");
+      const projectFolderName =
+        normalizedProject.split("/").filter(Boolean).slice(-1)[0] || "";
+      const sourceName = parentFolderName || projectFolderName;
+      if (!sourceName) return "";
+      const mainTokenIndex = sourceName.toUpperCase().indexOf("_MAIN");
+      if (mainTokenIndex >= 0) {
+        return sourceName.slice(0, mainTokenIndex + 1);
+      }
+      return "";
+    },
+    [projectPath],
+  );
+
   const resolvePreviewAssetUrl = useCallback(
     (rawUrl: string | null | undefined) => {
       return resolvePreviewAssetUrlHelper({
@@ -142,6 +370,92 @@ export const useProjectFileActions = ({
       });
     },
     [filePathIndexRef, previewMountBasePath, projectPath, selectedPreviewHtmlRef],
+  );
+
+  const syncNewSlideIntoProjectFlow = useCallback(
+    async (sourceSlidePath: string, nextSlidePath: string) => {
+      const sourceSlideId =
+        normalizeProjectRelative(sourceSlidePath).split("/").filter(Boolean).pop() ||
+        "";
+      const nextSlideId =
+        normalizeProjectRelative(nextSlidePath).split("/").filter(Boolean).pop() ||
+        "";
+      if (!sourceSlideId || !nextSlideId) return;
+
+      const writeUpdatedConfig = async (
+        virtualPath: string | null,
+        kind: "config" | "portfolio",
+      ) => {
+        if (!virtualPath) return false;
+        const absolutePath = filePathIndexRef.current[virtualPath];
+        if (!absolutePath) return false;
+
+        let rawContent = "";
+        try {
+          rawContent = String(
+            await (Neutralino as any).filesystem.readFile(absolutePath),
+          );
+        } catch (error) {
+          console.warn(`Failed to read ${kind} file:`, error);
+          return false;
+        }
+
+        const wrapper = parseConfigWrapper(rawContent, kind);
+        if (!wrapper) return false;
+
+        const nextDraft =
+          kind === "config"
+            ? wrapper.draft
+            : (updatePortfolioSlideRanges(
+                wrapper.draft,
+                sourceSlideId,
+                nextSlideId,
+              ) as Record<string, any>);
+
+        const changed =
+          kind === "config"
+            ? insertClonedSlideIntoConfigDraft(
+                nextDraft,
+                sourceSlideId,
+                nextSlideId,
+              )
+            : JSON.stringify(nextDraft) !== JSON.stringify(wrapper.draft);
+
+        if (!changed) return false;
+
+        const serialized = serializeConfigWrapper({
+          ...wrapper,
+          draft: nextDraft,
+        });
+
+        try {
+          await (Neutralino as any).filesystem.writeFile(absolutePath, serialized);
+        } catch (error) {
+          console.warn(`Failed to write ${kind} file:`, error);
+          return false;
+        }
+
+        filesRef.current = {
+          ...filesRef.current,
+          [virtualPath]: {
+            ...filesRef.current[virtualPath],
+            content: serialized,
+          },
+        };
+        setFiles(filesRef.current);
+        return true;
+      };
+
+      const configPath = resolveConfigPathFromFiles(filesRef.current, "config.json");
+      const portfolioPath = resolveConfigPathFromFiles(
+        filesRef.current,
+        "portfolioconfig.json",
+      );
+
+      await writeUpdatedConfig(configPath, "config");
+      await writeUpdatedConfig(portfolioPath, "portfolio");
+    },
+    [filePathIndexRef, filesRef, setFiles],
   );
 
   const openPopupInPreview = useCallback(
@@ -366,10 +680,19 @@ export const useProjectFileActions = ({
   const handleCreateFileAtPath = useCallback(
     async (parentPath: string) => {
       if (!projectPath) return;
-      const defaultName = "new-file.html";
-      const nextName = window.prompt("New file name", defaultName);
+      const slidePrefix = getMainParentSeed(parentPath);
+      const defaultName = slidePrefix ? `${slidePrefix}.html` : "new-file.html";
+      const nextName = requestCreateFileName
+        ? await requestCreateFileName(parentPath, defaultName)
+        : window.prompt("New file name", defaultName);
       if (!nextName) return;
-      const cleanedName = normalizeProjectRelative(nextName);
+      const normalizedInput = normalizeProjectRelative(nextName);
+      const cleanedName =
+        normalizedInput && /\.[a-z0-9]+$/i.test(normalizedInput)
+          ? normalizedInput
+          : normalizedInput
+            ? `${normalizedInput}.html`
+            : "";
       if (!cleanedName) return;
 
       const baseVirtual = normalizeProjectRelative(parentPath || "");
@@ -405,8 +728,10 @@ export const useProjectFileActions = ({
     [
       ensureDirectoryTreeStable,
       filesRef,
+      getMainParentSeed,
       projectPath,
       refreshProjectFiles,
+      requestCreateFileName,
       setActiveFileStable,
       setIsLeftPanelOpen,
       setPreviewNavigationFile,
@@ -421,7 +746,11 @@ export const useProjectFileActions = ({
         setIsConfigModalOpen(true);
         return;
       }
-      const nextName = window.prompt("New folder name", "new-folder");
+      const slidePrefix = getMainParentSeed(parentPath);
+      const defaultFolderName = slidePrefix || "new-folder";
+      const nextName = requestCreateFolderName
+        ? await requestCreateFolderName(parentPath, defaultFolderName)
+        : window.prompt("New folder name", defaultFolderName);
       if (!nextName) return;
       const cleanedName = normalizeProjectRelative(nextName);
       if (!cleanedName) return;
@@ -446,14 +775,21 @@ export const useProjectFileActions = ({
         return;
       }
       await refreshProjectFiles();
+      await syncNewSlideIntoProjectFlow(selectedFolderCloneSource, nextVirtual);
+      await refreshProjectFiles();
       setIsLeftPanelOpen(true);
     },
     [
+      filesRef,
+      getMainParentSeed,
       projectPath,
       refreshProjectFiles,
+      requestCreateFolderName,
       selectedFolderCloneSource,
       setIsConfigModalOpen,
       setIsLeftPanelOpen,
+      setFiles,
+      syncNewSlideIntoProjectFlow,
     ],
   );
 

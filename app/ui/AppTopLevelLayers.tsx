@@ -11,6 +11,18 @@ type AppTopLevelLayersProps = {
     isPendingPreviewMode: boolean;
     isPageSwitchPromptBusy: boolean;
   } | null;
+  createFileModalState: {
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  };
+  createFolderModalState: {
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  };
   deviceContextMenuState: {
     menu:
       | {
@@ -28,6 +40,12 @@ type AppTopLevelLayersProps = {
     closePendingPageSwitchPrompt: () => void;
     resolvePendingPageSwitchWithDiscard: () => Promise<void>;
     resolvePendingPageSwitchWithSave: () => Promise<void>;
+    closeCreateFileModal: () => void;
+    confirmCreateFileModal: () => void;
+    setCreateFileModalValue: (value: string) => void;
+    closeCreateFolderModal: () => void;
+    confirmCreateFolderModal: () => void;
+    setCreateFolderModalValue: (value: string) => void;
     setMobileFrameStyle: (
       style: "dynamic-island" | "punch-hole" | "notch",
     ) => void;
@@ -42,6 +60,8 @@ type AppTopLevelLayersProps = {
 const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
   theme,
   pageSwitchPromptState,
+  createFileModalState,
+  createFolderModalState,
   deviceContextMenuState,
   actions,
 }) => {
@@ -49,6 +69,12 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
     closePendingPageSwitchPrompt,
     resolvePendingPageSwitchWithDiscard,
     resolvePendingPageSwitchWithSave,
+    closeCreateFileModal,
+    confirmCreateFileModal,
+    setCreateFileModalValue,
+    closeCreateFolderModal,
+    confirmCreateFolderModal,
+    setCreateFolderModalValue,
     setMobileFrameStyle,
     setDesktopResolution,
     setTabletModel,
@@ -167,6 +193,210 @@ const AppTopLevelLayers: React.FC<AppTopLevelLayersProps> = ({
                   : pageSwitchPromptState.isPendingRefresh
                     ? "Save & Refresh"
                     : "Save & Switch"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {createFileModalState.isOpen && (
+        <div
+          className="page-switch-modal-backdrop"
+          style={{
+            background:
+              theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="page-switch-modal"
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(148,163,184,0.32)"
+                  : "rgba(15,23,42,0.12)",
+              color: "var(--text-main)",
+            }}
+          >
+            <div className="page-switch-modal-eyebrow">New Slide File</div>
+            <h3 className="page-switch-modal-title">Create new slide file</h3>
+            <p className="page-switch-modal-copy">
+              Parent folder:
+              {" "}
+              <span className="page-switch-modal-emphasis">
+                {createFileModalState.parentPath || "/"}
+              </span>
+            </p>
+            <div style={{ marginTop: "0.75rem" }}>
+              <input
+                autoFocus
+                value={createFileModalState.value}
+                onChange={(event) => setCreateFileModalValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    confirmCreateFileModal();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeCreateFileModal();
+                  }
+                }}
+                placeholder="file-name.html"
+                style={{
+                  width: "100%",
+                  borderRadius: "0.5rem",
+                  border: "1px solid var(--border-color)",
+                  background: "var(--input-bg)",
+                  color: "var(--text-main)",
+                  padding: "0.5rem 0.625rem",
+                  fontSize: "0.8rem",
+                }}
+              />
+              {createFileModalState.error ? (
+                <div
+                  style={{
+                    marginTop: "0.35rem",
+                    color: theme === "dark" ? "#fda4af" : "#be123c",
+                    fontSize: "0.72rem",
+                  }}
+                >
+                  {createFileModalState.error}
+                </div>
+              ) : null}
+            </div>
+            <div className="page-switch-modal-actions">
+              <button
+                type="button"
+                className="page-switch-modal-button"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={closeCreateFileModal}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="page-switch-modal-button page-switch-modal-button--save"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.45)"
+                      : "rgba(8,145,178,0.35)",
+                  color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                }}
+                onClick={confirmCreateFileModal}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {createFolderModalState.isOpen && (
+        <div
+          className="page-switch-modal-backdrop"
+          style={{
+            background:
+              theme === "dark" ? "rgba(2,6,23,0.58)" : "rgba(15,23,42,0.25)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="page-switch-modal"
+            style={{
+              background:
+                theme === "dark"
+                  ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.94) 100%)"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%)",
+              borderColor:
+                theme === "dark"
+                  ? "rgba(148,163,184,0.32)"
+                  : "rgba(15,23,42,0.12)",
+              color: "var(--text-main)",
+            }}
+          >
+            <div className="page-switch-modal-eyebrow">New Slide Folder</div>
+            <h3 className="page-switch-modal-title">Create new slide folder</h3>
+            <p className="page-switch-modal-copy">
+              Parent folder:
+              {" "}
+              <span className="page-switch-modal-emphasis">
+                {createFolderModalState.parentPath || "/"}
+              </span>
+            </p>
+            <div style={{ marginTop: "0.75rem" }}>
+              <input
+                autoFocus
+                value={createFolderModalState.value}
+                onChange={(event) =>
+                  setCreateFolderModalValue(event.target.value)
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    confirmCreateFolderModal();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeCreateFolderModal();
+                  }
+                }}
+                placeholder="new-folder"
+                style={{
+                  width: "100%",
+                  borderRadius: "0.5rem",
+                  border: "1px solid var(--border-color)",
+                  background: "var(--input-bg)",
+                  color: "var(--text-main)",
+                  padding: "0.5rem 0.625rem",
+                  fontSize: "0.8rem",
+                }}
+              />
+              {createFolderModalState.error ? (
+                <div
+                  style={{
+                    marginTop: "0.35rem",
+                    color: theme === "dark" ? "#fda4af" : "#be123c",
+                    fontSize: "0.72rem",
+                  }}
+                >
+                  {createFolderModalState.error}
+                </div>
+              ) : null}
+            </div>
+            <div className="page-switch-modal-actions">
+              <button
+                type="button"
+                className="page-switch-modal-button"
+                style={{
+                  borderColor: "var(--border-color)",
+                  color: "var(--text-main)",
+                }}
+                onClick={closeCreateFolderModal}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="page-switch-modal-button page-switch-modal-button--save"
+                style={{
+                  borderColor:
+                    theme === "dark"
+                      ? "rgba(34,211,238,0.45)"
+                      : "rgba(8,145,178,0.35)",
+                  color: theme === "dark" ? "#a5f3fc" : "#0e7490",
+                }}
+                onClick={confirmCreateFolderModal}
+              >
+                Create
               </button>
             </div>
           </div>

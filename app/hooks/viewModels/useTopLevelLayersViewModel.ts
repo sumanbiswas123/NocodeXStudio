@@ -33,6 +33,24 @@ type UseTopLevelLayersViewModelOptions = {
   tabletModel: "ipad" | "ipad-pro";
   tabletOrientation: "portrait" | "landscape";
   setTabletModel: (model: "ipad" | "ipad-pro") => void;
+  createFileModalState: {
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  };
+  createFolderModalState: {
+    isOpen: boolean;
+    parentPath: string;
+    value: string;
+    error: string | null;
+  };
+  closeCreateFileModal: () => void;
+  confirmCreateFileModal: () => void;
+  setCreateFileModalValue: (value: string) => void;
+  closeCreateFolderModal: () => void;
+  confirmCreateFolderModal: () => void;
+  setCreateFolderModalValue: (value: string) => void;
   setDeviceCtxMenu: React.Dispatch<
     React.SetStateAction<{
       x: number;
@@ -58,6 +76,14 @@ export const useTopLevelLayersViewModel = ({
   tabletModel,
   tabletOrientation,
   setTabletModel,
+  createFileModalState,
+  createFolderModalState,
+  closeCreateFileModal,
+  confirmCreateFileModal,
+  setCreateFileModalValue,
+  closeCreateFolderModal,
+  confirmCreateFolderModal,
+  setCreateFolderModalValue,
   setDeviceCtxMenu,
 }: UseTopLevelLayersViewModelOptions): React.ComponentProps<
   typeof AppTopLevelLayers
@@ -99,6 +125,8 @@ export const useTopLevelLayersViewModel = ({
     () => ({
       theme,
       pageSwitchPromptState,
+      createFileModalState,
+      createFolderModalState,
       deviceContextMenuState: {
         menu: deviceCtxMenu,
         mobileFrameStyle,
@@ -113,12 +141,20 @@ export const useTopLevelLayersViewModel = ({
         setMobileFrameStyle,
         setDesktopResolution,
         setTabletModel,
+        closeCreateFileModal,
+        confirmCreateFileModal,
+        setCreateFileModalValue,
+        closeCreateFolderModal,
+        confirmCreateFolderModal,
+        setCreateFolderModalValue,
         closeDeviceContextMenu: () => setDeviceCtxMenu(null),
       },
     }),
     [
       theme,
       pageSwitchPromptState,
+      createFileModalState,
+      createFolderModalState,
       deviceCtxMenu,
       mobileFrameStyle,
       desktopResolution,
@@ -130,6 +166,12 @@ export const useTopLevelLayersViewModel = ({
       setMobileFrameStyle,
       setDesktopResolution,
       setTabletModel,
+      closeCreateFileModal,
+      confirmCreateFileModal,
+      setCreateFileModalValue,
+      closeCreateFolderModal,
+      confirmCreateFolderModal,
+      setCreateFolderModalValue,
       setDeviceCtxMenu,
     ],
   );
