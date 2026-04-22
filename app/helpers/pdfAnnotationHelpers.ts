@@ -1144,6 +1144,20 @@ function getThumbOrderMap(thumbHashes: ThumbHashRecord[]): Map<string, number> {
   );
 }
 
+function setSlideAnchorFromMatch(
+  slide: MappableSlideRecord,
+  slideOrder: Map<string, number>,
+  pdfPageNumber: number,
+  matchMethod: string,
+): SlideAnchor {
+  return {
+    slide,
+    slideIndex: slideOrder.get(slide.filePath) ?? -1,
+    pdfPageNumber,
+    matchMethod,
+  };
+}
+
 function normalizeSlideTextToken(value: string): string {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -1336,14 +1350,17 @@ export function clusterPdfPagesWithDeepIntelligence(
       parentMainSlidePdfPage = pageAnchor.page.pdfPageNumber;
       matchMethod = "dHash anchor";
       if (detectedPageType === "Main") {
-        currentSlideAnchor = {
-          slide: assignedThumb,
-          slideIndex: slideOrder.get(assignedThumb.filePath) ?? pageAnchor.slideIndex,
-          pdfPageNumber: match.pdfPageNumber,
+        currentSlideAnchor = setSlideAnchorFromMatch(
+          assignedThumb,
+          slideOrder,
+          match.pdfPageNumber,
           matchMethod,
-        };
+        );
       }
-    } else if (match.bestThumb && match.hammingDistance <= STRONG_HASH_DISTANCE_THRESHOLD) {
+    } else if (
+      match.bestThumb &&
+      match.hammingDistance <= STRONG_HASH_DISTANCE_THRESHOLD
+    ) {
       assignedThumb = match.bestThumb;
       mappedSlideId = assignedThumb.slideId;
       mappedFilePath = assignedThumb.filePath;
@@ -1352,12 +1369,12 @@ export function clusterPdfPagesWithDeepIntelligence(
       parentMainSlidePdfPage = match.pdfPageNumber;
       matchMethod = "dHash direct";
       if (detectedPageType === "Main") {
-        currentSlideAnchor = {
-          slide: assignedThumb,
-          slideIndex: slideOrder.get(assignedThumb.filePath) ?? -1,
-          pdfPageNumber: match.pdfPageNumber,
+        currentSlideAnchor = setSlideAnchorFromMatch(
+          assignedThumb,
+          slideOrder,
+          match.pdfPageNumber,
           matchMethod,
-        };
+        );
       }
     }
 
@@ -1372,12 +1389,12 @@ export function clusterPdfPagesWithDeepIntelligence(
         parentMainSlidePdfPage = match.pdfPageNumber;
         matchMethod = "Slide text match";
         if (detectedPageType === "Main") {
-          currentSlideAnchor = {
-            slide: textMatchedSlide,
-            slideIndex: slideOrder.get(textMatchedSlide.filePath) ?? -1,
-            pdfPageNumber: match.pdfPageNumber,
+          currentSlideAnchor = setSlideAnchorFromMatch(
+            textMatchedSlide,
+            slideOrder,
+            match.pdfPageNumber,
             matchMethod,
-          };
+          );
         }
       }
     }
