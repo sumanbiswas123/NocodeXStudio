@@ -1138,6 +1138,13 @@ export const usePreviewElementActions = ({
       applyReferenceAttrs(target);
       applyReferenceAttrs(liveTarget);
 
+      if (parsed.body) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_APPLY_HTML",
+          html: parsed.body.innerHTML,
+        });
+      }
+
       if (target) {
         const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
@@ -1148,20 +1155,9 @@ export const usePreviewElementActions = ({
       }
 
       if (liveTarget instanceof HTMLElement) {
-        setPreviewSelectedElement((prev) =>
-          prev
-            ? {
-                ...prev,
-                className: liveTarget.getAttribute("class") || undefined,
-                attributes: {
-                  ...(prev.attributes || {}),
-                  "data-reftarget": nextReftarget,
-                  "data-dialog": dialog,
-                },
-                html: liveTarget.innerHTML,
-              }
-            : prev,
-        );
+        syncSelectedElementFromLiveNode(liveTarget, previewSelectedPath);
+      } else if (target instanceof HTMLElement) {
+        syncSelectedElementFromLiveNode(target, previewSelectedPath);
       }
     },
     [
@@ -1169,9 +1165,10 @@ export const usePreviewElementActions = ({
       getLivePreviewSelectedElement,
       loadFileContent,
       persistPreviewHtmlContent,
+      postPreviewPatchToFrame,
       previewSelectedPath,
       selectedPreviewHtml,
-      setPreviewSelectedElement,
+      syncSelectedElementFromLiveNode,
     ],
   );
 
