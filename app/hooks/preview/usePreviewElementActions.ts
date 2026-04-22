@@ -25,6 +25,7 @@ import {
   replaceConfigPayload,
 } from "../../helpers/configPayloadHelpers";
 import {
+  collectMatchedCssRulesFromElement,
   extractAssetUrlFromCssValue,
   type PreviewMatchedCssRule,
 } from "../../helpers/previewCssHelpers";
@@ -89,6 +90,7 @@ type UsePreviewElementActionsOptions = {
   setInteractionMode: Dispatch<
     SetStateAction<"edit" | "preview" | "inspect" | "draw" | "move">
   >;
+  setIsStyleInspectorSectionOpen: Dispatch<SetStateAction<boolean>>;
   setIsCodePanelOpen: Dispatch<SetStateAction<boolean>>;
   setIsRightPanelOpen: Dispatch<SetStateAction<boolean>>;
   setPreviewMode: Dispatch<SetStateAction<"edit" | "preview">>;
@@ -96,6 +98,10 @@ type UsePreviewElementActionsOptions = {
     SetStateAction<React.CSSProperties | null>
   >;
   setPreviewSelectedElement: Dispatch<SetStateAction<VirtualElement | null>>;
+  setPreviewSelectedMatchedCssRules: Dispatch<
+    SetStateAction<PreviewMatchedCssRule[]>
+  >;
+  setPreviewSelectionMode: Dispatch<SetStateAction<"default" | "text" | "image" | "css">>;
   setPreviewSelectedPath: Dispatch<SetStateAction<number[] | null>>;
   setSelectedId: Dispatch<SetStateAction<string | null>>;
   setSidebarToolMode: Dispatch<
@@ -127,11 +133,14 @@ export const usePreviewElementActions = ({
   handlePreviewMatchedRulePropertyAdd,
   setFiles,
   setInteractionMode,
+  setIsStyleInspectorSectionOpen,
   setIsCodePanelOpen,
   setIsRightPanelOpen,
   setPreviewMode,
   setPreviewSelectedComputedStyles,
   setPreviewSelectedElement,
+  setPreviewSelectedMatchedCssRules,
+  setPreviewSelectionMode,
   setPreviewSelectedPath,
   setSelectedId,
   setSidebarToolMode,
@@ -564,6 +573,7 @@ export const usePreviewElementActions = ({
       if (!(node instanceof HTMLElement)) return;
       const inlineStyles = parseInlineStyleText(node.getAttribute("style") || "");
       const computedStyles = extractComputedStylesFromElement(node);
+      const matchedCssRules = collectMatchedCssRulesFromElement(node);
       const attributes = extractCustomAttributesFromElement(node) || undefined;
       const tagName = String(node.tagName || "div").toLowerCase();
       setPreviewSelectedElement((prev) => ({
@@ -597,6 +607,7 @@ export const usePreviewElementActions = ({
         children: [],
       }));
       setPreviewSelectedComputedStyles(computedStyles);
+      setPreviewSelectedMatchedCssRules(matchedCssRules);
       if (Array.isArray(path) && path.length > 0) {
         setPreviewSelectedPath(path);
       }
@@ -604,9 +615,26 @@ export const usePreviewElementActions = ({
     [
       setPreviewSelectedComputedStyles,
       setPreviewSelectedElement,
+      setPreviewSelectedMatchedCssRules,
       setPreviewSelectedPath,
     ],
   );
+
+  const focusInlinePreviewElement = useCallback((node: Element | null) => {
+    if (!(node instanceof HTMLElement)) return;
+    const hadTabIndex = node.hasAttribute("tabindex");
+    if (!hadTabIndex) {
+      node.setAttribute("tabindex", "-1");
+    }
+    node.focus?.({ preventScroll: true });
+    if (!hadTabIndex) {
+      window.setTimeout(() => {
+        if (node.isConnected && node.getAttribute("tabindex") === "-1") {
+          node.removeAttribute("tabindex");
+        }
+      }, 0);
+    }
+  }, []);
 
   const insertSelectionBoundaryMarkers = useCallback((range: Range): {
     startMarker: HTMLElement;
@@ -719,6 +747,64 @@ export const usePreviewElementActions = ({
     [armQuickTextHighlightCleanup, clearQuickTextHighlight],
   );
 
+  const activateInlinePreviewElement = useCallback(
+    (node: Element | null, path?: number[] | null) => {
+      if (!(node instanceof HTMLElement)) return;
+      const doc = node.ownerDocument;
+      doc
+        .querySelectorAll<HTMLElement>(".__nx-preview-selected")
+        .forEach((el) => {
+          if (el !== node) el.classList.remove("__nx-preview-selected");
+        });
+      node.classList.add("__nx-preview-selected");
+      focusInlinePreviewElement(node);
+      setPreviewSelectionMode("text");
+      setIsStyleInspectorSectionOpen(true);
+      setIsRightPanelOpen(true);
+      syncSelectedElementFromLiveNode(node, path);
+
+      const selection = doc.defaultView?.getSelection?.();
+      if (selection) {
+        const range = doc.createRange();
+        range.selectNodeContents(node);
+        quickTextProgrammaticSelectionRef.current = true;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        quickTextRangeRef.current = range.cloneRange();
+        showQuickTextHighlight(range);
+        window.setTimeout(() => {
+          quickTextProgrammaticSelectionRef.current = false;
+        }, 0);
+      }
+    },
+    [
+      focusInlinePreviewElement,
+      quickTextRangeRef,
+      setIsRightPanelOpen,
+      setIsStyleInspectorSectionOpen,
+      setPreviewSelectionMode,
+      showQuickTextHighlight,
+      syncSelectedElementFromLiveNode,
+    ],
+  );
+
+  const syncInlinePreviewSelection = useCallback(
+    (path: number[] | null, fallbackNode?: Element | null) => {
+      if (!Array.isArray(path) || path.length === 0) return;
+      selectPreviewElementAtPath(path);
+      const liveNode = getLivePreviewSelectedElement(path) || fallbackNode || null;
+      activateInlinePreviewElement(liveNode, path);
+      if (liveNode instanceof HTMLElement) {
+        liveNode.removeAttribute("data-nx-quick-wrap-id");
+      }
+    },
+    [
+      activateInlinePreviewElement,
+      getLivePreviewSelectedElement,
+      selectPreviewElementAtPath,
+    ],
+  );
+
   useEffect(() => {
     const frame = previewFrameRef.current;
     const doc = frame?.contentDocument;
@@ -815,7 +901,6 @@ export const usePreviewElementActions = ({
         }
         updatedNode = wrapper;
         nextSelectionPath = getElementPathFromBody(wrapper);
-        wrapper.removeAttribute("data-nx-quick-wrap-id");
       }
 
       let liveTarget =
@@ -831,19 +916,16 @@ export const usePreviewElementActions = ({
           previewSelectedPath && Array.isArray(previewSelectedPath)
             ? getLivePreviewSelectedElement(previewSelectedPath)
             : liveTarget;
-        if (wrappedMarker && liveTarget instanceof HTMLElement) {
+        if (wrappedMarker) {
           const markerSelector = `[data-nx-quick-wrap-id="${wrappedMarker}"]`;
-          const markedNode = liveTarget.querySelector<HTMLElement>(markerSelector);
+          const markedNode =
+            doc.querySelector<HTMLElement>(markerSelector) ||
+            (liveTarget instanceof HTMLElement
+              ? liveTarget.querySelector<HTMLElement>(markerSelector)
+              : null);
           if (markedNode) {
             nextSelectionPath = getElementPathFromBody(markedNode);
-            markedNode.removeAttribute("data-nx-quick-wrap-id");
-            await applyPreviewContentUpdate({
-              html: liveTarget.innerHTML,
-              skipCssExtraction: true,
-            });
-            updatedNode = nextSelectionPath
-              ? getLivePreviewSelectedElement(nextSelectionPath)
-              : markedNode;
+            updatedNode = markedNode;
           }
         }
       } else if (doc.documentElement) {
@@ -856,8 +938,18 @@ export const usePreviewElementActions = ({
       }
 
       if (nextSelectionPath?.length) {
-        selectPreviewElementAtPath(nextSelectionPath);
-        updatedNode = getLivePreviewSelectedElement(nextSelectionPath) || updatedNode;
+        updatedNode =
+          (wrappedMarker
+            ? doc.querySelector<HTMLElement>(
+                `[data-nx-quick-wrap-id="${wrappedMarker}"]`,
+              )
+            : null) ||
+          getLivePreviewSelectedElement(nextSelectionPath) ||
+          updatedNode;
+        if (updatedNode instanceof HTMLElement) {
+          updatedNode.removeAttribute("data-nx-quick-wrap-id");
+        }
+        syncInlinePreviewSelection(nextSelectionPath, updatedNode);
       }
 
       if (selection) {
@@ -888,9 +980,7 @@ export const usePreviewElementActions = ({
         window.setTimeout(() => {
           quickTextProgrammaticSelectionRef.current = false;
         }, 0);
-        if (updatedNode instanceof HTMLElement) {
-          updatedNode.focus?.({ preventScroll: true });
-        }
+        syncInlinePreviewSelection(nextSelectionPath, updatedNode);
         if (removedSelectionMarkers && doc.documentElement) {
           const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
           await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
@@ -904,7 +994,17 @@ export const usePreviewElementActions = ({
       if (nextSelectionPath?.length) {
         const nextLiveNode =
           getLivePreviewSelectedElement(nextSelectionPath) || updatedNode;
-        syncSelectedElementFromLiveNode(nextLiveNode, nextSelectionPath);
+        syncInlinePreviewSelection(nextSelectionPath, nextLiveNode);
+        window.setTimeout(() => {
+          const settledNode =
+            getLivePreviewSelectedElement(nextSelectionPath) || nextLiveNode;
+          syncInlinePreviewSelection(nextSelectionPath, settledNode);
+        }, 0);
+        window.setTimeout(() => {
+          const settledNode =
+            getLivePreviewSelectedElement(nextSelectionPath) || nextLiveNode;
+          syncInlinePreviewSelection(nextSelectionPath, settledNode);
+        }, 80);
       } else if (liveTarget instanceof HTMLElement) {
         syncSelectedElementFromLiveNode(liveTarget, previewSelectedPath);
       }
@@ -912,6 +1012,7 @@ export const usePreviewElementActions = ({
     [
       applyPreviewContentUpdate,
       applyReferenceMetadataToWrapper,
+      activateInlinePreviewElement,
       clearQuickTextHighlight,
       getElementPathFromBody,
       getRangeElement,
@@ -924,6 +1025,7 @@ export const usePreviewElementActions = ({
       previewSelectedPath,
       quickTextRangeRef,
       sanitizeQuickEditDocument,
+      syncInlinePreviewSelection,
       selectPreviewElementAtPath,
       selectedPreviewHtml,
       showQuickTextHighlight,
