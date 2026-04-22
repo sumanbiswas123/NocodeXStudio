@@ -60,7 +60,9 @@ export const usePreviewIdentityUpdate = ({
         return;
       }
 
-      const loaded = await loadFileContent(selectedPreviewHtml);
+      const loaded = await loadFileContent(selectedPreviewHtml, {
+        persistToState: false,
+      });
       const sourceHtml =
         typeof loaded === "string" && loaded.length > 0
           ? loaded

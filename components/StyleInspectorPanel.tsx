@@ -3200,6 +3200,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                       }
                       if (event.key === "Enter") {
                         event.preventDefault();
+                        if (event.currentTarget.value.trim()) {
+                          setActiveSuggestionField(null);
+                          addProperty();
+                          return;
+                        }
                         const selectedSuggestion = getHighlightedSuggestion();
                         if (selectedSuggestion) {
                           setNewPropValue(selectedSuggestion);
@@ -3827,6 +3832,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                             }
                             if (event.key === "Enter") {
                               event.preventDefault();
+                              if (event.currentTarget.value.trim()) {
+                                setActiveSuggestionField(null);
+                                addRuleProperty(rule, ruleKey, occurrenceIndex);
+                                return;
+                              }
                               const selectedSuggestion = getHighlightedSuggestion();
                               if (selectedSuggestion) {
                                 setRuleDraftValue(ruleKey, "value", selectedSuggestion);
