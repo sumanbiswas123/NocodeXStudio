@@ -1,5 +1,5 @@
 import React from "react";
-import { PanelRight, PanelRightClose } from "lucide-react";
+import { CheckCircle2, PanelRight, PanelRightClose, X } from "lucide-react";
 import DetachedCodeEditorWindow from "../../components/DetachedCodeEditorWindow";
 import ConfigEditorModal from "../../components/ConfigEditorModal";
 import ColorCodeEditor from "../../components/ColorCodeEditor";
@@ -64,6 +64,7 @@ type AppOverlaysProps = {
     activeCodeFilePath: string | null;
     isPdfExporting: boolean;
     pdfExportLogs: string[];
+    saveToastMessage: string | null;
     saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
   };
   actions: {
@@ -98,6 +99,7 @@ type AppOverlaysProps = {
       React.SetStateAction<Record<string, true>>
     >;
     clearPdfExportLogs: () => void;
+    clearSaveToast: () => void;
     handleCodeDraftChange: (value: string) => void;
     setAiAssistantMode: React.Dispatch<React.SetStateAction<AssistantMode>>;
     setAiAssistantInput: React.Dispatch<React.SetStateAction<string>>;
@@ -163,6 +165,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
     activeCodeFilePath,
     isPdfExporting,
     pdfExportLogs,
+    saveToastMessage,
     saveCodeDraftsRef,
   } = editorState;
   const {
@@ -183,6 +186,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
     setCodeDraftByPath,
     setCodeDirtyPathSet,
     clearPdfExportLogs,
+    clearSaveToast,
     handleCodeDraftChange,
     setAiAssistantMode,
     setAiAssistantInput,
@@ -533,6 +537,44 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
           </div>
         </div>
       )}
+
+      {saveToastMessage ? (
+        <div
+          className="save-toast"
+          style={{
+            background:
+              theme === "dark"
+                ? "linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(6,78,59,0.9) 100%)"
+                : "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(236,253,245,0.98) 100%)",
+            borderColor:
+              theme === "dark"
+                ? "rgba(110,231,183,0.34)"
+                : "rgba(5,150,105,0.22)",
+            color: theme === "dark" ? "#ecfdf5" : "#064e3b",
+          }}
+        >
+          <div className="save-toast-accent" />
+          <div className="save-toast-header">
+            <div className="save-toast-heading">
+              <span className="save-toast-icon">
+                <CheckCircle2 size={18} />
+              </span>
+              <div className="save-toast-copy">
+                <div className="save-toast-title">Changes Saved</div>
+                <div className="save-toast-message">{saveToastMessage}</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="save-toast-close"
+              onClick={clearSaveToast}
+              aria-label="Close save toast"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 };

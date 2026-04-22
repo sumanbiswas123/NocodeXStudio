@@ -19,6 +19,7 @@ type UseAppShellControlsOptions = {
   runUndo: () => void;
   saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
   selectedId: string | null;
+  showSaveToast: () => void;
   setInteractionMode: React.Dispatch<React.SetStateAction<InteractionMode>>;
   setIsCodePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsLeftPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -44,6 +45,7 @@ export const useAppShellControls = ({
   runUndo,
   saveCodeDraftsRef,
   selectedId,
+  showSaveToast,
   setInteractionMode,
   setIsCodePanelOpen,
   setIsLeftPanelOpen,
@@ -123,6 +125,12 @@ export const useAppShellControls = ({
       setPreviewMode("edit");
     };
 
+    const runSaveShortcut = async () => {
+      await saveCodeDraftsRef.current?.();
+      await flushPendingPreviewSaves();
+      showSaveToast();
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
       const hasModifier = e.ctrlKey || e.metaKey;
@@ -131,8 +139,7 @@ export const useAppShellControls = ({
       if (hasModifier && editableTarget) {
         if (key === "s") {
           e.preventDefault();
-          void saveCodeDraftsRef.current?.();
-          void flushPendingPreviewSaves();
+          void runSaveShortcut();
           return;
         }
         if (key === "t") {
@@ -235,8 +242,7 @@ export const useAppShellControls = ({
       }
       if (key === "s") {
         e.preventDefault();
-        void saveCodeDraftsRef.current?.();
-        void flushPendingPreviewSaves();
+        void runSaveShortcut();
         return;
       }
       if (key === "t") {
@@ -270,6 +276,7 @@ export const useAppShellControls = ({
     runUndo,
     saveCodeDraftsRef,
     selectedId,
+    showSaveToast,
     setInteractionMode,
     setIsCodePanelOpen,
     setIsLeftPanelOpen,

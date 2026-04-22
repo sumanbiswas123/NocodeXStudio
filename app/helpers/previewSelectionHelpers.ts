@@ -298,6 +298,7 @@ export const persistPreviewHtmlContent = async ({
     (/<style\b/i.test(sanitizedSerialized) ||
       /\sstyle=(["']).+?\1/i.test(sanitizedSerialized));
   let finalSerialized = sanitizedSerialized;
+  let didWriteManagedCss = false;
 
   if (needsCssExtraction) {
     const parser = new DOMParser();
@@ -440,36 +441,52 @@ export const persistPreviewHtmlContent = async ({
       }
       filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
     }
-    const cssFileEntry = filesRef.current[cssLocalVirtualPath];
-    if (shouldPushToHistory) {
-      pushPreviewHistory(
-        cssLocalVirtualPath,
-        nextCssContent,
-        currentCssContent,
+    if (nextCssContent !== currentCssContent) {
+      didWriteManagedCss = true;
+      const cssFileEntry = filesRef.current[cssLocalVirtualPath];
+      if (shouldPushToHistory) {
+        pushPreviewHistory(
+          cssLocalVirtualPath,
+          nextCssContent,
+          currentCssContent,
+        );
+      }
+      const nextCssFile = cssFileEntry
+        ? { ...cssFileEntry, content: nextCssContent, type: "css" as const }
+        : {
+            path: cssLocalVirtualPath,
+            name: "local.css",
+            type: "css" as const,
+            content: nextCssContent,
+          };
+      textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
+      pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
+      filesRef.current = {
+        ...filesRef.current,
+        [cssLocalVirtualPath]: nextCssFile,
+      };
+      setFiles((prev) => ({
+        ...prev,
+        [cssLocalVirtualPath]: nextCssFile,
+      }));
+      setDirtyFiles((prev) =>
+        prev.includes(cssLocalVirtualPath)
+          ? prev
+          : [...prev, cssLocalVirtualPath],
       );
     }
-    const nextCssFile = cssFileEntry
-      ? { ...cssFileEntry, content: nextCssContent, type: "css" as const }
-      : {
-          path: cssLocalVirtualPath,
-          name: "local.css",
-          type: "css" as const,
-          content: nextCssContent,
-        };
-    textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
-    pendingPreviewWritesRef.current[cssLocalVirtualPath] = nextCssContent;
-    filesRef.current = {
-      ...filesRef.current,
-      [cssLocalVirtualPath]: nextCssFile,
-    };
-    setFiles((prev) => ({
-      ...prev,
-      [cssLocalVirtualPath]: nextCssFile,
-    }));
-    setDirtyFiles((prev) =>
-      prev.includes(cssLocalVirtualPath) ? prev : [...prev, cssLocalVirtualPath],
-    );
     }
+  }
+
+  const pendingHtmlWrite = pendingPreviewWritesRef.current[updatedPath];
+  const hasUnsavedHtmlWrite =
+    typeof pendingHtmlWrite === "string" && pendingHtmlWrite !== previousSerialized;
+  if (
+    finalSerialized === previousSerialized &&
+    !didWriteManagedCss &&
+    !hasUnsavedHtmlWrite
+  ) {
+    return;
   }
 
   textFileCacheRef.current[updatedPath] = finalSerialized;

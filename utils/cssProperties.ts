@@ -1,5 +1,23 @@
 
-export const CSS_PROPERTY_VALUES: Record<string, string[]> = {
+const toKebabCase = (value: string) =>
+    String(value || "")
+        .replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)
+        .replace(/^ms-/i, "-ms-");
+
+const formatRemValue = (value: number) => {
+    if (!Number.isFinite(value)) return "";
+    if (value === 0) return "0";
+    const rounded = Math.round(value * 10000) / 10000;
+    return `${String(rounded).replace(/\.0+$/, "").replace(/(\.\d*?[1-9])0+$/, "$1")}rem`;
+};
+
+const normalizeSuggestionValue = (value: string) =>
+    String(value || "").replace(
+        /(-?(?:\d+\.?\d*|\.\d+))px\b/gi,
+        (_match, amount) => formatRemValue(Number(amount) / 16),
+    );
+
+const RAW_CSS_PROPERTY_VALUES: Record<string, string[]> = {
     // Layout
     display: ['block', 'inline', 'inline-block', 'flex', 'inline-flex', 'grid', 'inline-grid', 'none', 'contents', 'table', 'table-row', 'table-cell'],
     position: ['static', 'relative', 'absolute', 'fixed', 'sticky'],
@@ -157,8 +175,20 @@ export const CSS_PROPERTY_VALUES: Record<string, string[]> = {
     content: ['""', 'none', 'normal', 'open-quote', 'close-quote', 'attr()'],
 };
 
+export const CSS_PROPERTY_VALUES: Record<string, string[]> = Object.fromEntries(
+    Object.entries(RAW_CSS_PROPERTY_VALUES).map(([property, values]) => [
+        property,
+        Array.from(
+            new Set(values.map((value) => normalizeSuggestionValue(value))),
+        ),
+    ]),
+) as Record<string, string[]>;
+
 // All CSS property names for autocomplete
-export const CSS_PROPERTY_NAMES = Object.keys(CSS_PROPERTY_VALUES).concat([
+export const CSS_PROPERTY_NAMES = Array.from(
+    new Set(
+        Object.keys(CSS_PROPERTY_VALUES)
+            .concat([
     // Additional properties without predefined values
     'top', 'left', 'right', 'bottom',
     'margin', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight',
@@ -179,7 +209,10 @@ export const CSS_PROPERTY_NAMES = Object.keys(CSS_PROPERTY_VALUES).concat([
     'shapeOutside', 'shapeMargin', 'shapeImageThreshold',
     'appearance', 'all', 'boxDecorationBreak', 'breakAfter', 'breakBefore', 'breakInside',
     'orphans', 'widows', 'pageBreakAfter', 'pageBreakBefore', 'pageBreakInside'
-]).sort();
+            ])
+            .map((property) => toKebabCase(property))
+    )
+).sort();
 
 // Helper to sort properties: Exact match -> Starts with -> Contains
 export const filterAndSortProperties = (query: string, limit: number = 10): string[] => {

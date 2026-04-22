@@ -849,7 +849,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       const reused = bucket?.shift();
       return {
         id: reused?.id || `style-row-${styleRowIdRef.current++}`,
-        key,
+        key: toCssName(key),
         value: String(value),
       };
     });

@@ -48,6 +48,7 @@ type UseAppOverlaysViewModelOptions = {
   activeCodeFilePath: string | null;
   isPdfExporting: boolean;
   pdfExportLogs: string[];
+  saveToastMessage: string | null;
   saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
   setIsCodePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsRightPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -80,6 +81,7 @@ type UseAppOverlaysViewModelOptions = {
     React.SetStateAction<Record<string, true>>
   >;
   clearPdfExportLogs: () => void;
+  clearSaveToast: () => void;
   handleCodeDraftChange: (value: string) => void;
   setAiAssistantMode: React.Dispatch<React.SetStateAction<AssistantMode>>;
   setAiAssistantInput: React.Dispatch<React.SetStateAction<string>>;
@@ -126,6 +128,7 @@ export const useAppOverlaysViewModel = ({
   activeCodeFilePath,
   isPdfExporting,
   pdfExportLogs,
+  saveToastMessage,
   saveCodeDraftsRef,
   setIsCodePanelOpen,
   setIsRightPanelOpen,
@@ -144,6 +147,7 @@ export const useAppOverlaysViewModel = ({
   setCodeDraftByPath,
   setCodeDirtyPathSet,
   clearPdfExportLogs,
+  clearSaveToast,
   handleCodeDraftChange,
   setAiAssistantMode,
   setAiAssistantInput,
@@ -195,6 +199,7 @@ export const useAppOverlaysViewModel = ({
         activeCodeFilePath,
         isPdfExporting,
         pdfExportLogs,
+        saveToastMessage,
         saveCodeDraftsRef,
       },
       actions: {
@@ -215,6 +220,7 @@ export const useAppOverlaysViewModel = ({
         setCodeDraftByPath,
         setCodeDirtyPathSet,
         clearPdfExportLogs,
+        clearSaveToast,
         handleCodeDraftChange,
         setAiAssistantMode,
         setAiAssistantInput,
@@ -261,6 +267,7 @@ export const useAppOverlaysViewModel = ({
       activeCodeFilePath,
       isPdfExporting,
       pdfExportLogs,
+      saveToastMessage,
       saveCodeDraftsRef,
       setIsCodePanelOpen,
       setIsRightPanelOpen,
@@ -279,6 +286,7 @@ export const useAppOverlaysViewModel = ({
       setCodeDraftByPath,
       setCodeDirtyPathSet,
       clearPdfExportLogs,
+      clearSaveToast,
       handleCodeDraftChange,
       setAiAssistantMode,
       setAiAssistantInput,

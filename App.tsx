@@ -208,6 +208,7 @@ const App: React.FC = () => {
       return "default";
     }
   });
+  const [saveToastMessage, setSaveToastMessage] = useState<string | null>(null);
   const isPanelsSwapped = panelSide === "swapped";
   const [dirtyFiles, setDirtyFiles] = useState<string[]>([]);
   const [dirtyPathKeysByFile, setDirtyPathKeysByFile] = useState<
@@ -394,6 +395,7 @@ const App: React.FC = () => {
   );
   const previewStyleDraftTimerRef = useRef<number | null>(null);
   const previewLocalCssDraftTimerRef = useRef<number | null>(null);
+  const saveToastTimerRef = useRef<number | null>(null);
   const createFileNameResolverRef = useRef<((value: string | null) => void) | null>(null);
   const createFolderNameResolverRef = useRef<((value: string | null) => void) | null>(null);
   const BASE_STAGE_PADDING = 40;
@@ -468,8 +470,21 @@ const App: React.FC = () => {
       if (inlineEditDraftTimerRef.current !== null) {
         window.clearTimeout(inlineEditDraftTimerRef.current);
       }
+      if (saveToastTimerRef.current !== null) {
+        window.clearTimeout(saveToastTimerRef.current);
+      }
     };
   }, [revokeBinaryAssetUrls]);
+  const showSaveToast = useCallback(() => {
+    setSaveToastMessage("Saved");
+    if (saveToastTimerRef.current !== null) {
+      window.clearTimeout(saveToastTimerRef.current);
+    }
+    saveToastTimerRef.current = window.setTimeout(() => {
+      saveToastTimerRef.current = null;
+      setSaveToastMessage(null);
+    }, 2200);
+  }, []);
   useEffect(() => {
     activeFileRef.current = activeFile;
   }, [activeFile]);
@@ -730,6 +745,7 @@ const App: React.FC = () => {
     runUndo,
     saveCodeDraftsRef,
     selectedId,
+    showSaveToast,
     setInteractionMode,
     setIsCodePanelOpen,
     setIsLeftPanelOpen,
@@ -987,6 +1003,9 @@ const App: React.FC = () => {
     activeFileRef,
     binaryAssetUrlCacheRef,
     clearPreviewConsole,
+    codeDraftByPathRef,
+    codeDirtyPathSetRef,
+    dirtyFilesRef,
     filePathIndexRef,
     filesRef,
     fontCachePathRef,
@@ -2033,6 +2052,7 @@ const App: React.FC = () => {
     activeCodeFilePath,
     isPdfExporting,
     pdfExportLogs,
+    saveToastMessage,
     saveCodeDraftsRef,
     setIsCodePanelOpen,
     setIsRightPanelOpen,
@@ -2051,6 +2071,13 @@ const App: React.FC = () => {
     setCodeDraftByPath,
     setCodeDirtyPathSet,
     clearPdfExportLogs,
+    clearSaveToast: () => {
+      if (saveToastTimerRef.current !== null) {
+        window.clearTimeout(saveToastTimerRef.current);
+        saveToastTimerRef.current = null;
+      }
+      setSaveToastMessage(null);
+    },
     handleCodeDraftChange,
     setAiAssistantMode,
     setAiAssistantInput,

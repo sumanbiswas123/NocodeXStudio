@@ -40,7 +40,7 @@ const Toolbox: React.FC<ToolboxProps> = ({ onAddElement }) => {
       title: 'Typography',
       color: '#f59e0b',
       items: [
-        { type: 'h1', label: 'Text', icon: Type },
+        { type: 'div', label: 'Text', icon: Type },
       ]
     },
     {

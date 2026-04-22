@@ -28,6 +28,9 @@ type UseProjectFileActionsOptions = {
   activeFileRef: MutableRefObject<string | null>;
   binaryAssetUrlCacheRef: MutableRefObject<Record<string, string>>;
   clearPreviewConsole: () => void;
+  codeDraftByPathRef: MutableRefObject<Record<string, string>>;
+  codeDirtyPathSetRef: MutableRefObject<Record<string, true>>;
+  dirtyFilesRef: MutableRefObject<string[]>;
   filePathIndexRef: MutableRefObject<Record<string, string>>;
   filesRef: MutableRefObject<FileMap>;
   fontCachePathRef: MutableRefObject<string | null>;
@@ -258,6 +261,9 @@ export const useProjectFileActions = ({
   activeFileRef,
   binaryAssetUrlCacheRef,
   clearPreviewConsole,
+  codeDraftByPathRef,
+  codeDirtyPathSetRef,
+  dirtyFilesRef,
   filePathIndexRef,
   filesRef,
   fontCachePathRef,
@@ -474,8 +480,13 @@ export const useProjectFileActions = ({
         previewDependencyIndexRef.current = {};
         previewDocCacheRef.current = {};
         previewDocCacheOrderRef.current = [];
+        codeDraftByPathRef.current = {};
+        codeDirtyPathSetRef.current = {};
+        dirtyFilesRef.current = [];
         setDirtyFiles([]);
         setDirtyPathKeysByFile({});
+        setCodeDraftByPath({});
+        setCodeDirtyPathSet({});
         setFiles(fsFiles);
         setProjectPath(rootPath);
         setRecentProjects((prev) =>
@@ -556,22 +567,27 @@ export const useProjectFileActions = ({
 
       filePathIndexRef.current = absolutePathIndex;
       setFiles(nextFiles);
-      setCodeDraftByPath((prev) =>
-        Object.fromEntries(
-          Object.entries(prev).filter(
-            ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
-          ),
+      const nextCodeDrafts = Object.fromEntries(
+        Object.entries(codeDraftByPathRef.current).filter(
+          ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
         ),
       );
-      setCodeDirtyPathSet(
-        (prev) =>
-          Object.fromEntries(
-            Object.entries(prev).filter(
-              ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
-            ),
-          ) as Record<string, true>,
+      const nextCodeDirtyPathSet = Object.fromEntries(
+        Object.entries(codeDirtyPathSetRef.current).filter(
+          ([path]) => nextFiles[path] && isTextFileType(nextFiles[path].type),
+        ),
+      ) as Record<string, true>;
+      const nextDirtyFiles = dirtyFilesRef.current.filter(
+        (path) => Boolean(nextFiles[path]),
       );
-      setDirtyFiles((prev) => prev.filter((path) => Boolean(nextFiles[path])));
+
+      codeDraftByPathRef.current = nextCodeDrafts;
+      codeDirtyPathSetRef.current = nextCodeDirtyPathSet;
+      dirtyFilesRef.current = nextDirtyFiles;
+
+      setCodeDraftByPath(nextCodeDrafts);
+      setCodeDirtyPathSet(nextCodeDirtyPathSet);
+      setDirtyFiles(nextDirtyFiles);
 
       const existingActive = activeFileRef.current;
       const preferredPreview = selectedPreviewHtmlRef.current;
@@ -600,6 +616,9 @@ export const useProjectFileActions = ({
     filePathIndexRef,
     filesRef,
     isRefreshingFilesRef,
+    codeDraftByPathRef,
+    codeDirtyPathSetRef,
+    dirtyFilesRef,
     projectPath,
     selectedPreviewHtmlRef,
     setActiveFileStable,
