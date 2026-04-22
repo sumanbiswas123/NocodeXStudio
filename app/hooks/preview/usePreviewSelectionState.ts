@@ -272,6 +272,40 @@ export const usePreviewSelectionState = ({
     [handleSelect, selectPreviewElementAtPath],
   );
 
+  useEffect(() => {
+    if (
+      interactionMode !== "preview" ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return;
+    }
+
+    const frameDocument =
+      previewFrameRef.current?.contentDocument ??
+      previewFrameRef.current?.contentWindow?.document ??
+      null;
+    if (!frameDocument?.body) return;
+
+    const syncSelection = () => {
+      selectPreviewElementAtPath(previewSelectedPath);
+    };
+
+    syncSelection();
+    const immediateTimeout = window.setTimeout(syncSelection, 0);
+    const settledTimeout = window.setTimeout(syncSelection, 80);
+    return () => {
+      window.clearTimeout(immediateTimeout);
+      window.clearTimeout(settledTimeout);
+    };
+  }, [
+    interactionMode,
+    previewFrameRef,
+    previewRefreshNonce,
+    previewSelectedPath,
+    selectPreviewElementAtPath,
+  ]);
+
   const inspectorElement = useMemo(
     () => previewSelectedElement ?? selectedElement,
     [previewSelectedElement, selectedElement],
