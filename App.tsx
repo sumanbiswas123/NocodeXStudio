@@ -84,6 +84,7 @@ import {
   MaybeViewTransitionDocument,
   PreviewHistoryEntry,
   PreviewSelectionMode,
+  resolveConfigPathFromFiles,
 } from "./app/helpers/appHelpers";
 
 const RECENT_PROJECTS_STORAGE_KEY = "nocodex_recent_projects_v1";
@@ -1717,14 +1718,36 @@ const App: React.FC = () => {
     },
   });
 
+  const referenceConfigPaths = useMemo(() => {
+    const paths = new Set<string>();
+    const primaryConfig = resolveConfigPathFromFiles(files, "config.json");
+    const portfolioConfig = resolveConfigPathFromFiles(
+      files,
+      "portfolioconfig.json",
+    );
+    if (primaryConfig) paths.add(primaryConfig);
+    if (portfolioConfig) paths.add(portfolioConfig);
+    Object.values(files).forEach((file) => {
+      const path = String(file.path || "");
+      if (/(^|[\\/])(config|portfolioconfig)\.(json|js)$/i.test(path)) {
+        paths.add(path);
+      }
+    });
+    return Array.from(paths);
+  }, [files]);
+
+  useEffect(() => {
+    referenceConfigPaths.forEach((path) => {
+      const file = files[path];
+      if (typeof file?.content === "string" && file.content.trim()) return;
+      void loadFileContent(path, { persistToState: true });
+    });
+  }, [files, loadFileContent, referenceConfigPaths]);
+
   const referenceOptions = useMemo(() => {
-    const configCandidates = Object.values(files)
-      .filter((file) => typeof file.content === "string")
-      .filter((file) =>
-        /(^|[\\/])(config|portfolioconfig)\.json$/i.test(
-          String(file.path || ""),
-        ),
-      );
+    const configCandidates = referenceConfigPaths
+      .map((path) => files[path])
+      .filter((file) => typeof file?.content === "string");
     for (const file of configCandidates) {
       const parsed = parseConfigPayload(String(file.content || ""));
       const references = Array.isArray(parsed?.referencesAll)
@@ -1738,7 +1761,7 @@ const App: React.FC = () => {
       }
     }
     return [] as Array<{ number: number; text: string }>;
-  }, [files]);
+  }, [files, referenceConfigPaths]);
 
   const rightInspectorProps = useRightInspectorViewModel({
     theme,
