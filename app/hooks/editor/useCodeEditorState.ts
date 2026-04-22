@@ -27,6 +27,7 @@ type UseCodeEditorStateOptions = {
       saveNow?: boolean;
       pushToHistory?: boolean;
       skipCssExtraction?: boolean;
+      extractCssToLocal?: boolean;
     },
   ) => Promise<void>;
   selectedPreviewHtml: string | null;

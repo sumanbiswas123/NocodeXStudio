@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   ChevronDown,
   MessageSquareOff,
   Plus,
   Search,
+  Target,
   Trash2,
   X,
 } from "lucide-react";
@@ -26,6 +28,15 @@ interface StyleInspectorPanelProps {
   onReplaceAsset?: () => void;
   onWrapTextTag?: (tag: "sup" | "sub") => void;
   onToggleTextTag?: (tag: "sup" | "sub") => void;
+  onApplyReferenceTarget?: (data: {
+    reftarget: string;
+    dialog: string;
+    newReference?: string;
+  }) => void;
+  referenceOptions?: Array<{
+    number: number;
+    text: string;
+  }>;
   onDeleteElement?: () => void;
   onCommentOutElement?: () => void;
   selectionMode?: "default" | "text" | "image" | "css";
@@ -692,6 +703,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   onReplaceAsset,
   onWrapTextTag,
   onToggleTextTag,
+  onApplyReferenceTarget,
   onDeleteElement,
   onCommentOutElement,
   selectionMode = "default",
@@ -700,8 +712,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   onAddMatchedRuleProperty,
   matchedCssRules = [],
   onImmediateChange,
+  referenceOptions = [],
 }) => {
   const panelRootRef = useRef<HTMLDivElement | null>(null);
+  const referenceTargetButtonRef = useRef<HTMLButtonElement | null>(null);
   const newPropertyKeyInputRef = useRef<HTMLInputElement | null>(null);
   const newPropertyValueInputRef = useRef<HTMLInputElement | null>(null);
   const styleRowIdRef = useRef(0);
@@ -748,6 +762,19 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [filterText, setFilterText] = useState("");
   const [showComputed, setShowComputed] = useState(false);
   const [showHtmlEditor, setShowHtmlEditor] = useState(false);
+  const [showReferenceTargetEditor, setShowReferenceTargetEditor] =
+    useState(false);
+  const [referencePopoverPosition, setReferencePopoverPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  const [referenceTargetDraft, setReferenceTargetDraft] = useState("");
+  const [referenceDialogDraft, setReferenceDialogDraft] = useState(
+    "#refQuickLinkDialog",
+  );
+  const [referenceChipDraft, setReferenceChipDraft] = useState("");
+  const [referenceSearch, setReferenceSearch] = useState("");
+  const [newReferenceDraft, setNewReferenceDraft] = useState("");
   const [htmlDraft, setHtmlDraft] = useState("");
   const [showSelectorTokenInput, setShowSelectorTokenInput] = useState(false);
   const [selectorTokenDraft, setSelectorTokenDraft] = useState("");
@@ -948,6 +975,102 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           : "",
     );
   }, [element?.content, element?.html, element?.id]);
+
+  useEffect(() => {
+    const attrs = element?.attributes || {};
+    setReferenceTargetDraft(String(attrs["data-reftarget"] || ""));
+    setReferenceDialogDraft(
+      String(attrs["data-dialog"] || "") || "#refQuickLinkDialog",
+    );
+    setReferenceChipDraft("");
+  }, [element?.attributes]);
+
+  const referenceTargetTokens = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          referenceTargetDraft
+            .split(",")
+            .map((token) => token.trim())
+            .filter(Boolean),
+        ),
+      ),
+    [referenceTargetDraft],
+  );
+  const filteredReferenceOptions = useMemo(() => {
+    const query = referenceSearch.trim().toLowerCase();
+    if (!query) return referenceOptions;
+    return referenceOptions.filter((entry) => {
+      return (
+        String(entry.number).includes(query) ||
+        entry.text.toLowerCase().includes(query)
+      );
+    });
+  }, [referenceOptions, referenceSearch]);
+
+  const addReferenceTargetToken = () => {
+    const nextToken = referenceChipDraft.trim();
+    if (!nextToken) return;
+    const nextTokens = Array.from(
+      new Set([...referenceTargetTokens, nextToken]),
+    );
+    setReferenceTargetDraft(nextTokens.join(","));
+    setReferenceChipDraft("");
+  };
+
+  const removeReferenceTargetToken = (token: string) => {
+    setReferenceTargetDraft(
+      referenceTargetTokens.filter((item) => item !== token).join(","),
+    );
+  };
+
+  const toggleReferenceNumber = (number: number) => {
+    const token = String(number);
+    const nextTokens = referenceTargetTokens.includes(token)
+      ? referenceTargetTokens.filter((item) => item !== token)
+      : [...referenceTargetTokens, token];
+    setReferenceTargetDraft(nextTokens.join(","));
+  };
+
+  const applyReferenceTargetDraft = () => {
+    onApplyReferenceTarget?.({
+      reftarget: referenceTargetDraft.trim(),
+      dialog: referenceDialogDraft.trim() || "#refQuickLinkDialog",
+      newReference: newReferenceDraft.trim() || undefined,
+    });
+    setNewReferenceDraft("");
+    setShowReferenceTargetEditor(false);
+  };
+
+  useEffect(() => {
+    if (!showReferenceTargetEditor) {
+      setReferencePopoverPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const button = referenceTargetButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const width = 280;
+      const margin = 8;
+      setReferencePopoverPosition({
+        left: Math.min(
+          window.innerWidth - width - margin,
+          Math.max(margin, rect.right - width),
+        ),
+        top: Math.min(window.innerHeight - margin, rect.bottom + 6),
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [showReferenceTargetEditor]);
 
   useEffect(() => {
     const rawLevel = element?.styles?.zIndex ?? computedStyles?.zIndex ?? "";
@@ -2052,6 +2175,146 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setLayerLevelDraft(String(Math.trunc(parsed)));
   };
 
+  const referenceTargetEditor =
+    showReferenceTargetEditor && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className="style-inspector-reference-modalBackdrop"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="style-inspector-reference-modal">
+              <div className="style-inspector-reference-modalHeader">
+                <div>
+                  <div className="style-inspector-reference-title">
+                    Reference Target
+                  </div>
+                  <div className="style-inspector-reference-subtitle">
+                    Select project references or append a new one.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="style-inspector-reference-close"
+                  onClick={() => setShowReferenceTargetEditor(false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="style-inspector-reference-modalGrid">
+                <div className="style-inspector-reference-listPane">
+                  <div className="style-inspector-reference-search">
+                    <Search size={15} />
+                    <input
+                      value={referenceSearch}
+                      onChange={(event) => setReferenceSearch(event.target.value)}
+                      placeholder="Search references"
+                    />
+                  </div>
+                  <div className="style-inspector-reference-list">
+                    {filteredReferenceOptions.length > 0 ? (
+                      filteredReferenceOptions.map((entry) => {
+                        const selected = referenceTargetTokens.includes(
+                          String(entry.number),
+                        );
+                        return (
+                          <button
+                            key={`${entry.number}-${entry.text}`}
+                            type="button"
+                            className={`style-inspector-reference-item ${
+                              selected
+                                ? "style-inspector-reference-item--selected"
+                                : ""
+                            }`}
+                            onClick={() => toggleReferenceNumber(entry.number)}
+                          >
+                            <span className="style-inspector-reference-number">
+                              {entry.number}
+                            </span>
+                            <span className="style-inspector-reference-text">
+                              {entry.text || "Untitled reference"}
+                            </span>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="style-inspector-reference-empty">
+                        No references found in config.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="style-inspector-reference-editPane">
+                  <label>data-reftarget</label>
+                  <input
+                    value={referenceTargetDraft}
+                    onChange={(event) => setReferenceTargetDraft(event.target.value)}
+                    placeholder=""
+                  />
+                  <div className="style-inspector-reference-chipRow">
+                    {referenceTargetTokens.map((token) => (
+                      <button
+                        key={token}
+                        type="button"
+                        onClick={() => removeReferenceTargetToken(token)}
+                      >
+                        {token}
+                        <X size={12} />
+                      </button>
+                    ))}
+                  </div>
+                  <div className="style-inspector-reference-addRow">
+                    <input
+                      value={referenceChipDraft}
+                      onChange={(event) => setReferenceChipDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          addReferenceTargetToken();
+                        }
+                      }}
+                      placeholder="Add target number"
+                    />
+                    <button type="button" onClick={addReferenceTargetToken}>
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <label>data-dialog</label>
+                  <input
+                    value={referenceDialogDraft}
+                    onChange={(event) => setReferenceDialogDraft(event.target.value)}
+                    placeholder="#refQuickLinkDialog"
+                  />
+                  <label>Add new reference</label>
+                  <textarea
+                    value={newReferenceDraft}
+                    onChange={(event) => setNewReferenceDraft(event.target.value)}
+                    placeholder="New reference text will be appended to referencesAll"
+                  />
+                  {newReferenceDraft.trim() ? (
+                    <div className="style-inspector-reference-next">
+                      New reference number: {referenceOptions.length + 1}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="style-inspector-reference-actions">
+                <button
+                  type="button"
+                  onClick={() => setShowReferenceTargetEditor(false)}
+                >
+                  Cancel
+                </button>
+                <button type="button" onClick={applyReferenceTargetDraft}>
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
   if (!element) {
     return (
       <div
@@ -2076,6 +2339,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }
 
   return (
+    <>
       <div
         ref={panelRootRef}
         className="style-inspector-panel"
@@ -2303,6 +2567,156 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                 >
                   Sub
                 </button>
+              ) : null}
+              {onApplyReferenceTarget &&
+              (element?.type === "sup" || element?.type === "sub") ? (
+                <div style={{ position: "relative", display: "inline-flex" }}>
+                  <button
+                    ref={referenceTargetButtonRef}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() =>
+                      setShowReferenceTargetEditor((current) => !current)
+                    }
+                    className="style-inspector-tool-button"
+                    style={{
+                      borderColor:
+                        element?.attributes?.["data-reftarget"] !== undefined
+                          ? "color-mix(in srgb, var(--accent-primary) 24%, transparent)"
+                          : "var(--border-color)",
+                      color:
+                        element?.attributes?.["data-reftarget"] !== undefined
+                          ? "var(--accent-primary)"
+                          : "var(--text-main)",
+                      background:
+                        element?.attributes?.["data-reftarget"] !== undefined
+                          ? "color-mix(in srgb, var(--accent-primary) 10%, transparent)"
+                          : "transparent",
+                    }}
+                    title="Edit reference target"
+                  >
+                    <Target size={13} />
+                  </button>
+                  {false && showReferenceTargetEditor ? (
+                    <div
+                      className="style-inspector-rule-preview-popover"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                      style={{
+                        pointerEvents: "auto",
+                        position: "fixed",
+                        left: referencePopoverPosition?.left ?? 8,
+                        top: referencePopoverPosition?.top ?? 8,
+                        width: 280,
+                        maxHeight: "calc(100vh - 16px)",
+                        overflowY: "auto",
+                        padding: 12,
+                        zIndex: 2147483647,
+                      }}
+                    >
+                      <div
+                        className="style-inspector-inline-heading"
+                        style={{ color: "var(--text-main)", marginBottom: 8 }}
+                      >
+                        Reference Target
+                      </div>
+                      <div className="style-inspector-group">
+                        <label
+                          className="style-inspector-key-column"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          data-reftarget
+                        </label>
+                        <input
+                          value={referenceTargetDraft}
+                          onChange={(event) =>
+                            setReferenceTargetDraft(event.target.value)
+                          }
+                          className="style-inspector-value-input"
+                          placeholder=""
+                        />
+                      </div>
+                      <div
+                        className="style-inspector-text-tools"
+                        style={{ marginTop: 8, gap: 6 }}
+                      >
+                        {referenceTargetTokens.map((token) => (
+                          <button
+                            key={token}
+                            type="button"
+                            className="style-inspector-tool-button"
+                            onClick={() => removeReferenceTargetToken(token)}
+                            title="Remove reference"
+                          >
+                            {token}
+                            <X size={11} />
+                          </button>
+                        ))}
+                      </div>
+                      <div
+                        className="style-inspector-text-tools"
+                        style={{ marginTop: 8, gap: 6 }}
+                      >
+                        <input
+                          value={referenceChipDraft}
+                          onChange={(event) =>
+                            setReferenceChipDraft(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              addReferenceTargetToken();
+                            }
+                          }}
+                          className="style-inspector-value-input"
+                          placeholder="Add ref"
+                        />
+                        <button
+                          type="button"
+                          className="style-inspector-tool-button"
+                          onClick={addReferenceTargetToken}
+                        >
+                          <Plus size={13} />
+                        </button>
+                      </div>
+                      <div className="style-inspector-group" style={{ marginTop: 10 }}>
+                        <label
+                          className="style-inspector-key-column"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          data-dialog
+                        </label>
+                        <input
+                          value={referenceDialogDraft}
+                          onChange={(event) =>
+                            setReferenceDialogDraft(event.target.value)
+                          }
+                          className="style-inspector-value-input"
+                          placeholder="#refQuickLinkDialog"
+                        />
+                      </div>
+                      <div
+                        className="style-inspector-html-actions"
+                        style={{ marginTop: 10 }}
+                      >
+                        <button
+                          type="button"
+                          className="style-inspector-html-apply"
+                          onClick={applyReferenceTargetDraft}
+                        >
+                          Apply
+                        </button>
+                        <button
+                          type="button"
+                          className="style-inspector-tool-button"
+                          onClick={() => setShowReferenceTargetEditor(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             {showHtmlEditor ? (
@@ -3429,6 +3843,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
         </div>
       </div>
     </div>
+    {referenceTargetEditor}
+    </>
   );
 };
 

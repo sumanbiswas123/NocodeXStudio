@@ -4,6 +4,7 @@ import React, {
   useCallback,
   useRef,
   useLayoutEffect,
+  useMemo,
 } from "react";
 import { flushSync } from "react-dom";
 import { INITIAL_ROOT } from "./constants";
@@ -28,6 +29,7 @@ import RightInspectorShell from "./app/ui/RightInspectorShell";
 import {
   persistPreviewHtmlContent as persistPreviewHtmlContentHelper,
 } from "./app/helpers/previewSelectionHelpers";
+import { parseConfigPayload } from "./app/helpers/configPayloadHelpers";
 import ScreenshotGalleryPanel from "./app/ui/ScreenshotGalleryPanel";
 import { useCodeEditorState } from "./app/hooks/editor/useCodeEditorState";
 import { usePreviewContentEditing } from "./app/hooks/preview/usePreviewContentEditing";
@@ -1239,6 +1241,7 @@ const App: React.FC = () => {
   const {
     applyPreviewCommentOutSelected,
     applyPreviewDeleteSelected,
+    applyPreviewReferenceTargetUpdate,
     applyPreviewTagUpdate,
     applyQuickTextWrapTag,
     handleReplacePreviewAsset,
@@ -1714,6 +1717,29 @@ const App: React.FC = () => {
     },
   });
 
+  const referenceOptions = useMemo(() => {
+    const configCandidates = Object.values(files)
+      .filter((file) => typeof file.content === "string")
+      .filter((file) =>
+        /(^|[\\/])(config|portfolioconfig)\.json$/i.test(
+          String(file.path || ""),
+        ),
+      );
+    for (const file of configCandidates) {
+      const parsed = parseConfigPayload(String(file.content || ""));
+      const references = Array.isArray(parsed?.referencesAll)
+        ? parsed.referencesAll
+        : [];
+      if (references.length > 0) {
+        return references.map((text: unknown, index: number) => ({
+          number: index + 1,
+          text: String(text ?? ""),
+        }));
+      }
+    }
+    return [] as Array<{ number: number; text: string }>;
+  }, [files]);
+
   const rightInspectorProps = useRightInspectorViewModel({
     theme,
     isResizingRightPanel,
@@ -1735,6 +1761,7 @@ const App: React.FC = () => {
     resolveInspectorAssetPreviewUrl,
     previewSelectedMatchedCssRules,
     previewSelectedComputedStyles,
+    referenceOptions,
     togglePdfAnnotations: () => dispatch(setIsOpen(!isPdfAnnotationPanelOpen)),
     handleOpenPdfAnnotationsPicker,
     handleRefreshPdfAnnotationMapping,
@@ -1744,6 +1771,7 @@ const App: React.FC = () => {
     handlePreviewContentUpdateStable,
     handleUpdateContent,
     applyPreviewTagUpdate,
+    applyPreviewReferenceTargetUpdate,
     applyQuickTextWrapTag,
     applyPreviewDeleteSelected,
     applyPreviewCommentOutSelected,

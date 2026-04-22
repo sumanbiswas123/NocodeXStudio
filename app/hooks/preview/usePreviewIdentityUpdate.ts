@@ -25,6 +25,7 @@ type UsePreviewIdentityUpdateOptions = {
       elementPath?: number[];
       pushToHistory?: boolean;
       skipCssExtraction?: boolean;
+      extractCssToLocal?: boolean;
     },
   ) => Promise<void>;
   previewSelectedPath: number[] | null;

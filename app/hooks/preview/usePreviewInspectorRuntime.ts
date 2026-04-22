@@ -50,6 +50,7 @@ type UsePreviewInspectorRuntimeOptions = {
       saveNow?: boolean;
       skipAutoSave?: boolean;
       skipCssExtraction?: boolean;
+      extractCssToLocal?: boolean;
     },
   ) => Promise<void>;
   previewMountBasePath: string | null;

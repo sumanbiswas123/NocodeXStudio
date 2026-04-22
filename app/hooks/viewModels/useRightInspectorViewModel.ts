@@ -29,6 +29,7 @@ type UseRightInspectorViewModelOptions = {
   resolveInspectorAssetPreviewUrl: (raw: string, source?: string) => string;
   previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
   previewSelectedComputedStyles: React.CSSProperties | null;
+  referenceOptions: Array<{ number: number; text: string }>;
   togglePdfAnnotations: () => void;
   handleOpenPdfAnnotationsPicker: () => void;
   handleRefreshPdfAnnotationMapping: () => void;
@@ -41,6 +42,11 @@ type UseRightInspectorViewModelOptions = {
   }) => void;
   handleUpdateContent: (data: { content?: string; html?: string }) => void;
   applyPreviewTagUpdate: (tag: string) => Promise<void>;
+  applyPreviewReferenceTargetUpdate: (data: {
+    reftarget: string;
+    dialog: string;
+    newReference?: string;
+  }) => Promise<void>;
   applyQuickTextWrapTag: (tag: "sup" | "sub") => Promise<void>;
   applyPreviewDeleteSelected: () => Promise<void>;
   applyPreviewCommentOutSelected: () => Promise<void>;
@@ -82,6 +88,7 @@ export const useRightInspectorViewModel = ({
   resolveInspectorAssetPreviewUrl,
   previewSelectedMatchedCssRules,
   previewSelectedComputedStyles,
+  referenceOptions,
   togglePdfAnnotations,
   handleOpenPdfAnnotationsPicker,
   handleRefreshPdfAnnotationMapping,
@@ -91,6 +98,7 @@ export const useRightInspectorViewModel = ({
   handlePreviewContentUpdateStable,
   handleUpdateContent,
   applyPreviewTagUpdate,
+  applyPreviewReferenceTargetUpdate,
   applyQuickTextWrapTag,
   applyPreviewDeleteSelected,
   applyPreviewCommentOutSelected,
@@ -132,6 +140,7 @@ export const useRightInspectorViewModel = ({
         resolveInspectorAssetPreviewUrl,
         previewSelectedMatchedCssRules,
         previewSelectedComputedStyles,
+        referenceOptions,
       },
       actions: {
         onTogglePdfAnnotations: togglePdfAnnotations,
@@ -143,6 +152,7 @@ export const useRightInspectorViewModel = ({
         onPreviewContentUpdate: handlePreviewContentUpdateStable,
         onUpdateContent: handleUpdateContent,
         onApplyPreviewTagUpdate: applyPreviewTagUpdate,
+        onApplyPreviewReferenceTargetUpdate: applyPreviewReferenceTargetUpdate,
         onApplyQuickTextWrapTag: applyQuickTextWrapTag,
         onDeletePreviewElement: applyPreviewDeleteSelected,
         onCommentOutPreviewElement: applyPreviewCommentOutSelected,
@@ -177,6 +187,7 @@ export const useRightInspectorViewModel = ({
       resolveInspectorAssetPreviewUrl,
       previewSelectedMatchedCssRules,
       previewSelectedComputedStyles,
+      referenceOptions,
       togglePdfAnnotations,
       handleOpenPdfAnnotationsPicker,
       handleRefreshPdfAnnotationMapping,
@@ -186,6 +197,7 @@ export const useRightInspectorViewModel = ({
       handlePreviewContentUpdateStable,
       handleUpdateContent,
       applyPreviewTagUpdate,
+      applyPreviewReferenceTargetUpdate,
       applyQuickTextWrapTag,
       applyPreviewDeleteSelected,
       applyPreviewCommentOutSelected,

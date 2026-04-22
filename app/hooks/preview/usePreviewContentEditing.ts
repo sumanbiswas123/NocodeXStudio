@@ -30,6 +30,7 @@ type PersistPreviewHtmlContentFn = (
     pushToHistory?: boolean;
     elementPath?: number[];
     skipCssExtraction?: boolean;
+    extractCssToLocal?: boolean;
   },
 ) => Promise<void>;
 
@@ -462,6 +463,7 @@ export const usePreviewContentEditing = ({
       src?: string;
       liveSrc?: string;
       href?: string;
+      skipCssExtraction?: boolean;
     }) => {
       await applyPreviewContentUpdateHelper({
         data,

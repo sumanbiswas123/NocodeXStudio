@@ -45,6 +45,7 @@ type PersistPreviewHtmlContent = (
     elementPath?: number[];
     pushToHistory?: boolean;
     skipCssExtraction?: boolean;
+    extractCssToLocal?: boolean;
   },
 ) => Promise<void>;
 
@@ -167,6 +168,7 @@ export const applyPreviewStyleUpdateAtPath = async ({
   await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
     refreshPreviewDoc: false,
     elementPath,
+    extractCssToLocal: true,
   });
 };
 
@@ -278,6 +280,7 @@ export const applyPreviewContentUpdate = async ({
     src?: string;
     liveSrc?: string;
     href?: string;
+    skipCssExtraction?: boolean;
   };
   selectedPreviewHtml: string | null;
   previewSelectedPath: number[] | null;
@@ -524,6 +527,7 @@ export const applyPreviewContentUpdate = async ({
     await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
       refreshPreviewDoc: false,
       elementPath: previewSelectedPath,
+      skipCssExtraction: data.skipCssExtraction,
     });
   }
 

@@ -12,8 +12,13 @@ import {
   normalizePath,
   readElementByPath,
   relativePathBetweenVirtualFiles,
+  resolveConfigPathFromFiles,
   resolveProjectRelativePath,
 } from "../../helpers/appHelpers";
+import {
+  parseConfigPayload,
+  replaceConfigPayload,
+} from "../../helpers/configPayloadHelpers";
 import {
   extractAssetUrlFromCssValue,
   type PreviewMatchedCssRule,
@@ -29,6 +34,7 @@ type PersistPreviewHtmlContentFn = (
     elementPath?: number[];
     pushToHistory?: boolean;
     skipCssExtraction?: boolean;
+    extractCssToLocal?: boolean;
   },
 ) => Promise<void>;
 
@@ -39,6 +45,7 @@ type UsePreviewElementActionsOptions = {
     src?: string;
     liveSrc?: string;
     href?: string;
+    skipCssExtraction?: boolean;
   }) => Promise<void>;
   filePathIndexRef: MutableRefObject<Record<string, string>>;
   filesRef: MutableRefObject<FileMap>;
@@ -411,6 +418,16 @@ export const usePreviewElementActions = ({
       "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft], [data-nx-quick-text-highlight]",
     );
     overlays.forEach((el) => el.remove());
+    doc
+      .querySelectorAll<HTMLElement>(
+        "[data-nx-quick-wrap-id], [data-nx-quick-selection-start], [data-nx-quick-selection-end], [data-nx-inline-editing]",
+      )
+      .forEach((el) => {
+        el.removeAttribute("data-nx-quick-wrap-id");
+        el.removeAttribute("data-nx-quick-selection-start");
+        el.removeAttribute("data-nx-quick-selection-end");
+        el.removeAttribute("data-nx-inline-editing");
+      });
   }, []);
 
   const unwrapInlineElement = useCallback((element: Element): Element | null => {
@@ -473,6 +490,68 @@ export const usePreviewElementActions = ({
       return Array.from(selected);
     },
     [getRangeElement],
+  );
+
+  const getReferenceMetadataSource = useCallback(
+    (range: Range): Element | null => {
+      const candidates = [
+        range.startContainer,
+        range.endContainer,
+        range.commonAncestorContainer,
+      ];
+      for (const node of candidates) {
+        const element = getRangeElement(node);
+        const closest = element?.closest?.("sup,sub");
+        if (
+          closest instanceof HTMLElement &&
+          (closest.hasAttribute("data-reftarget") ||
+            /\bgotoRef\b/.test(closest.className || ""))
+        ) {
+          return closest;
+        }
+      }
+      return null;
+    },
+    [getRangeElement],
+  );
+
+  const applyReferenceMetadataToWrapper = useCallback(
+    (wrapper: HTMLElement, source: Element | null) => {
+      const sourceClassName =
+        source instanceof HTMLElement
+          ? source.getAttribute("class") || ""
+          : previewSelectedElement?.className || "";
+      const sourceAttributes =
+        source instanceof HTMLElement
+          ? {
+              "data-reftarget": source.getAttribute("data-reftarget") || "",
+              "data-dialog": source.getAttribute("data-dialog") || "",
+            }
+          : previewSelectedElement?.attributes || {};
+      const hasReferenceMetadata =
+        /\bgotoRef\b/.test(sourceClassName) ||
+        Boolean(sourceAttributes["data-reftarget"]);
+      if (!hasReferenceMetadata) return;
+
+      sourceClassName
+        .split(/\s+/)
+        .map((className) => className.trim())
+        .filter(Boolean)
+        .forEach((className) => wrapper.classList.add(className));
+
+      const reftarget = String(sourceAttributes["data-reftarget"] || "").trim();
+      const dialog = String(sourceAttributes["data-dialog"] || "").trim();
+      if (reftarget) {
+        ["gotoRef", "hidden", "openDialog", "needsclick"].forEach((className) =>
+          wrapper.classList.add(className),
+        );
+        wrapper.setAttribute("data-reftarget", reftarget);
+      }
+      if (dialog) {
+        wrapper.setAttribute("data-dialog", dialog);
+      }
+    },
+    [previewSelectedElement?.attributes, previewSelectedElement?.className],
   );
 
   const insertSelectionBoundaryMarkers = useCallback((range: Range): {
@@ -654,6 +733,7 @@ export const usePreviewElementActions = ({
         startMarker: HTMLElement;
         endMarker: HTMLElement;
       } | null = null;
+      const referenceMetadataSource = getReferenceMetadataSource(workingRange);
       const existingTags = getSelectedInlineTags(workingRange, tagName);
 
       if (existingTags.length > 0) {
@@ -671,6 +751,7 @@ export const usePreviewElementActions = ({
         const wrapper = doc.createElement(tagName);
         wrappedMarker = `nx-quick-wrap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         wrapper.setAttribute("data-nx-quick-wrap-id", wrappedMarker);
+        applyReferenceMetadataToWrapper(wrapper, referenceMetadataSource);
         try {
           workingRange.surroundContents(wrapper);
         } catch {
@@ -680,6 +761,7 @@ export const usePreviewElementActions = ({
         }
         updatedNode = wrapper;
         nextSelectionPath = getElementPathFromBody(wrapper);
+        wrapper.removeAttribute("data-nx-quick-wrap-id");
       }
 
       let liveTarget =
@@ -687,7 +769,10 @@ export const usePreviewElementActions = ({
           ? getLivePreviewSelectedElement(previewSelectedPath)
           : null;
       if (liveTarget instanceof HTMLElement) {
-        await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+        await applyPreviewContentUpdate({
+          html: liveTarget.innerHTML,
+          skipCssExtraction: true,
+        });
         liveTarget =
           previewSelectedPath && Array.isArray(previewSelectedPath)
             ? getLivePreviewSelectedElement(previewSelectedPath)
@@ -698,7 +783,10 @@ export const usePreviewElementActions = ({
           if (markedNode) {
             nextSelectionPath = getElementPathFromBody(markedNode);
             markedNode.removeAttribute("data-nx-quick-wrap-id");
-            await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+            await applyPreviewContentUpdate({
+              html: liveTarget.innerHTML,
+              skipCssExtraction: true,
+            });
             updatedNode = nextSelectionPath
               ? getLivePreviewSelectedElement(nextSelectionPath)
               : markedNode;
@@ -709,6 +797,7 @@ export const usePreviewElementActions = ({
         const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
           refreshPreviewDoc: false,
+          skipCssExtraction: true,
         });
       }
 
@@ -753,15 +842,18 @@ export const usePreviewElementActions = ({
           await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
             refreshPreviewDoc: false,
             pushToHistory: false,
+            skipCssExtraction: true,
           });
         }
       }
     },
     [
       applyPreviewContentUpdate,
+      applyReferenceMetadataToWrapper,
       clearQuickTextHighlight,
       getElementPathFromBody,
       getRangeElement,
+      getReferenceMetadataSource,
       getSelectedInlineTags,
       getLivePreviewSelectedElement,
       insertSelectionBoundaryMarkers,
@@ -873,6 +965,7 @@ export const usePreviewElementActions = ({
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
           refreshPreviewDoc: false,
           elementPath: nextSelectedPath || previewSelectedPath,
+          skipCssExtraction: true,
         });
         if (nextSelectedPath?.length) {
           selectPreviewElementAtPath(nextSelectedPath);
@@ -902,6 +995,118 @@ export const usePreviewElementActions = ({
       postPreviewPatchToFrame,
       previewSelectedPath,
       selectPreviewElementAtPath,
+      selectedPreviewHtml,
+      setPreviewSelectedElement,
+    ],
+  );
+
+  const applyPreviewReferenceTargetUpdate = useCallback(
+    async (data: { reftarget: string; dialog: string; newReference?: string }) => {
+      if (
+        !selectedPreviewHtml ||
+        !previewSelectedPath ||
+        !Array.isArray(previewSelectedPath) ||
+        previewSelectedPath.length === 0
+      ) {
+        return;
+      }
+
+      const loaded = await loadFileContent(selectedPreviewHtml);
+      const sourceHtml =
+        typeof loaded === "string" && loaded.length > 0
+          ? loaded
+          : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+            ? (filesRef.current[selectedPreviewHtml]?.content as string)
+            : "";
+      if (!sourceHtml) return;
+
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(sourceHtml, "text/html");
+      const target = readElementByPath(parsed.body, previewSelectedPath);
+      const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+      const requiredClasses = ["gotoRef", "hidden", "openDialog", "needsclick"];
+      const reftarget = String(data.reftarget || "").trim();
+      const dialog = String(data.dialog || "").trim() || "#refQuickLinkDialog";
+      const newReference = String(data.newReference || "").trim();
+      let nextReftarget = reftarget;
+
+      if (newReference) {
+        const configPath =
+          resolveConfigPathFromFiles(filesRef.current, "config.json") ||
+          resolveConfigPathFromFiles(filesRef.current, "portfolioconfig.json");
+        const configContent =
+          configPath && typeof filesRef.current[configPath]?.content === "string"
+            ? (filesRef.current[configPath].content as string)
+            : "";
+        const configDraft = parseConfigPayload(configContent);
+        if (configPath && configContent && configDraft) {
+          const references = Array.isArray(configDraft.referencesAll)
+            ? configDraft.referencesAll.map((entry: unknown) => String(entry ?? ""))
+            : [];
+          references.push(newReference);
+          configDraft.referencesAll = references;
+          const newReferenceNumber = references.length;
+          const targetTokens = nextReftarget
+            .split(",")
+            .map((token) => token.trim())
+            .filter(Boolean);
+          if (!targetTokens.includes(String(newReferenceNumber))) {
+            targetTokens.push(String(newReferenceNumber));
+          }
+          nextReftarget = targetTokens.join(",");
+          await persistPreviewHtmlContent(
+            configPath,
+            replaceConfigPayload(configContent, configDraft),
+            {
+              refreshPreviewDoc: false,
+              pushToHistory: true,
+            },
+          );
+        }
+      }
+
+      const applyReferenceAttrs = (node: Element | null) => {
+        if (!(node instanceof HTMLElement)) return;
+        requiredClasses.forEach((className) => node.classList.add(className));
+        node.setAttribute("data-reftarget", nextReftarget);
+        node.setAttribute("data-dialog", dialog);
+      };
+
+      applyReferenceAttrs(target);
+      applyReferenceAttrs(liveTarget);
+
+      if (target) {
+        const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+        await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+          refreshPreviewDoc: false,
+          elementPath: previewSelectedPath,
+          skipCssExtraction: true,
+        });
+      }
+
+      if (liveTarget instanceof HTMLElement) {
+        setPreviewSelectedElement((prev) =>
+          prev
+            ? {
+                ...prev,
+                className: liveTarget.getAttribute("class") || undefined,
+                attributes: {
+                  ...(prev.attributes || {}),
+                  "data-reftarget": nextReftarget,
+                  "data-dialog": dialog,
+                },
+                html: liveTarget.innerHTML,
+              }
+            : prev,
+        );
+      }
+    },
+    [
+      filesRef,
+      getLivePreviewSelectedElement,
+      loadFileContent,
+      persistPreviewHtmlContent,
+      previewSelectedPath,
       selectedPreviewHtml,
       setPreviewSelectedElement,
     ],
@@ -1113,6 +1318,7 @@ export const usePreviewElementActions = ({
     applyPreviewDeleteSelected,
     applyPreviewCommentOutSelected,
     applyPreviewTagUpdate,
+    applyPreviewReferenceTargetUpdate,
     applyQuickTextWrapTag,
     handlePreviewDuplicateSelected,
     handleReplacePreviewAsset,

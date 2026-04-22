@@ -41,6 +41,7 @@ type RightInspectorShellProps = {
     ) => string;
     previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
     previewSelectedComputedStyles: React.CSSProperties | null;
+    referenceOptions: Array<{ number: number; text: string }>;
   };
   actions: {
     onTogglePdfAnnotations: () => void;
@@ -57,6 +58,11 @@ type RightInspectorShellProps = {
     }) => void;
     onUpdateContent: (data: { content?: string; html?: string }) => void;
     onApplyPreviewTagUpdate: (tag: string) => Promise<void>;
+    onApplyPreviewReferenceTargetUpdate: (data: {
+      reftarget: string;
+      dialog: string;
+      newReference?: string;
+    }) => Promise<void>;
     onApplyQuickTextWrapTag: (tag: "sup" | "sub") => Promise<void>;
     onDeletePreviewElement: () => Promise<void>;
     onCommentOutPreviewElement: () => Promise<void>;
@@ -110,6 +116,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
     resolveInspectorAssetPreviewUrl,
     previewSelectedMatchedCssRules,
     previewSelectedComputedStyles,
+    referenceOptions,
   } = inspectorState;
   const {
     onTogglePdfAnnotations,
@@ -121,6 +128,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
     onPreviewContentUpdate,
     onUpdateContent,
     onApplyPreviewTagUpdate,
+    onApplyPreviewReferenceTargetUpdate,
     onApplyQuickTextWrapTag,
     onDeletePreviewElement,
     onCommentOutPreviewElement,
@@ -378,6 +386,13 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
                       }
                     : undefined
                 }
+                onApplyReferenceTarget={
+                  previewSelectedElement
+                    ? (data) => {
+                        void onApplyPreviewReferenceTargetUpdate(data);
+                      }
+                    : undefined
+                }
                 onDeleteElement={
                   previewSelectedElement
                     ? () => {
@@ -422,6 +437,7 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
                 computedStyles={
                   previewSelectedElement ? previewSelectedComputedStyles : null
                 }
+                referenceOptions={referenceOptions}
               />
             </div>
           </div>

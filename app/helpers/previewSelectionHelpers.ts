@@ -73,6 +73,7 @@ type PersistPreviewHtmlContentArgs = {
     elementPath?: number[];
     pushToHistory?: boolean;
     skipCssExtraction?: boolean;
+    extractCssToLocal?: boolean;
   };
 };
 
@@ -247,6 +248,7 @@ export const persistPreviewHtmlContent = async ({
   const shouldSkipAutoSave = options?.skipAutoSave ?? false;
   const shouldPushToHistory = options?.pushToHistory ?? true;
   const shouldSkipCssExtraction = options?.skipCssExtraction ?? false;
+  const shouldExtractCssToLocal = options?.extractCssToLocal === true;
   const previousSerialized =
     typeof filesRef.current[updatedPath]?.content === "string"
       ? (filesRef.current[updatedPath]?.content as string)
@@ -274,6 +276,10 @@ export const persistPreviewHtmlContent = async ({
 
   const sanitizedSerialized = serialized
     .replace(/\s*data-nx-mounted-preview-bridge=(["']?)1\1/gi, "")
+    .replace(/\s*data-nx-quick-wrap-id=(["']).*?\1/gi, "")
+    .replace(/\s*data-nx-quick-selection-start=(["']).*?\1/gi, "")
+    .replace(/\s*data-nx-quick-selection-end=(["']).*?\1/gi, "")
+    .replace(/\s*data-nx-inline-editing=(["']).*?\1/gi, "")
     .replace(/\s*__nx-preview-selected/g, "")
     .replace(/\s*__nx-preview-dirty/g, "")
     .replace(/\s*__nx-preview-editing/g, "")
@@ -287,6 +293,7 @@ export const persistPreviewHtmlContent = async ({
     htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
   );
   const needsCssExtraction =
+    shouldExtractCssToLocal &&
     !shouldSkipCssExtraction &&
     (/<style\b/i.test(sanitizedSerialized) ||
       /\sstyle=(["']).+?\1/i.test(sanitizedSerialized));
