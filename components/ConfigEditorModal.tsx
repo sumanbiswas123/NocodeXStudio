@@ -1,7 +1,19 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { FileMap } from "../types";
-import { GripVertical, Plus, Save, Search, Settings2, ShieldAlert, Trash2, X } from "lucide-react";
+import {
+  ArrowLeftRight,
+  ChevronDown,
+  ChevronUp,
+  GripVertical,
+  Plus,
+  Save,
+  Search,
+  Settings2,
+  ShieldAlert,
+  Trash2,
+  X,
+} from "lucide-react";
 import ColorCodeEditor from "./ColorCodeEditor";
 import type { PdfAnnotationUiRecord } from "../app/helpers/pdfAnnotationHelpers";
 import { useReferenceOpsWorkflow } from "../app/hooks/workflow/useReferenceOpsWorkflow";
@@ -38,6 +50,7 @@ interface MtConfigPayload {
 type TabKey =
   | "references"
   | "slides"
+  | "flow"
   | "configRaw"
   | "general";
 
@@ -45,6 +58,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "general", label: "General" },
   { key: "references", label: "References" },
   { key: "slides", label: "Slides" },
+  { key: "flow", label: "Flow" },
   { key: "configRaw", label: "Config.js" },
 ];
 
@@ -193,6 +207,24 @@ const parseArrayText = (raw: string) =>
     return x;
   });
 
+const sanitizeFlowOrder = (order: unknown, pageCount: number): number[] => {
+  const source = Array.isArray(order) ? order : [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  source.forEach((item) => {
+    const numeric = Number(item);
+    if (!Number.isInteger(numeric)) return;
+    if (numeric < 0 || numeric >= pageCount) return;
+    if (seen.has(numeric)) return;
+    seen.add(numeric);
+    out.push(numeric);
+  });
+  for (let index = 0; index < pageCount; index += 1) {
+    if (!seen.has(index)) out.push(index);
+  }
+  return out;
+};
+
 const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   isOpen,
   onClose,
@@ -220,6 +252,8 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   const [rawConfigDirty, setRawConfigDirty] = useState(false);
   const [slideSearch, setSlideSearch] = useState("");
   const [referenceDrafts, setReferenceDrafts] = useState<Record<string, string[]>>({});
+  const [selectedFlowName, setSelectedFlowName] = useState("Main");
+  const [newFlowName, setNewFlowName] = useState("");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -228,6 +262,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     setRawPortfolio(portfolioContent || "");
     setRawConfigDirty(false);
     setSlideSearch("");
+    setNewFlowName("");
     const hasObjectLiteral = Boolean(extractObjectLiteral(src));
     let hasJsonObject = false;
     try {
@@ -273,10 +308,22 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       }
       setReferenceDrafts(nextDrafts);
       // Determine default tab based on mode and parsing success
+      const parsedFlowNames =
+        parsed.flows && typeof parsed.flows === "object"
+          ? Object.keys(parsed.flows)
+          : [];
+      if (parsedFlowNames.includes("Main")) {
+        setSelectedFlowName("Main");
+      } else if (parsedFlowNames.length > 0) {
+        setSelectedFlowName(parsedFlowNames[0]);
+      } else {
+        setSelectedFlowName("Main");
+      }
+
       if (slidesOnlyMode) {
         setActiveTab("slides");
       } else if (hasProjectConfig) {
-        setActiveTab("references");
+        setActiveTab(initialTab);
       } else {
         setActiveTab("general");
       }
@@ -285,7 +332,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       // If parsing failed, fallback to configRaw tab only when a project is loaded
       setActiveTab(hasProjectConfig ? "configRaw" : "general");
     }
-  }, [isOpen, configContent, portfolioContent, hasProjectConfig]);
+  }, [isOpen, configContent, portfolioContent, hasProjectConfig, initialTab, slidesOnlyMode]);
 
   const pagesAll = useMemo(() => {
     if (configDraft?.pagesAll && Array.isArray(configDraft.pagesAll)) {
@@ -307,6 +354,26 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
   const filteredSlides = useMemo(() => pagesAll.filter((s) => !slideSearch.trim() || s.toLowerCase().includes(slideSearch.toLowerCase())), [pagesAll, slideSearch]);
 
+  const flowMap = useMemo(() => {
+    if (!configDraft?.flows || typeof configDraft.flows !== "object") return {};
+    return configDraft.flows as Record<string, unknown>;
+  }, [configDraft]);
+
+  const flowNames = useMemo(() => {
+    const names = Object.keys(flowMap);
+    if (names.length === 0) return ["Main"];
+    return names;
+  }, [flowMap]);
+
+  const activeFlowName = flowNames.includes(selectedFlowName)
+    ? selectedFlowName
+    : flowNames[0];
+
+  const activeFlowOrder = useMemo(() => {
+    const rawOrder = flowMap[activeFlowName];
+    return sanitizeFlowOrder(rawOrder, pagesAll.length);
+  }, [activeFlowName, flowMap, pagesAll.length]);
+
   const referenceOps = useReferenceOpsWorkflow({
     configDraft,
     files,
@@ -317,6 +384,29 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
   const setField = (key: string, value: any) => setConfigDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   const getField = (key: string, fallback: any = "") => (configDraft && Object.prototype.hasOwnProperty.call(configDraft, key) ? configDraft[key] : fallback);
+
+  const setFlowOrder = (flowName: string, nextOrder: number[]) => {
+    if (!configDraft) return;
+    const sanitized = sanitizeFlowOrder(nextOrder, pagesAll.length);
+    const currentFlows =
+      configDraft.flows && typeof configDraft.flows === "object"
+        ? (configDraft.flows as Record<string, unknown>)
+        : {};
+    setField("flows", {
+      ...currentFlows,
+      [flowName]: sanitized,
+    });
+  };
+
+  const moveFlowItem = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    if (fromIndex < 0 || toIndex < 0) return;
+    if (fromIndex >= activeFlowOrder.length || toIndex >= activeFlowOrder.length) return;
+    const next = [...activeFlowOrder];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    setFlowOrder(activeFlowName, next);
+  };
 
   const handleSave = () => {
     const nextConfig = rawConfigDirty ? rawConfig : configDraft && configContent ? replaceConfigObject(configContent, configDraft) : rawConfig;
@@ -678,7 +768,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
         <div className="flex-1 min-h-0 overflow-y-auto p-5 pb-28 custom-scrollbar">
           {null}
-          {(activeTab === "references" || activeTab === "slides") && parseError ? (
+          {(activeTab === "references" || activeTab === "slides" || activeTab === "flow") && parseError ? (
             <div className="mb-4 rounded-xl border px-4 py-3" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)" }}>
               <div className="flex items-center gap-2 text-amber-400 mb-1"><ShieldAlert size={15} /><span className="text-sm font-semibold">Config parsing warning</span></div>
               <p className="text-xs" style={{ color: textMuted }}>{parseError}</p>
@@ -829,6 +919,206 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                 </div>
               ) : (
                 <div className="p-6 text-center border border-dashed rounded-xl" style={{ borderColor: borderCol, color: textMuted }}>No slides found in pagesAll.</div>
+              )}
+            </div>
+          ) : null}
+
+          {activeTab === "flow" && configDraft ? (
+            <div className="space-y-4 animate-fadeIn">
+              <div
+                className="rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3"
+                style={{ borderColor: borderCol, backgroundColor: inputBg }}
+              >
+                <div className="flex items-center gap-2">
+                  <ArrowLeftRight size={14} style={{ color: textMuted }} />
+                  <span className="text-sm font-semibold">Swipe Flow Mapping</span>
+                </div>
+                <span className="text-xs" style={{ color: textMuted }}>
+                  Left = previous slide, Right = next slide
+                </span>
+              </div>
+
+              <div
+                className="rounded-xl border p-3 space-y-3"
+                style={{ borderColor: borderCol, backgroundColor: inputBg }}
+              >
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 items-end">
+                  <div>
+                    <label className="block text-[11px] mb-1" style={{ color: textMuted }}>
+                      Active Flow
+                    </label>
+                    <select
+                      value={activeFlowName}
+                      onChange={(e) => setSelectedFlowName(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border text-sm outline-none"
+                      style={{ backgroundColor: "transparent", borderColor: borderCol, color: textMain }}
+                    >
+                      {flowNames.map((name) => (
+                        <option key={name} value={name} style={{ color: "#0f172a" }}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] mb-1" style={{ color: textMuted }}>
+                      Add Flow Name
+                    </label>
+                    <input
+                      type="text"
+                      value={newFlowName}
+                      onChange={(e) => setNewFlowName(e.target.value)}
+                      placeholder="e.g. Main-Doctor-A"
+                      className="w-full px-3 py-2 rounded-lg border text-sm outline-none"
+                      style={{ backgroundColor: "transparent", borderColor: borderCol, color: textMain }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-2 text-xs rounded-lg border inline-flex items-center gap-1.5"
+                      style={{ borderColor: borderCol, color: textMain }}
+                      onClick={() => {
+                        const name = newFlowName.trim();
+                        if (!name || !configDraft) return;
+                        const flows =
+                          configDraft.flows && typeof configDraft.flows === "object"
+                            ? { ...(configDraft.flows as Record<string, unknown>) }
+                            : {};
+                        if (!Object.prototype.hasOwnProperty.call(flows, name)) {
+                          flows[name] = sanitizeFlowOrder([], pagesAll.length);
+                          setField("flows", flows);
+                        }
+                        setSelectedFlowName(name);
+                        setNewFlowName("");
+                      }}
+                    >
+                      <Plus size={13} />
+                      Add Flow
+                    </button>
+                    {activeFlowName !== "Main" ? (
+                      <button
+                        type="button"
+                        className="px-3 py-2 text-xs rounded-lg border inline-flex items-center gap-1.5"
+                        style={{ borderColor: borderCol, color: "#ef4444" }}
+                        onClick={() => {
+                          if (!configDraft) return;
+                          const flows =
+                            configDraft.flows && typeof configDraft.flows === "object"
+                              ? { ...(configDraft.flows as Record<string, unknown>) }
+                              : {};
+                          delete flows[activeFlowName];
+                          if (!Object.keys(flows).length) {
+                            flows.Main = sanitizeFlowOrder([], pagesAll.length);
+                          }
+                          setField("flows", flows);
+                          setSelectedFlowName("Main");
+                        }}
+                      >
+                        <Trash2 size={13} />
+                        Delete Flow
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] mb-1" style={{ color: textMuted }}>
+                    Flow Indexes ({activeFlowName})
+                  </label>
+                  <textarea
+                    value={activeFlowOrder.join(", ")}
+                    onChange={(e) => {
+                      const parsed = e.target.value
+                        .split(",")
+                        .map((token) => Number(token.trim()))
+                        .filter((value) => Number.isInteger(value));
+                      setFlowOrder(activeFlowName, parsed);
+                    }}
+                    spellCheck={false}
+                    className="w-full min-h-[78px] px-3 py-2 rounded-lg border text-sm outline-none font-mono"
+                    style={{ backgroundColor: "transparent", borderColor: borderCol, color: textMain }}
+                  />
+                </div>
+              </div>
+
+              {pagesAll.length ? (
+                <div className="space-y-2">
+                  {activeFlowOrder.map((slideIndex, position) => {
+                    const slideId = pagesAll[slideIndex] || `#${slideIndex}`;
+                    const leftIndex = position > 0 ? activeFlowOrder[position - 1] : null;
+                    const rightIndex =
+                      position < activeFlowOrder.length - 1
+                        ? activeFlowOrder[position + 1]
+                        : null;
+                    const leftSlide =
+                      leftIndex !== null ? pagesAll[leftIndex] || `#${leftIndex}` : "None";
+                    const rightSlide =
+                      rightIndex !== null ? pagesAll[rightIndex] || `#${rightIndex}` : "None";
+
+                    return (
+                      <div
+                        key={`${activeFlowName}-${slideIndex}-${position}`}
+                        className="rounded-xl border px-3 py-2"
+                        style={{ borderColor: borderCol, backgroundColor: inputBg }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <GripVertical size={14} style={{ color: textMuted }} />
+                          <span
+                            className="inline-flex items-center justify-center px-2 py-0.5 rounded-md border text-[11px] font-mono"
+                            style={{ borderColor: borderCol, color: textMuted }}
+                          >
+                            {position}
+                          </span>
+                          <span className="font-medium text-sm break-all">{slideId}</span>
+                          <div className="ml-auto flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveFlowItem(position, position - 1)}
+                              disabled={position === 0}
+                              className="h-7 w-7 rounded-md border flex items-center justify-center disabled:opacity-40"
+                              style={{ borderColor: borderCol, color: textMuted }}
+                              title="Move up"
+                            >
+                              <ChevronUp size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveFlowItem(position, position + 1)}
+                              disabled={position === activeFlowOrder.length - 1}
+                              className="h-7 w-7 rounded-md border flex items-center justify-center disabled:opacity-40"
+                              style={{ borderColor: borderCol, color: textMuted }}
+                              title="Move down"
+                            >
+                              <ChevronDown size={14} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                          <div
+                            className="rounded-md border px-2 py-1.5"
+                            style={{ borderColor: borderCol, color: textMuted }}
+                          >
+                            Left Swipe: <span style={{ color: textMain }}>{leftSlide}</span>
+                          </div>
+                          <div
+                            className="rounded-md border px-2 py-1.5"
+                            style={{ borderColor: borderCol, color: textMuted }}
+                          >
+                            Right Swipe: <span style={{ color: textMain }}>{rightSlide}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div
+                  className="p-6 text-center border border-dashed rounded-xl"
+                  style={{ borderColor: borderCol, color: textMuted }}
+                >
+                  No slides found in pagesAll.
+                </div>
               )}
             </div>
           ) : null}

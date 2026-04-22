@@ -10,6 +10,7 @@ import {
   normalizePath,
   normalizeProjectRelative,
   pickDefaultHtmlFile,
+  resolveConfigPathFromFiles,
 } from "../../helpers/appHelpers";
 import {
   ensureDirectoryForFile,
@@ -106,6 +107,12 @@ const CONFIG_ARRAY_KEYS = [
   "pageAbbreviationAll",
 ] as const;
 
+const CONFIG_SLIDE_TEXT_DEFAULTS = {
+  pagesTitles: (slideId: string) => slideId,
+  pagesDesc: (slideId: string) => slideId,
+  menuDesc: () => "",
+} as const;
+
 function extractAssignedObject(
   raw: string,
   assignmentPattern: RegExp,
@@ -198,32 +205,8 @@ function serializeConfigWrapper(wrapper: ConfigWrapper): string {
   return `${wrapper.prefix}${JSON.stringify(wrapper.draft, null, 4)}${wrapper.suffix}`;
 }
 
-function cloneNestedValue<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function updateCustomMenuSlideIndexes(
-  draft: Record<string, any>,
-  sourceIndex: number,
-): void {
-  if (!Array.isArray(draft.customMenu)) return;
-  const sourcePosition = sourceIndex + 1;
-  draft.customMenu = draft.customMenu.map((entry: any) => {
-    if (!entry || !Array.isArray(entry.slides)) return entry;
-    return {
-      ...entry,
-      slides: entry.slides.map((slideNumber: any) => {
-        const numeric = Number(slideNumber);
-        if (!Number.isFinite(numeric)) return slideNumber;
-        return numeric > sourcePosition ? numeric + 1 : numeric;
-      }),
-    };
-  });
-}
-
 function insertClonedSlideIntoConfigDraft(
   draft: Record<string, any>,
-  sourceSlideId: string,
   nextSlideId: string,
 ): boolean {
   const pagesAll = Array.isArray(draft.pagesAll)
@@ -231,65 +214,44 @@ function insertClonedSlideIntoConfigDraft(
     : [];
   if (!nextSlideId || pagesAll.includes(nextSlideId)) return false;
 
-  const sourceIndex = pagesAll.findIndex(
-    (entry) => String(entry || "").trim() === sourceSlideId,
-  );
-  const insertIndex =
-    sourceIndex >= 0 ? sourceIndex + 1 : pagesAll.length;
+  const insertIndex = pagesAll.length;
 
   pagesAll.splice(insertIndex, 0, nextSlideId);
   draft.pagesAll = pagesAll;
 
   CONFIG_ARRAY_KEYS.forEach((key) => {
     const existing = Array.isArray(draft[key]) ? [...draft[key]] : [];
-    const sourceRow =
-      sourceIndex >= 0 && sourceIndex < existing.length
-        ? cloneNestedValue(existing[sourceIndex])
-        : [];
-    existing.splice(insertIndex, 0, Array.isArray(sourceRow) ? sourceRow : []);
+    existing.splice(insertIndex, 0, []);
     draft[key] = existing;
   });
 
-  if (sourceIndex >= 0) {
-    updateCustomMenuSlideIndexes(draft, sourceIndex);
+  (Object.keys(CONFIG_SLIDE_TEXT_DEFAULTS) as Array<
+    keyof typeof CONFIG_SLIDE_TEXT_DEFAULTS
+  >).forEach((key) => {
+    const existing = Array.isArray(draft[key]) ? [...draft[key]] : [];
+    existing.splice(insertIndex, 0, CONFIG_SLIDE_TEXT_DEFAULTS[key](nextSlideId));
+    draft[key] = existing;
+  });
+
+  const nextSlideIndex = insertIndex;
+  const existingFlows =
+    draft.flows && typeof draft.flows === "object" ? { ...draft.flows } : {};
+  const mainFlow = Array.isArray(existingFlows.Main)
+    ? existingFlows.Main
+        .map((value: unknown) => Number(value))
+        .filter((value: number) => Number.isInteger(value) && value >= 0)
+    : [];
+  if (!mainFlow.includes(nextSlideIndex)) {
+    mainFlow.push(nextSlideIndex);
   }
+  existingFlows.Main = mainFlow;
+  draft.flows = existingFlows;
 
   if (!draft.homepage && pagesAll.length > 0) {
     draft.homepage = pagesAll[0];
   }
 
   return true;
-}
-
-function updatePortfolioSlideRanges(
-  value: unknown,
-  sourceSlideId: string,
-  nextSlideId: string,
-): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) =>
-      updatePortfolioSlideRanges(entry, sourceSlideId, nextSlideId),
-    );
-  }
-  if (!value || typeof value !== "object") return value;
-
-  const nextValue: Record<string, any> = { ...(value as Record<string, any>) };
-  if (nextValue.lastSlide === sourceSlideId) {
-    nextValue.lastSlide = nextSlideId;
-  }
-
-  Object.keys(nextValue).forEach((key) => {
-    const child = nextValue[key];
-    if (child && typeof child === "object") {
-      nextValue[key] = updatePortfolioSlideRanges(
-        child,
-        sourceSlideId,
-        nextSlideId,
-      );
-    }
-  });
-
-  return nextValue;
 }
 
 export const useProjectFileActions = ({
@@ -373,19 +335,13 @@ export const useProjectFileActions = ({
   );
 
   const syncNewSlideIntoProjectFlow = useCallback(
-    async (sourceSlidePath: string, nextSlidePath: string) => {
-      const sourceSlideId =
-        normalizeProjectRelative(sourceSlidePath).split("/").filter(Boolean).pop() ||
-        "";
+    async (nextSlidePath: string) => {
       const nextSlideId =
         normalizeProjectRelative(nextSlidePath).split("/").filter(Boolean).pop() ||
         "";
-      if (!sourceSlideId || !nextSlideId) return;
+      if (!nextSlideId) return;
 
-      const writeUpdatedConfig = async (
-        virtualPath: string | null,
-        kind: "config" | "portfolio",
-      ) => {
+      const writeUpdatedConfig = async (virtualPath: string | null) => {
         if (!virtualPath) return false;
         const absolutePath = filePathIndexRef.current[virtualPath];
         if (!absolutePath) return false;
@@ -396,30 +352,15 @@ export const useProjectFileActions = ({
             await (Neutralino as any).filesystem.readFile(absolutePath),
           );
         } catch (error) {
-          console.warn(`Failed to read ${kind} file:`, error);
+          console.warn("Failed to read config file:", error);
           return false;
         }
 
-        const wrapper = parseConfigWrapper(rawContent, kind);
+        const wrapper = parseConfigWrapper(rawContent, "config");
         if (!wrapper) return false;
 
-        const nextDraft =
-          kind === "config"
-            ? wrapper.draft
-            : (updatePortfolioSlideRanges(
-                wrapper.draft,
-                sourceSlideId,
-                nextSlideId,
-              ) as Record<string, any>);
-
-        const changed =
-          kind === "config"
-            ? insertClonedSlideIntoConfigDraft(
-                nextDraft,
-                sourceSlideId,
-                nextSlideId,
-              )
-            : JSON.stringify(nextDraft) !== JSON.stringify(wrapper.draft);
+        const nextDraft = wrapper.draft;
+        const changed = insertClonedSlideIntoConfigDraft(nextDraft, nextSlideId);
 
         if (!changed) return false;
 
@@ -431,7 +372,7 @@ export const useProjectFileActions = ({
         try {
           await (Neutralino as any).filesystem.writeFile(absolutePath, serialized);
         } catch (error) {
-          console.warn(`Failed to write ${kind} file:`, error);
+          console.warn("Failed to write config file:", error);
           return false;
         }
 
@@ -447,13 +388,7 @@ export const useProjectFileActions = ({
       };
 
       const configPath = resolveConfigPathFromFiles(filesRef.current, "config.json");
-      const portfolioPath = resolveConfigPathFromFiles(
-        filesRef.current,
-        "portfolioconfig.json",
-      );
-
-      await writeUpdatedConfig(configPath, "config");
-      await writeUpdatedConfig(portfolioPath, "portfolio");
+      await writeUpdatedConfig(configPath);
     },
     [filePathIndexRef, filesRef, setFiles],
   );
@@ -775,12 +710,11 @@ export const useProjectFileActions = ({
         return;
       }
       await refreshProjectFiles();
-      await syncNewSlideIntoProjectFlow(selectedFolderCloneSource, nextVirtual);
+      await syncNewSlideIntoProjectFlow(nextVirtual);
       await refreshProjectFiles();
       setIsLeftPanelOpen(true);
     },
     [
-      filesRef,
       getMainParentSeed,
       projectPath,
       refreshProjectFiles,
@@ -788,7 +722,6 @@ export const useProjectFileActions = ({
       selectedFolderCloneSource,
       setIsConfigModalOpen,
       setIsLeftPanelOpen,
-      setFiles,
       syncNewSlideIntoProjectFlow,
     ],
   );
