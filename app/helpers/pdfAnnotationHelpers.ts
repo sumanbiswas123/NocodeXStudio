@@ -1195,13 +1195,13 @@ function findSlideByPdfText(
   slides: MappableSlideRecord[],
 ): MappableSlideRecord | null {
   let best: { slide: MappableSlideRecord; score: number } | null = null;
-  slides.forEach((slide) => {
+  for (const slide of slides) {
     const score = slideTextMatchScore(pdfText, slide);
-    if (score <= 0) return;
+    if (score <= 0) continue;
     if (!best || score > best.score) {
       best = { slide, score };
     }
-  });
+  }
   return best && best.score >= 95 ? best.slide : null;
 }
 
@@ -1420,11 +1420,13 @@ export function clusterPdfPagesWithDeepIntelligence(
           bestThumbIndex < 0 ||
           (bestThumbIndex >= currentAnchor.slideIndex &&
             (!nextAnchor || bestThumbIndex <= nextAnchor.slideIndex));
-        const weakVisualStillPlausible =
-          match.bestThumb && match.hammingDistance <= DEFAULT_HASH_DISTANCE_THRESHOLD;
+        const weakMatchedThumb =
+          match.bestThumb && match.hammingDistance <= DEFAULT_HASH_DISTANCE_THRESHOLD
+            ? match.bestThumb
+            : null;
 
-        if (weakVisualStillPlausible && withinCurrentSequence) {
-          assignedThumb = match.bestThumb;
+        if (weakMatchedThumb && withinCurrentSequence) {
+          assignedThumb = weakMatchedThumb;
           mappedSlideId = assignedThumb.slideId;
           mappedFilePath = assignedThumb.filePath;
           const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
