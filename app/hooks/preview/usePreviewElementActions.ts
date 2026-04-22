@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import * as Neutralino from "@neutralinojs/lib";
@@ -124,6 +124,10 @@ export const usePreviewElementActions = ({
   setSelectedId,
   setSidebarToolMode,
 }: UsePreviewElementActionsOptions) => {
+  const quickTextHighlightArmedRef = useRef(false);
+  const quickTextProgrammaticSelectionRef = useRef(false);
+  const quickTextHighlightCleanupRef = useRef<(() => void) | null>(null);
+
   const debugPreviewAssetReplace = (
     label: string,
     payload: Record<string, unknown>,
@@ -404,10 +408,226 @@ export const usePreviewElementActions = ({
       el.classList.remove("__nx-preview-dirty");
     });
     const overlays = doc.querySelectorAll<HTMLElement>(
-      "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft]",
+      "[data-preview-hover-outline], [data-preview-hover-badge], [data-preview-draw-draft], [data-nx-quick-text-highlight]",
     );
     overlays.forEach((el) => el.remove());
   }, []);
+
+  const unwrapInlineElement = useCallback((element: Element): Element | null => {
+    const parent = element.parentElement;
+    if (!parent) return null;
+    while (element.firstChild) {
+      parent.insertBefore(element.firstChild, element);
+    }
+    parent.removeChild(element);
+    parent.normalize();
+    return parent;
+  }, []);
+
+  const getRangeElement = useCallback((node: Node | null): Element | null => {
+    if (!node) return null;
+    return node instanceof Element ? node : node.parentElement;
+  }, []);
+
+  const getElementPathFromBody = useCallback((element: Element | null): number[] | null => {
+    if (!element) return null;
+    const path: number[] = [];
+    let cursor: Element | null = element;
+    while (cursor && cursor.parentElement) {
+      const parentElement: HTMLElement = cursor.parentElement;
+      const index = Array.from(parentElement.children).indexOf(cursor);
+      if (index < 0) return null;
+      path.unshift(index);
+      if (parentElement === element.ownerDocument.body) {
+        return path;
+      }
+      cursor = parentElement;
+    }
+    return null;
+  }, []);
+
+  const getSelectedInlineTags = useCallback(
+    (range: Range, tagName: "sup" | "sub"): Element[] => {
+      const selected = new Set<Element>();
+      const addClosest = (node: Node | null) => {
+        const element = getRangeElement(node);
+        const closest = element?.closest?.(tagName);
+        if (closest) selected.add(closest);
+      };
+
+      addClosest(range.startContainer);
+      addClosest(range.endContainer);
+      addClosest(range.commonAncestorContainer);
+
+      const ancestor = getRangeElement(range.commonAncestorContainer);
+      ancestor?.querySelectorAll?.(tagName).forEach((element) => {
+        try {
+          if (range.intersectsNode(element)) {
+            selected.add(element);
+          }
+        } catch {
+          // Some browser Range implementations can throw on detached nodes.
+        }
+      });
+
+      return Array.from(selected);
+    },
+    [getRangeElement],
+  );
+
+  const insertSelectionBoundaryMarkers = useCallback((range: Range): {
+    startMarker: HTMLElement;
+    endMarker: HTMLElement;
+  } | null => {
+    const ownerDocument = range.commonAncestorContainer.ownerDocument;
+    if (!ownerDocument) return null;
+    const markerId = `nx-quick-selection-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const startMarker = ownerDocument.createElement("span");
+    const endMarker = ownerDocument.createElement("span");
+    startMarker.setAttribute("data-nx-quick-selection-start", markerId);
+    endMarker.setAttribute("data-nx-quick-selection-end", markerId);
+    startMarker.style.display = "none";
+    endMarker.style.display = "none";
+
+    const endRange = range.cloneRange();
+    endRange.collapse(false);
+    endRange.insertNode(endMarker);
+
+    const startRange = range.cloneRange();
+    startRange.collapse(true);
+    startRange.insertNode(startMarker);
+
+    return { startMarker, endMarker };
+  }, []);
+
+  const clearQuickTextHighlight = useCallback((doc: Document) => {
+    doc.querySelectorAll<HTMLElement>("[data-nx-quick-text-highlight]").forEach((el) => {
+      el.remove();
+    });
+    quickTextHighlightArmedRef.current = false;
+    quickTextHighlightCleanupRef.current?.();
+    quickTextHighlightCleanupRef.current = null;
+  }, []);
+
+  const armQuickTextHighlightCleanup = useCallback(
+    (doc: Document) => {
+      const frame = previewFrameRef.current;
+      const win = doc.defaultView;
+      if (!win) return;
+
+      quickTextHighlightCleanupRef.current?.();
+      const clearFromCurrentDoc = () => {
+        if (quickTextHighlightArmedRef.current) {
+          clearQuickTextHighlight(doc);
+        }
+      };
+      const clearOnSelectionChange = () => {
+        if (quickTextProgrammaticSelectionRef.current) return;
+        clearFromCurrentDoc();
+      };
+
+      doc.addEventListener("selectionchange", clearOnSelectionChange);
+      doc.addEventListener("pointerdown", clearFromCurrentDoc, true);
+      doc.addEventListener("mousedown", clearFromCurrentDoc, true);
+      doc.addEventListener("keydown", clearFromCurrentDoc, true);
+      doc.addEventListener("scroll", clearFromCurrentDoc, true);
+      doc.addEventListener("focusout", clearFromCurrentDoc, true);
+      win.addEventListener("blur", clearFromCurrentDoc);
+      frame?.addEventListener("blur", clearFromCurrentDoc);
+      document.addEventListener("pointerdown", clearFromCurrentDoc, true);
+      document.addEventListener("focusin", clearFromCurrentDoc, true);
+
+      quickTextHighlightCleanupRef.current = () => {
+        doc.removeEventListener("selectionchange", clearOnSelectionChange);
+        doc.removeEventListener("pointerdown", clearFromCurrentDoc, true);
+        doc.removeEventListener("mousedown", clearFromCurrentDoc, true);
+        doc.removeEventListener("keydown", clearFromCurrentDoc, true);
+        doc.removeEventListener("scroll", clearFromCurrentDoc, true);
+        doc.removeEventListener("focusout", clearFromCurrentDoc, true);
+        win.removeEventListener("blur", clearFromCurrentDoc);
+        frame?.removeEventListener("blur", clearFromCurrentDoc);
+        document.removeEventListener("pointerdown", clearFromCurrentDoc, true);
+        document.removeEventListener("focusin", clearFromCurrentDoc, true);
+      };
+    },
+    [clearQuickTextHighlight, previewFrameRef],
+  );
+
+  const showQuickTextHighlight = useCallback(
+    (range: Range) => {
+      const doc = range.commonAncestorContainer.ownerDocument;
+      const body = doc?.body;
+      const view = doc?.defaultView;
+      if (!doc || !body || !view) return;
+      clearQuickTextHighlight(doc);
+      const rects = Array.from(range.getClientRects()).filter(
+        (rect) => rect.width > 0 && rect.height > 0,
+      );
+      quickTextHighlightArmedRef.current = rects.length > 0;
+      if (rects.length > 0) {
+        armQuickTextHighlightCleanup(doc);
+      }
+      rects.forEach((rect) => {
+        const overlay = doc.createElement("span");
+        overlay.setAttribute("data-nx-quick-text-highlight", "true");
+        overlay.style.position = "absolute";
+        overlay.style.left = `${rect.left + view.scrollX}px`;
+        overlay.style.top = `${rect.top + view.scrollY}px`;
+        overlay.style.width = `${rect.width}px`;
+        overlay.style.height = `${rect.height}px`;
+        overlay.style.background = "rgba(14, 165, 233, 0.32)";
+        overlay.style.outline = "1px solid rgba(14, 165, 233, 0.65)";
+        overlay.style.pointerEvents = "none";
+        overlay.style.zIndex = "2147483646";
+        overlay.style.borderRadius = "2px";
+        body.appendChild(overlay);
+      });
+    },
+    [armQuickTextHighlightCleanup, clearQuickTextHighlight],
+  );
+
+  useEffect(() => {
+    const frame = previewFrameRef.current;
+    const doc = frame?.contentDocument;
+    const win = frame?.contentWindow;
+    if (!doc || !win) return;
+
+    const clearForUserChange = () => {
+      if (quickTextHighlightArmedRef.current) {
+        clearQuickTextHighlight(doc);
+      }
+    };
+    const clearOnSelectionChange = () => {
+      if (quickTextProgrammaticSelectionRef.current) {
+        return;
+      }
+      clearForUserChange();
+    };
+    const clearOnBlur = () => {
+      clearQuickTextHighlight(doc);
+    };
+
+    doc.addEventListener("selectionchange", clearOnSelectionChange);
+    doc.addEventListener("pointerdown", clearForUserChange, true);
+    doc.addEventListener("keydown", clearForUserChange, true);
+    doc.addEventListener("scroll", clearForUserChange, true);
+    doc.addEventListener("focusout", clearOnBlur);
+    win.addEventListener("blur", clearOnBlur);
+    frame.addEventListener("blur", clearOnBlur);
+    document.addEventListener("pointerdown", clearOnBlur, true);
+    document.addEventListener("focusin", clearOnBlur, true);
+    return () => {
+      doc.removeEventListener("selectionchange", clearOnSelectionChange);
+      doc.removeEventListener("pointerdown", clearForUserChange, true);
+      doc.removeEventListener("keydown", clearForUserChange, true);
+      doc.removeEventListener("scroll", clearForUserChange, true);
+      doc.removeEventListener("focusout", clearOnBlur);
+      win.removeEventListener("blur", clearOnBlur);
+      frame.removeEventListener("blur", clearOnBlur);
+      document.removeEventListener("pointerdown", clearOnBlur, true);
+      document.removeEventListener("focusin", clearOnBlur, true);
+    };
+  }, [clearQuickTextHighlight, previewFrameRef]);
 
   const applyQuickTextWrapTag = useCallback(
     async (tagName: "sup" | "sub") => {
@@ -416,6 +636,7 @@ export const usePreviewElementActions = ({
       const doc = frame?.contentDocument;
       if (!win || !doc) return;
       if (!selectedPreviewHtml) return;
+      clearQuickTextHighlight(doc);
       const selection = win.getSelection?.();
       const activeRange =
         selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
@@ -426,22 +647,30 @@ export const usePreviewElementActions = ({
       if (!range || range.collapsed) return;
 
       const workingRange = range.cloneRange();
-      const ancestor =
-        workingRange.commonAncestorContainer instanceof Element
-          ? workingRange.commonAncestorContainer
-          : workingRange.commonAncestorContainer?.parentElement;
-      const existing = ancestor?.closest?.(tagName) || null;
       let updatedNode: Element | null = null;
+      let wrappedMarker: string | null = null;
+      let nextSelectionPath: number[] | null = null;
+      let textSelectionMarkers: {
+        startMarker: HTMLElement;
+        endMarker: HTMLElement;
+      } | null = null;
+      const existingTags = getSelectedInlineTags(workingRange, tagName);
 
-      if (existing && existing.parentElement) {
-        const parent = existing.parentElement;
-        while (existing.firstChild) {
-          parent.insertBefore(existing.firstChild, existing);
+      if (existingTags.length > 0) {
+        textSelectionMarkers = insertSelectionBoundaryMarkers(workingRange);
+        existingTags.forEach((existing) => {
+          const parent = unwrapInlineElement(existing);
+          if (parent) updatedNode = parent;
+        });
+        if (!updatedNode) {
+          const ancestor = getRangeElement(workingRange.commonAncestorContainer);
+          updatedNode = ancestor;
         }
-        parent.removeChild(existing);
-        updatedNode = parent;
+        nextSelectionPath = getElementPathFromBody(updatedNode);
       } else {
         const wrapper = doc.createElement(tagName);
+        wrappedMarker = `nx-quick-wrap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        wrapper.setAttribute("data-nx-quick-wrap-id", wrappedMarker);
         try {
           workingRange.surroundContents(wrapper);
         } catch {
@@ -450,14 +679,31 @@ export const usePreviewElementActions = ({
           workingRange.insertNode(wrapper);
         }
         updatedNode = wrapper;
+        nextSelectionPath = getElementPathFromBody(wrapper);
       }
 
-      const liveTarget =
+      let liveTarget =
         previewSelectedPath && Array.isArray(previewSelectedPath)
           ? getLivePreviewSelectedElement(previewSelectedPath)
           : null;
       if (liveTarget instanceof HTMLElement) {
         await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+        liveTarget =
+          previewSelectedPath && Array.isArray(previewSelectedPath)
+            ? getLivePreviewSelectedElement(previewSelectedPath)
+            : liveTarget;
+        if (wrappedMarker && liveTarget instanceof HTMLElement) {
+          const markerSelector = `[data-nx-quick-wrap-id="${wrappedMarker}"]`;
+          const markedNode = liveTarget.querySelector<HTMLElement>(markerSelector);
+          if (markedNode) {
+            nextSelectionPath = getElementPathFromBody(markedNode);
+            markedNode.removeAttribute("data-nx-quick-wrap-id");
+            await applyPreviewContentUpdate({ html: liveTarget.innerHTML });
+            updatedNode = nextSelectionPath
+              ? getLivePreviewSelectedElement(nextSelectionPath)
+              : markedNode;
+          }
+        }
       } else if (doc.documentElement) {
         sanitizeQuickEditDocument(doc);
         const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
@@ -466,27 +712,68 @@ export const usePreviewElementActions = ({
         });
       }
 
+      if (nextSelectionPath?.length) {
+        selectPreviewElementAtPath(nextSelectionPath);
+        updatedNode = getLivePreviewSelectedElement(nextSelectionPath) || updatedNode;
+      }
+
       if (selection) {
+        frame.focus?.();
+        win.focus?.();
+        doc.documentElement?.focus?.({ preventScroll: true });
         selection.removeAllRanges();
         const nextRange = doc.createRange();
-        if (updatedNode) {
+        let removedSelectionMarkers = false;
+        if (
+          textSelectionMarkers?.startMarker.isConnected &&
+          textSelectionMarkers.endMarker.isConnected
+        ) {
+          nextRange.setStartAfter(textSelectionMarkers.startMarker);
+          nextRange.setEndBefore(textSelectionMarkers.endMarker);
+          textSelectionMarkers.startMarker.remove();
+          textSelectionMarkers.endMarker.remove();
+          removedSelectionMarkers = true;
+        } else if (updatedNode) {
           nextRange.selectNodeContents(updatedNode);
         } else {
           nextRange.selectNodeContents(doc.body);
         }
+        quickTextProgrammaticSelectionRef.current = true;
         selection.addRange(nextRange);
         quickTextRangeRef.current = nextRange.cloneRange();
+        showQuickTextHighlight(nextRange);
+        window.setTimeout(() => {
+          quickTextProgrammaticSelectionRef.current = false;
+        }, 0);
+        if (updatedNode instanceof HTMLElement) {
+          updatedNode.focus?.({ preventScroll: true });
+        }
+        if (removedSelectionMarkers && doc.documentElement) {
+          const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+          await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+            refreshPreviewDoc: false,
+            pushToHistory: false,
+          });
+        }
       }
     },
     [
       applyPreviewContentUpdate,
+      clearQuickTextHighlight,
+      getElementPathFromBody,
+      getRangeElement,
+      getSelectedInlineTags,
       getLivePreviewSelectedElement,
+      insertSelectionBoundaryMarkers,
       persistPreviewHtmlContent,
       previewFrameRef,
       previewSelectedPath,
       quickTextRangeRef,
       sanitizeQuickEditDocument,
+      selectPreviewElementAtPath,
       selectedPreviewHtml,
+      showQuickTextHighlight,
+      unwrapInlineElement,
     ],
   );
 
