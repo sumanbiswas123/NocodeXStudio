@@ -778,6 +778,10 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [htmlDraft, setHtmlDraft] = useState("");
   const [showSelectorTokenInput, setShowSelectorTokenInput] = useState(false);
   const [selectorTokenDraft, setSelectorTokenDraft] = useState("");
+  const [identityDraft, setIdentityDraft] = useState<{
+    id: string;
+    className: string;
+  }>({ id: "", className: "" });
   const [layerLevelDraft, setLayerLevelDraft] = useState("");
   const [ruleDrafts, setRuleDrafts] = useState<
     Record<string, { key: string; value: string }>
@@ -977,6 +981,13 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   }, [element?.content, element?.html, element?.id]);
 
   useEffect(() => {
+    setIdentityDraft({
+      id: String(element?.id || "").trim(),
+      className: String(element?.className || "").trim(),
+    });
+  }, [element?.id, element?.className]);
+
+  useEffect(() => {
     const attrs = element?.attributes || {};
     setReferenceTargetDraft(String(attrs["data-reftarget"] || ""));
     setReferenceDialogDraft(
@@ -1090,7 +1101,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     }
 
     const currentId = String(element?.id || "").trim();
-    const currentClasses = String(element?.className || "")
+    const currentClasses = identityDraft.className
       .split(/\s+/)
       .map((token) => token.trim())
       .filter(Boolean);
@@ -1098,25 +1109,44 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     if (raw.startsWith("#")) {
       const nextId = raw.slice(1).trim();
       if (!nextId) return;
+      setIdentityDraft({
+        id: nextId,
+        className: currentClasses.join(" "),
+      });
       onUpdateIdentity({
         id: nextId,
         className: currentClasses.join(" "),
       });
-    } else if (raw.startsWith(".")) {
-      const nextClass = raw.slice(1).trim();
-      if (!nextClass) return;
-      const nextClasses = Array.from(new Set([...currentClasses, nextClass]));
+    } else {
+      const nextClasses = Array.from(
+        new Set([
+          ...currentClasses,
+          ...raw
+            .split(/\s+/)
+            .map((token) => token.trim().replace(/^\./, ""))
+            .filter(Boolean),
+        ]),
+      );
+      if (nextClasses.length === currentClasses.length) return;
+      setIdentityDraft({
+        id: currentId,
+        className: nextClasses.join(" "),
+      });
       onUpdateIdentity({
         id: currentId,
         className: nextClasses.join(" "),
       });
-    } else {
-      return;
     }
 
     setSelectorTokenDraft("");
     setShowSelectorTokenInput(false);
   };
+
+  const currentIdToken = identityDraft.id;
+  const currentClassTokens = identityDraft.className
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
 
   const setRuleDraftValue = (
     ruleKey: string,
@@ -1562,6 +1592,24 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     });
   }, [matchedCssRules]);
 
+  const classRuleDrafts = useMemo(() => {
+    return currentClassTokens
+      .filter(
+        (token) =>
+          !annotatedMatchedRules.some(
+            (rule) =>
+              normalizeSelectorSignature(rule.selector) ===
+              normalizeSelectorSignature(`.${token}`),
+          ),
+      )
+      .map((token, index) => ({
+        selector: `.${token}`,
+        source: "local.css",
+        declarations: [],
+        occurrenceIndex: index,
+      }));
+  }, [annotatedMatchedRules, currentClassTokens]);
+
   useEffect(() => {
     setMatchedDeclarationDrafts((current) => {
       const nextEntries = Object.entries(current).filter(([draftKey, draft]) => {
@@ -1585,7 +1633,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
 
   const filteredMatchedRules = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return annotatedMatchedRules
+    return [...annotatedMatchedRules, ...classRuleDrafts]
       .map((rule) => ({
         ...rule,
         declarations: (() => {
@@ -1641,8 +1689,17 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           return collapseRenderedDeclarations(filteredDeclarations);
         })(),
       }))
-      .filter((rule) => rule.declarations.length > 0);
-  }, [annotatedMatchedRules, filterText, matchedDeclarationDrafts]);
+      .filter(
+        (rule) =>
+          rule.declarations.length > 0 ||
+          (rule.source === "local.css" && rule.selector.startsWith(".")),
+      );
+  }, [
+    annotatedMatchedRules,
+    classRuleDrafts,
+    filterText,
+    matchedDeclarationDrafts,
+  ]);
 
   const orderedMatchedRules = useMemo(
     () => {
@@ -2448,6 +2505,41 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
             className="style-inspector-section"
             style={{ borderColor: "var(--border-color)" }}
           >
+            <div
+              className="style-inspector-text-tools"
+              style={{
+                fontSize: 12,
+                flexWrap: "wrap",
+                marginBottom: 8,
+                color: "var(--text-muted)",
+              }}
+            >
+              {currentIdToken ? (
+                <span
+                  className="style-inspector-tool-button"
+                  style={{ cursor: "default" }}
+                  title="Current id"
+                >
+                  #{currentIdToken}
+                </span>
+              ) : null}
+              {currentClassTokens.length > 0 ? (
+                currentClassTokens.map((token) => (
+                  <span
+                    key={token}
+                    className="style-inspector-tool-button"
+                    style={{ cursor: "default" }}
+                    title="Current class"
+                  >
+                    .{token}
+                  </span>
+                ))
+              ) : (
+                <span style={{ opacity: 0.75 }}>
+                  No id/class applied yet
+                </span>
+              )}
+            </div>
             <div className="style-inspector-text-tools" style={{ fontSize: 12 }}>
               {showSelectorTokenInput ? (
                 <input

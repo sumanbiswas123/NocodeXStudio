@@ -1107,6 +1107,34 @@ export const usePreviewCssMutation = ({
         Math.max(0, rule.occurrenceIndex || 0),
       );
       if (!ruleRange) {
+        if (cssRuleSourcesMatch(sourcePath, "local.css")) {
+          const nextDeclarations = applyPatchToDeclarationEntries([], rule, styles);
+          const nextRuleBlock =
+            nextDeclarations.length > 0
+              ? `${rule.selector} {\n  ${nextDeclarations
+                  .map(
+                    (entry) =>
+                      `${entry.property}: ${entry.value}${entry.important ? " !important" : ""};`,
+                  )
+                  .join("\n  ")}\n}`
+              : `${rule.selector} {\n}`;
+          const trimmedSource = sourceText.trimEnd();
+          const nextSourceText = trimmedSource
+            ? `${trimmedSource}\n\n${nextRuleBlock}\n`
+            : `${nextRuleBlock}\n`;
+          debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
+            selector: rule.selector,
+            source: rule.source,
+            sourcePath: rule.sourcePath || "",
+            occurrenceIndex: rule.occurrenceIndex ?? 0,
+            styles,
+            resolvedSourcePath: sourcePath,
+            sourceTextFound: true,
+            ruleRangeFound: false,
+            createdMissingRule: true,
+          });
+          return { sourcePath, nextSourceText };
+        }
         debugPreviewCssMutation("buildPreviewMatchedRulePatchedSource", {
           selector: rule.selector,
           source: rule.source,
@@ -1116,6 +1144,7 @@ export const usePreviewCssMutation = ({
           resolvedSourcePath: sourcePath,
           sourceTextFound: true,
           ruleRangeFound: false,
+          createdMissingRule: false,
         });
         return null;
       }
