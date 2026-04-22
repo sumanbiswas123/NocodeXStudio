@@ -29,6 +29,14 @@ type UsePreviewHistoryFlowOptions = {
   previewDependencyIndexRef: MutableRefObject<Record<string, string[]>>;
   previewFrameRef: MutableRefObject<HTMLIFrameElement | null>;
   previewHistoryRef: MutableRefObject<Record<string, PreviewHistoryEntry>>;
+  previewMatchedRuleEditAtRef: MutableRefObject<number>;
+  previewMatchedRuleEditRef: MutableRefObject<{
+    at: number;
+    selector: string;
+    source: string;
+    sourcePath?: string;
+    occurrenceIndex: number;
+  } | null>;
   selectedPreviewHtmlRef: MutableRefObject<string | null>;
   setCodeDraftByPath: Dispatch<SetStateAction<Record<string, string>>>;
   setCodeDirtyPathSet: Dispatch<SetStateAction<Record<string, true>>>;
@@ -74,6 +82,8 @@ export const usePreviewHistoryFlow = ({
   previewDependencyIndexRef,
   previewFrameRef,
   previewHistoryRef,
+  previewMatchedRuleEditAtRef,
+  previewMatchedRuleEditRef,
   selectedPreviewHtmlRef,
   setCodeDraftByPath,
   setCodeDirtyPathSet,
@@ -217,6 +227,62 @@ export const usePreviewHistoryFlow = ({
     }, 1200);
   }, [autoSaveEnabled, flushPendingPreviewSaves]);
 
+  const resolveLocalCssPathForPreviewHtml = useCallback((htmlPath: string) => {
+    const normalized = String(htmlPath || "").trim();
+    if (!normalized) return "css/local.css";
+    const lastSlash = normalized.lastIndexOf("/");
+    const htmlDir = lastSlash >= 0 ? normalized.slice(0, lastSlash) : "";
+    return htmlDir ? `${htmlDir}/css/local.css` : "css/local.css";
+  }, []);
+
+  const resolveRecentEditedCssHistoryPath = useCallback(
+    (selectedHtmlPath: string | null) => {
+      const recentEdit = previewMatchedRuleEditRef.current;
+      if (!recentEdit) return null;
+      const historyKeys = Object.keys(previewHistoryRef.current);
+      const htmlDir =
+        selectedHtmlPath && selectedHtmlPath.includes("/")
+          ? selectedHtmlPath.slice(0, selectedHtmlPath.lastIndexOf("/"))
+          : "";
+      const rawCandidates = [recentEdit.sourcePath, recentEdit.source]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+
+      for (const candidate of rawCandidates) {
+        if (historyKeys.includes(candidate)) return candidate;
+      }
+
+      for (const candidate of rawCandidates) {
+        if (candidate.includes("/")) {
+          const normalizedCandidate = candidate.toLowerCase();
+          const matched = historyKeys.find(
+            (key) => key.toLowerCase() === normalizedCandidate,
+          );
+          if (matched) return matched;
+          continue;
+        }
+        const lowerCandidate = candidate.toLowerCase();
+        const matches = historyKeys.filter((key) => {
+          const lowerKey = key.toLowerCase();
+          return (
+            lowerKey === lowerCandidate ||
+            lowerKey.endsWith(`/${lowerCandidate}`)
+          );
+        });
+        if (matches.length === 1) return matches[0];
+        if (matches.length > 1 && htmlDir) {
+          const preferred = matches.find((key) =>
+            key.toLowerCase().startsWith(`${htmlDir.toLowerCase()}/`),
+          );
+          if (preferred) return preferred;
+        }
+        if (matches.length > 0) return matches[0];
+      }
+      return null;
+    },
+    [previewHistoryRef, previewMatchedRuleEditRef],
+  );
+
   const discardUnsavedChangesForFile = useCallback(
     async (path: string) => {
       if (!path) return;
@@ -336,7 +402,24 @@ export const usePreviewHistoryFlow = ({
   );
 
   const handlePreviewUndo = useCallback(async () => {
-    const filePath = selectedPreviewHtmlRef.current;
+    const selectedHtmlPath = selectedPreviewHtmlRef.current;
+    if (!selectedHtmlPath) return;
+    const localCssPath = resolveLocalCssPathForPreviewHtml(selectedHtmlPath);
+    const recentEditedCssPath =
+      resolveRecentEditedCssHistoryPath(selectedHtmlPath);
+    const undoCandidates = [
+      recentEditedCssPath,
+      selectedHtmlPath,
+      localCssPath,
+    ].filter((value, index, arr): value is string => {
+      if (!value) return false;
+      return arr.indexOf(value) === index;
+    });
+    const filePath =
+      undoCandidates.find((candidate) => {
+        const history = previewHistoryRef.current[candidate];
+        return Boolean(history && history.past.length > 0);
+      }) || null;
     if (!filePath) return;
     const current = previewHistoryRef.current[filePath];
     if (!current || current.past.length === 0) return;
@@ -367,7 +450,7 @@ export const usePreviewHistoryFlow = ({
       [filePath]: [],
     }));
     const currentEntry = filesRef.current[filePath];
-    if (currentEntry) {
+    if (currentEntry && selectedHtmlPath === filePath) {
       const previewSnapshot: FileMap = {
         ...filesRef.current,
         [filePath]: {
@@ -383,7 +466,36 @@ export const usePreviewHistoryFlow = ({
       cachePreviewDoc(filePath, previewDoc);
       setSelectedPreviewDoc(previewDoc);
     }
+    if (selectedHtmlPath && selectedHtmlPath !== filePath) {
+      const selectedEntry = filesRef.current[selectedHtmlPath];
+      if (selectedEntry) {
+        const previewSnapshot: FileMap = {
+          ...filesRef.current,
+          [filePath]: currentEntry
+            ? { ...currentEntry, content: previous }
+            : {
+                path: filePath,
+                name: filePath.split("/").pop() || "local.css",
+                type: filePath.toLowerCase().endsWith(".css")
+                  ? "css"
+                  : "unknown",
+                content: previous,
+              },
+        };
+        const previewDoc = createPreviewDocument(
+          previewSnapshot,
+          selectedHtmlPath,
+          previewDependencyIndexRef.current[selectedHtmlPath],
+        );
+        cachePreviewDoc(selectedHtmlPath, previewDoc);
+        setSelectedPreviewDoc(previewDoc);
+      }
+    }
     await flushPendingPreviewSaves();
+    // Undo/redo should always drop recent CSS edit affinity so inspector state
+    // rehydrates from the restored DOM/CSS snapshot.
+    previewMatchedRuleEditAtRef.current = 0;
+    previewMatchedRuleEditRef.current = null;
     setPreviewRefreshNonce((prev) => prev + 1);
     schedulePreviewAutoSave();
   }, [
@@ -393,6 +505,10 @@ export const usePreviewHistoryFlow = ({
     pendingPreviewWritesRef,
     previewDependencyIndexRef,
     previewHistoryRef,
+    previewMatchedRuleEditAtRef,
+    previewMatchedRuleEditRef,
+    resolveRecentEditedCssHistoryPath,
+    resolveLocalCssPathForPreviewHtml,
     schedulePreviewAutoSave,
     selectedPreviewHtmlRef,
     setDirtyFiles,
@@ -404,7 +520,24 @@ export const usePreviewHistoryFlow = ({
   ]);
 
   const handlePreviewRedo = useCallback(async () => {
-    const filePath = selectedPreviewHtmlRef.current;
+    const selectedHtmlPath = selectedPreviewHtmlRef.current;
+    if (!selectedHtmlPath) return;
+    const localCssPath = resolveLocalCssPathForPreviewHtml(selectedHtmlPath);
+    const recentEditedCssPath =
+      resolveRecentEditedCssHistoryPath(selectedHtmlPath);
+    const redoCandidates = [
+      recentEditedCssPath,
+      selectedHtmlPath,
+      localCssPath,
+    ].filter((value, index, arr): value is string => {
+      if (!value) return false;
+      return arr.indexOf(value) === index;
+    });
+    const filePath =
+      redoCandidates.find((candidate) => {
+        const history = previewHistoryRef.current[candidate];
+        return Boolean(history && history.future.length > 0);
+      }) || null;
     if (!filePath) return;
     const current = previewHistoryRef.current[filePath];
     if (!current || current.future.length === 0) return;
@@ -438,7 +571,7 @@ export const usePreviewHistoryFlow = ({
       [filePath]: [],
     }));
     const currentEntry = filesRef.current[filePath];
-    if (currentEntry) {
+    if (currentEntry && selectedHtmlPath === filePath) {
       const previewSnapshot: FileMap = {
         ...filesRef.current,
         [filePath]: {
@@ -454,7 +587,36 @@ export const usePreviewHistoryFlow = ({
       cachePreviewDoc(filePath, previewDoc);
       setSelectedPreviewDoc(previewDoc);
     }
+    if (selectedHtmlPath && selectedHtmlPath !== filePath) {
+      const selectedEntry = filesRef.current[selectedHtmlPath];
+      if (selectedEntry) {
+        const previewSnapshot: FileMap = {
+          ...filesRef.current,
+          [filePath]: currentEntry
+            ? { ...currentEntry, content: next }
+            : {
+                path: filePath,
+                name: filePath.split("/").pop() || "local.css",
+                type: filePath.toLowerCase().endsWith(".css")
+                  ? "css"
+                  : "unknown",
+                content: next,
+              },
+        };
+        const previewDoc = createPreviewDocument(
+          previewSnapshot,
+          selectedHtmlPath,
+          previewDependencyIndexRef.current[selectedHtmlPath],
+        );
+        cachePreviewDoc(selectedHtmlPath, previewDoc);
+        setSelectedPreviewDoc(previewDoc);
+      }
+    }
     await flushPendingPreviewSaves();
+    // Undo/redo should always drop recent CSS edit affinity so inspector state
+    // rehydrates from the restored DOM/CSS snapshot.
+    previewMatchedRuleEditAtRef.current = 0;
+    previewMatchedRuleEditRef.current = null;
     setPreviewRefreshNonce((prev) => prev + 1);
     schedulePreviewAutoSave();
   }, [
@@ -464,6 +626,10 @@ export const usePreviewHistoryFlow = ({
     pendingPreviewWritesRef,
     previewDependencyIndexRef,
     previewHistoryRef,
+    previewMatchedRuleEditAtRef,
+    previewMatchedRuleEditRef,
+    resolveRecentEditedCssHistoryPath,
+    resolveLocalCssPathForPreviewHtml,
     schedulePreviewAutoSave,
     selectedPreviewHtmlRef,
     setDirtyFiles,

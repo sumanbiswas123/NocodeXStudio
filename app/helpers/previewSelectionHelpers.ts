@@ -441,6 +441,13 @@ export const persistPreviewHtmlContent = async ({
       filePathIndexRef.current[cssLocalVirtualPath] = absoluteCssPath;
     }
     const cssFileEntry = filesRef.current[cssLocalVirtualPath];
+    if (shouldPushToHistory) {
+      pushPreviewHistory(
+        cssLocalVirtualPath,
+        nextCssContent,
+        currentCssContent,
+      );
+    }
     const nextCssFile = cssFileEntry
       ? { ...cssFileEntry, content: nextCssContent, type: "css" as const }
       : {

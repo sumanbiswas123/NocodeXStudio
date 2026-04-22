@@ -73,6 +73,11 @@ type UsePreviewCssMutationOptions = {
     mountRelativePath: string,
   ) => string | null;
   schedulePreviewAutoSave: () => void;
+  pushPreviewHistory: (
+    filePath: string,
+    nextHtml: string,
+    previousHtml?: string,
+  ) => void;
   selectedPreviewHtml: string | null;
   selectedPreviewHtmlRef: MutableRefObject<string | null>;
   setDirtyFiles: Dispatch<SetStateAction<string[]>>;
@@ -108,6 +113,7 @@ export const usePreviewCssMutation = ({
   previewSelectedPath,
   resolveVirtualPathFromMountRelative,
   schedulePreviewAutoSave,
+  pushPreviewHistory,
   selectedPreviewHtml,
   selectedPreviewHtmlRef,
   setDirtyFiles,
@@ -1190,6 +1196,15 @@ export const usePreviewCssMutation = ({
       }
       if (!patchedSource) return false;
       const { sourcePath, nextSourceText } = patchedSource;
+      const previousSourceText =
+        typeof filesRef.current[sourcePath]?.content === "string"
+          ? (filesRef.current[sourcePath]?.content as string)
+          : typeof textFileCacheRef.current[sourcePath] === "string"
+            ? textFileCacheRef.current[sourcePath]
+            : "";
+      if (previousSourceText !== nextSourceText) {
+        pushPreviewHistory(sourcePath, nextSourceText, previousSourceText);
+      }
 
       textFileCacheRef.current[sourcePath] = nextSourceText;
       const existingFile = filesRef.current[sourcePath];
@@ -1231,6 +1246,7 @@ export const usePreviewCssMutation = ({
       filesRef,
       invalidatePreviewDocsForDependency,
       pendingPreviewWritesRef,
+      pushPreviewHistory,
       schedulePreviewAutoSave,
       setDirtyFiles,
       setFiles,
@@ -1515,8 +1531,16 @@ export const usePreviewCssMutation = ({
       };
       const persistResolvedCssPatch = async (
         nextCssContent: string,
+        previousCssContent: string,
         elementPath: number[],
       ) => {
+        if (previousCssContent !== nextCssContent) {
+          pushPreviewHistory(
+            cssLocalVirtualPath,
+            nextCssContent,
+            previousCssContent,
+          );
+        }
         textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
         const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
           ? {
@@ -1628,7 +1652,7 @@ export const usePreviewCssMutation = ({
         const movePatch = buildDirectSelectorCssPatch(cssContent);
         if (movePatch) {
           const nextCssContent = movePatch.nextCssContent;
-          await persistResolvedCssPatch(nextCssContent, elementPath);
+          await persistResolvedCssPatch(nextCssContent, cssContent, elementPath);
           if (liveTarget instanceof HTMLElement) {
             applyLiveStylePatch(liveTarget, styles);
           }
@@ -1663,7 +1687,7 @@ export const usePreviewCssMutation = ({
       const directPatch = buildDirectSelectorCssPatch(cssContent);
       if (directPatch) {
         const nextCssContent = directPatch.nextCssContent;
-        await persistResolvedCssPatch(nextCssContent, elementPath);
+        await persistResolvedCssPatch(nextCssContent, cssContent, elementPath);
         if (target instanceof HTMLElement) {
           Object.keys(styles).forEach((key) => {
             target.style.removeProperty(toCssPropertyName(key));
@@ -1777,6 +1801,9 @@ export const usePreviewCssMutation = ({
         markerEnd,
         cssRuleBlock,
       );
+      if (cssContent !== nextCssContent) {
+        pushPreviewHistory(cssLocalVirtualPath, nextCssContent, cssContent);
+      }
       textFileCacheRef.current[cssLocalVirtualPath] = nextCssContent;
       const cssFile: ProjectFile = filesRef.current[cssLocalVirtualPath]
         ? {
@@ -1858,6 +1885,7 @@ export const usePreviewCssMutation = ({
       persistPreviewHtmlContent,
       previewSelectedElement?.id,
       previewSelectedPath,
+      pushPreviewHistory,
       selectedPreviewHtml,
       setFiles,
       setPreviewSelectedElement,
