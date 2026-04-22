@@ -817,45 +817,91 @@ export const usePreviewElementActions = ({
         node.replaceWith(next);
         return next;
       };
+      const unwrapTag = (node: Element) => {
+        const parent = node.parentElement;
+        if (!parent) return null;
+        while (node.firstChild) {
+          parent.insertBefore(node.firstChild, node);
+        }
+        node.remove();
+        parent.normalize();
+        return parent;
+      };
 
       let didChange = false;
+      let nextSelectedPath: number[] | null = null;
+      let nextSelectedElement: Element | null = null;
       if (target instanceof HTMLElement) {
         const currentTag = target.tagName.toLowerCase();
         if (currentTag !== safeTag) {
-          replaceTag(target, safeTag);
+          const shouldUnwrapInlineTag =
+            safeTag === "span" && (currentTag === "sup" || currentTag === "sub");
+          const nextTarget = shouldUnwrapInlineTag
+            ? unwrapTag(target)
+            : replaceTag(target, safeTag);
+          nextSelectedElement = nextTarget;
+          nextSelectedPath = getElementPathFromBody(nextTarget);
           didChange = true;
         }
       }
       if (liveTarget instanceof HTMLElement) {
         const currentTag = liveTarget.tagName.toLowerCase();
         if (currentTag !== safeTag) {
-          replaceTag(liveTarget, safeTag);
+          const shouldUnwrapInlineTag =
+            safeTag === "span" && (currentTag === "sup" || currentTag === "sub");
+          const nextLiveTarget = shouldUnwrapInlineTag
+            ? unwrapTag(liveTarget)
+            : replaceTag(liveTarget, safeTag);
+          nextSelectedElement = nextLiveTarget || nextSelectedElement;
+          nextSelectedPath = getElementPathFromBody(nextLiveTarget) || nextSelectedPath;
+          didChange = true;
         }
       }
 
       if (didChange) {
+        postPreviewPatchToFrame({
+          type: "PREVIEW_APPLY_HTML",
+          html: parsed.body.innerHTML,
+        });
+        if (nextSelectedPath?.length) {
+          selectPreviewElementAtPath(nextSelectedPath);
+          window.setTimeout(() => {
+            selectPreviewElementAtPath(nextSelectedPath);
+          }, 0);
+        }
         const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
         await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
           refreshPreviewDoc: false,
-          elementPath: previewSelectedPath,
+          elementPath: nextSelectedPath || previewSelectedPath,
         });
-        setPreviewSelectedElement((prev) =>
-          prev
-            ? {
-                ...prev,
-                type: safeTag,
-                name: safeTag.toUpperCase(),
-              }
-            : prev,
-        );
+        if (nextSelectedPath?.length) {
+          selectPreviewElementAtPath(nextSelectedPath);
+        } else {
+          setPreviewSelectedElement((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  type: safeTag,
+                  name: safeTag.toUpperCase(),
+                  html:
+                    nextSelectedElement instanceof HTMLElement
+                      ? nextSelectedElement.innerHTML
+                      : prev.html,
+                }
+              : prev,
+          );
+        }
       }
     },
     [
       filesRef,
+      getElementPathFromBody,
       getLivePreviewSelectedElement,
       loadFileContent,
       persistPreviewHtmlContent,
+      postPreviewPatchToFrame,
       previewSelectedPath,
+      selectPreviewElementAtPath,
       selectedPreviewHtml,
       setPreviewSelectedElement,
     ],

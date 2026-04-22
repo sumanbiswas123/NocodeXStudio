@@ -2243,7 +2243,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() =>
-                    selectionMode === "text" && onWrapTextTag
+                    element?.type === "sup" && onToggleTextTag
+                      ? onToggleTextTag("sup")
+                      : selectionMode === "text" && onWrapTextTag
                       ? onWrapTextTag("sup")
                       : onToggleTextTag
                       ? onToggleTextTag("sup")
@@ -2274,7 +2276,9 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() =>
-                    selectionMode === "text" && onWrapTextTag
+                    element?.type === "sub" && onToggleTextTag
+                      ? onToggleTextTag("sub")
+                      : selectionMode === "text" && onWrapTextTag
                       ? onWrapTextTag("sub")
                       : onToggleTextTag
                       ? onToggleTextTag("sub")
