@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type React from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { PreviewConsoleLevel } from "../../helpers/appHelpers";
@@ -226,6 +226,10 @@ export const usePreviewFrameMessages = ({
   syncPreviewActiveFile,
 }: UsePreviewFrameMessagesOptions) => {
   const RECENT_MATCHED_RULE_EDIT_MS = 1500;
+  const recentPreviewHotkeyRef = useRef<{
+    signature: string;
+    at: number;
+  } | null>(null);
   const debugMatchedRuleWrite = (
     sourceLabel: string,
     nextRules: PreviewMatchedCssRule[],
@@ -271,6 +275,27 @@ export const usePreviewFrameMessages = ({
         const key = String(payload.key || "").toLowerCase();
         const code = String(payload.code || "");
         if (!key && !code) return;
+        const hotkeySignature = [
+          key,
+          code,
+          payload.ctrlKey ? "ctrl" : "",
+          payload.metaKey ? "meta" : "",
+          payload.shiftKey ? "shift" : "",
+          payload.altKey ? "alt" : "",
+          payload.editable ? "editable" : "plain",
+        ].join("|");
+        const lastHotkey = recentPreviewHotkeyRef.current;
+        if (
+          lastHotkey &&
+          lastHotkey.signature === hotkeySignature &&
+          Date.now() - lastHotkey.at < 120
+        ) {
+          return;
+        }
+        recentPreviewHotkeyRef.current = {
+          signature: hotkeySignature,
+          at: Date.now(),
+        };
         const hasModifier = Boolean(payload.ctrlKey || payload.metaKey);
         const editableTarget = Boolean(payload.editable);
         const altKey = Boolean(payload.altKey);

@@ -31,51 +31,51 @@ interface ColorCodeEditorProps {
   placeholder?: string;
 }
 
-// Xcode-inspired color palette
+// VS Code-inspired color palette
 const MATERIAL_COLORS = {
   dark: {
     // Surface colors
-    surface: "#1f1f1f",
+    surface: "#1e1e1e",
     surfaceVariant: "#252526",
     outline: "#3c3c3c",
-    surfaceContainer: "#2a2a2a",
-    surfaceContainerHighest: "#2f2f2f",
+    surfaceContainer: "#2d2d30",
+    surfaceContainerHighest: "#333333",
 
     // Text colors
     onSurface: "#d4d4d4",
-    onSurfaceVariant: "#9da5b4",
+    onSurfaceVariant: "#858585",
     onOutline: "#d4d4d4",
-    primary: "#0a84ff",
+    primary: "#007acc",
     onPrimary: "#ffffff",
 
-    // Syntax colors (Xcode-like)
+    // Syntax colors (VS Code-like)
     syntax: {
-      keyword: "#ff7ab2",      // Pink
-      string: "#a6da95",       // Green
-      number: "#ffd60a",       // Yellow
-      comment: "#6e7681",      // Gray
-      function: "#7dcfff",     // Blue
-      variable: "#d4d4d4",     // Light text
-      property: "#9cc9ff",     // Light blue
-      tag: "#ff9f0a",          // Orange
-      operator: "#ff453a",     // Red
-      punctuation: "#d4d4d4",  // Light text
-      boolean: "#32d74b",      // Green
-      builtin: "#64d2ff",      // Cyan
-      className: "#c9d1d9",    // Cool gray
-      regex: "#ff9f0a",        // Orange
+      keyword: "#569cd6",
+      string: "#ce9178",
+      number: "#b5cea8",
+      comment: "#6a9955",
+      function: "#dcdcaa",
+      variable: "#9cdcfe",
+      property: "#9cdcfe",
+      tag: "#569cd6",
+      operator: "#d4d4d4",
+      punctuation: "#d4d4d4",
+      boolean: "#569cd6",
+      builtin: "#4ec9b0",
+      className: "#4ec9b0",
+      regex: "#d16969",
     },
 
     // UI colors
-    cursor: "#0a84ff",
-    selection: "rgba(38,79,120,0.45)",
-    scrollbar: "#3a3a3a",
-    scrollbarHover: "#4a4a4a",
+    cursor: "#aeafad",
+    selection: "rgba(38,79,120,0.55)",
+    scrollbar: "#424242",
+    scrollbarHover: "#4f4f4f",
     lineNumber: "#7a7a7a",
     lineNumberActive: "#d4d4d4",
-    currentLine: "#232323",
+    currentLine: "#2a2d2e",
     bracketMatch: "#3a3d41",
-    background: "#1f1f1f",
+    background: "#1e1e1e",
     gutterBackground: "#252526",
     indentGuide: "#2a2a2a",
   },
@@ -95,22 +95,22 @@ const MATERIAL_COLORS = {
     primary: "#007aff",
     onPrimary: "#ffffff",
 
-    // Syntax colors (light mode)
+    // Syntax colors (VS Code light-like)
     syntax: {
-      keyword: "#af52de",      // Purple
-      string: "#2fb344",       // Green
-      number: "#b15900",       // Orange
-      comment: "#8e8e93",      // Gray
-      function: "#0b69ff",     // Blue
-      variable: "#1c1c1e",     // Ink
-      property: "#1f6feb",     // Blue
-      tag: "#c93400",          // Red
-      operator: "#d70015",     // Red
-      punctuation: "#1c1c1e",  // Ink
-      boolean: "#2fb344",      // Green
-      builtin: "#0b69ff",      // Blue
-      className: "#1f2937",    // Slate
-      regex: "#c93400",        // Red
+      keyword: "#0000ff",
+      string: "#a31515",
+      number: "#098658",
+      comment: "#008000",
+      function: "#795e26",
+      variable: "#001080",
+      property: "#001080",
+      tag: "#800000",
+      operator: "#000000",
+      punctuation: "#000000",
+      boolean: "#0000ff",
+      builtin: "#267f99",
+      className: "#267f99",
+      regex: "#811f3f",
     },
 
     // UI colors

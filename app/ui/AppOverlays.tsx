@@ -4,7 +4,17 @@ import DetachedCodeEditorWindow from "../../components/DetachedCodeEditorWindow"
 import ConfigEditorModal from "../../components/ConfigEditorModal";
 import ColorCodeEditor from "../../components/ColorCodeEditor";
 import type { CodeLanguage } from "../../components/ColorCodeEditor";
+import AiAssistantPanel from "./AiAssistantPanel";
 import { FileMap } from "../../types";
+import type { PdfAnnotationUiRecord } from "../helpers/pdfAnnotationHelpers";
+import type { AiAssistantMessage } from "../hooks/workflow/useAiAssistant";
+import type {
+  AgentRunResponse,
+  AssistantMode,
+  SidecarModelStatus,
+  SidecarProgressEvent,
+} from "../runtime/sidecarClient";
+import { AI_ASSISTANT_ENABLED } from "../runtime/featureFlags";
 import {
   PANEL_SIDE_STORAGE_KEY,
   PREVIEW_AUTOSAVE_STORAGE_KEY,
@@ -28,9 +38,19 @@ type AppOverlaysProps = {
     panelSide: "default" | "swapped";
     projectPath: string | null;
     selectedFolderCloneSource: string | null;
+    aiAssistantMode: AssistantMode;
+    aiAssistantCurrentSlideLabel: string;
+    aiAssistantHasProject: boolean;
+    aiAssistantInput: string;
+    aiAssistantOpen: boolean;
+    aiAssistantSubmitting: boolean;
+    aiAssistantMessages: AiAssistantMessage[];
+    aiAssistantModelStatus: SidecarModelStatus | null;
+    aiAssistantProgress: SidecarProgressEvent | null;
   };
   configState: {
     files: FileMap;
+    annotationRecords: PdfAnnotationUiRecord[];
     configPathForModal: string;
     portfolioPathForModal: string;
   };
@@ -79,6 +99,12 @@ type AppOverlaysProps = {
     >;
     clearPdfExportLogs: () => void;
     handleCodeDraftChange: (value: string) => void;
+    setAiAssistantMode: React.Dispatch<React.SetStateAction<AssistantMode>>;
+    setAiAssistantInput: React.Dispatch<React.SetStateAction<string>>;
+    setAiAssistantOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    submitAiAssistantPrompt: () => Promise<void>;
+    cancelAiAssistantPrompt: () => Promise<void>;
+    stageAiAssistantResponse: (messageId: string, response: AgentRunResponse) => void;
   };
 };
 
@@ -116,8 +142,17 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
     panelSide,
     projectPath,
     selectedFolderCloneSource,
+    aiAssistantMode,
+    aiAssistantCurrentSlideLabel,
+    aiAssistantHasProject,
+    aiAssistantInput,
+    aiAssistantOpen,
+    aiAssistantSubmitting,
+    aiAssistantMessages,
+    aiAssistantModelStatus,
+    aiAssistantProgress,
   } = shellState;
-  const { files, configPathForModal, portfolioPathForModal } = configState;
+  const { files, annotationRecords, configPathForModal, portfolioPathForModal } = configState;
   const {
     isDetachedEditorOpen,
     activeDetachedEditorFilePath,
@@ -149,6 +184,12 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
     setCodeDirtyPathSet,
     clearPdfExportLogs,
     handleCodeDraftChange,
+    setAiAssistantMode,
+    setAiAssistantInput,
+    setAiAssistantOpen,
+    submitAiAssistantPrompt,
+    cancelAiAssistantPrompt,
+    stageAiAssistantResponse,
   } = actions;
 
   const isRightInspectorMode = rightPanelMode === "inspector";
@@ -266,6 +307,8 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
               language={getCodeLanguage(activeCodeFilePath)}
               theme={theme}
               minHeight="100%"
+              wrap="off"
+              fontSize="13px"
               readOnly={!activeCodeFilePath}
             />
           </div>
@@ -383,6 +426,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         selectedSlideCloneSource={selectedFolderCloneSource}
         onSelectSlideCloneSource={setSelectedFolderCloneSource}
         files={files}
+        annotationRecords={annotationRecords}
       />
 
       <DetachedCodeEditorWindow
@@ -425,6 +469,27 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         }}
         isTextEditable={detachedEditorIsTextEditable}
       />
+
+      {AI_ASSISTANT_ENABLED ? (
+        <AiAssistantPanel
+          currentSlideLabel={aiAssistantCurrentSlideLabel}
+          hasProject={aiAssistantHasProject}
+          assistantMode={aiAssistantMode}
+          input={aiAssistantInput}
+          isOpen={aiAssistantOpen}
+          isSubmitting={aiAssistantSubmitting}
+          messages={aiAssistantMessages}
+          modelStatus={aiAssistantModelStatus}
+          progress={aiAssistantProgress}
+          setAssistantMode={actions.setAiAssistantMode}
+          setInput={setAiAssistantInput}
+          setIsOpen={setAiAssistantOpen}
+          stageResponse={stageAiAssistantResponse}
+          submitPrompt={submitAiAssistantPrompt}
+          cancelPrompt={cancelAiAssistantPrompt}
+          theme={theme}
+        />
+      ) : null}
 
       {(isPdfExporting || pdfExportLogs.length > 0) && (
         <div
@@ -473,3 +538,5 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
 };
 
 export default AppOverlays;
+
+

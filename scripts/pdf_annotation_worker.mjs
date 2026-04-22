@@ -26,16 +26,94 @@ const cleanText = (value) =>
 const normalizeReferenceKey = (value) => {
   if (value === null || value === undefined) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const normalized = String(value).trim();
+    const normalized = String(value).trim().replace(/\s+/g, " ");
+    const indirectRefMatch = normalized.match(/^(\d+)\s+(\d+)\s+R$/i);
+    if (indirectRefMatch) {
+      return `${indirectRefMatch[1]}:${indirectRefMatch[2]}`;
+    }
     return normalized || null;
   }
-  if (Array.isArray(value) && value.length > 0) return normalizeReferenceKey(value[0]);
+  if (Array.isArray(value) && value.length > 0) {
+    if (
+      value.length >= 2 &&
+      Number.isFinite(Number(value[0])) &&
+      Number.isFinite(Number(value[1]))
+    ) {
+      return `${Number(value[0])}:${Number(value[1])}`;
+    }
+    return normalizeReferenceKey(value[0]);
+  }
   if (typeof value === "object") {
+    if (value.num !== undefined || value.gen !== undefined) {
+      const num = Number(value.num);
+      const gen = Number(value.gen ?? 0);
+      if (Number.isFinite(num) && Number.isFinite(gen)) {
+        return `${num}:${gen}`;
+      }
+    }
     if (value.id !== undefined) return normalizeReferenceKey(value.id);
     if (value.num !== undefined) return normalizeReferenceKey(value.num);
     if (value.ref !== undefined) return normalizeReferenceKey(value.ref);
+    if (typeof value.toString === "function") {
+      const asString = String(value.toString());
+      if (asString && asString !== "[object Object]") {
+        return normalizeReferenceKey(asString);
+      }
+    }
   }
   return null;
+};
+
+const normalizePdfDate = (value) => {
+  const text = cleanText(value);
+  if (!text) return null;
+  const compact = text.replace(/^D:/i, "").replace(/[^0-9]/g, "");
+  if (!compact) return null;
+  const padded = `${compact}00000000000000`.slice(0, 14);
+  const year = padded.slice(0, 4);
+  if (!year || year === "0000") return null;
+  const month = padded.slice(4, 6) || "01";
+  const day = padded.slice(6, 8) || "01";
+  const hour = padded.slice(8, 10) || "00";
+  const minute = padded.slice(10, 12) || "00";
+  const second = padded.slice(12, 14) || "00";
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
+};
+
+const extractAnnotationDate = (annotation) => {
+  const candidates = [
+    annotation?.modificationDate,
+    annotation?.modDate,
+    annotation?.modificationDateObj?.str,
+    annotation?.creationDate,
+    annotation?.creationDateObj?.str,
+    annotation?.M,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizePdfDate(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+};
+
+const annotationSortTimestamp = (annotation, fallbackIndex) => {
+  const date = extractAnnotationDate(annotation);
+  const parsed = date ? Date.parse(date) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallbackIndex;
+};
+
+const compareThreadMembers = (left, right, rootKey) => {
+  const leftIsPopup = left.annotation?.subtype === "Popup" ? 1 : 0;
+  const rightIsPopup = right.annotation?.subtype === "Popup" ? 1 : 0;
+  const leftIsRoot = left.key === rootKey ? 0 : 1;
+  const rightIsRoot = right.key === rootKey ? 0 : 1;
+  if (leftIsRoot !== rightIsRoot) return leftIsRoot - rightIsRoot;
+  if (left.isReply !== right.isReply) return Number(left.isReply) - Number(right.isReply);
+  if (leftIsPopup !== rightIsPopup) return leftIsPopup - rightIsPopup;
+  const leftTimestamp = annotationSortTimestamp(left.annotation, left.index);
+  const rightTimestamp = annotationSortTimestamp(right.annotation, right.index);
+  if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp;
+  return left.index - right.index;
 };
 
 const getAnnotationKey = (annotation, fallbackIndex) =>
@@ -227,7 +305,9 @@ const buildThreadedPdfAnnotationsForPage = ({ annotations, pageNumber, pageHeigh
   });
   const extracted = [];
   threads.forEach((thread, rootKey) => {
-    const orderedMembers = [...thread.members].sort((l, r) => l.index - r.index);
+    const orderedMembers = [...thread.members].sort((l, r) =>
+      compareThreadMembers(l, r, rootKey),
+    );
     const threadEntries = [];
     const seen = new Set();
     let hasComment = false;
@@ -263,13 +343,29 @@ const buildThreadedPdfAnnotationsForPage = ({ annotations, pageNumber, pageHeigh
       annotationText,
       threadEntries,
       annoPdfPage: pageNumber,
+      sequenceIndex: Math.min(...orderedMembers.map((member) => member.index)),
+      threadRootId: rootKey,
+      threadUpdatedAt:
+        orderedMembers
+          .map((member) => extractAnnotationDate(member.annotation))
+          .find(Boolean) || null,
       subtype: rootSubtype,
       pdfContextText,
       position: anchorPosition,
       pageSize,
     });
   });
-  return extracted;
+  return extracted.sort((left, right) => {
+    const sequenceDiff =
+      (left.sequenceIndex ?? Number.MAX_SAFE_INTEGER) -
+      (right.sequenceIndex ?? Number.MAX_SAFE_INTEGER);
+    if (sequenceDiff !== 0) return sequenceDiff;
+    const yDiff = (left.position?.y ?? 0) - (right.position?.y ?? 0);
+    if (Math.abs(yDiff) > 4) return yDiff;
+    const xDiff = (left.position?.x ?? 0) - (right.position?.x ?? 0);
+    if (Math.abs(xDiff) > 2) return xDiff;
+    return String(left.annotationId).localeCompare(String(right.annotationId));
+  });
 };
 
 const main = async () => {

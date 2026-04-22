@@ -58,6 +58,8 @@ type RightInspectorShellProps = {
     onUpdateContent: (data: { content?: string; html?: string }) => void;
     onApplyPreviewTagUpdate: (tag: string) => Promise<void>;
     onApplyQuickTextWrapTag: (tag: "sup" | "sub") => Promise<void>;
+    onDeletePreviewElement: () => Promise<void>;
+    onCommentOutPreviewElement: () => Promise<void>;
     onPreviewStyleUpdate: (
       styles: Partial<React.CSSProperties>,
     ) => void;
@@ -120,6 +122,8 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
     onUpdateContent,
     onApplyPreviewTagUpdate,
     onApplyQuickTextWrapTag,
+    onDeletePreviewElement,
+    onCommentOutPreviewElement,
     onPreviewStyleUpdate,
     onUpdateStyle,
     onPreviewIdentityUpdate,
@@ -371,6 +375,20 @@ const RightInspectorShell: React.FC<RightInspectorShellProps> = ({
                   previewSelectedElement
                     ? (tag) => {
                         void onApplyQuickTextWrapTag(tag);
+                      }
+                    : undefined
+                }
+                onDeleteElement={
+                  previewSelectedElement
+                    ? () => {
+                        void onDeletePreviewElement();
+                      }
+                    : undefined
+                }
+                onCommentOutElement={
+                  previewSelectedElement
+                    ? () => {
+                        void onCommentOutPreviewElement();
                       }
                     : undefined
                 }

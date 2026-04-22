@@ -255,7 +255,7 @@ export const usePreviewCssMutation = ({
   );
 
   const resolvePreviewMatchedRuleSourcePath = useCallback(
-    (source: string) => {
+    (source?: string | null) => {
       const rawSource = String(source || "").trim();
       let directSourcePathCandidate = normalizeProjectRelative(rawSource);
       if (rawSource) {

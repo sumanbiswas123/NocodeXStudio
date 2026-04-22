@@ -8,6 +8,8 @@
     "build": "vite build",
     "icon:generate": "node scripts/generate-windows-icon.js",
     "preview": "vite preview",
+    "sidecar:build": "node scripts/prepare-sidecar.js",
+    "sidecar:build:release": "node scripts/prepare-sidecar.js --release",
     "desktop:launch": "npm run desktop:launch:cdp",
     "desktop:launch:cdp": "vite build && powershell -ExecutionPolicy Bypass -File scripts/start-neutralino-with-cdp.ps1 9222",
     "desktop:dev": "npm run desktop:dev:cdp",
@@ -17,7 +19,8 @@
     "desktop:build:standalone": "npm run build && node build-desktop.js --standalone",
     "desktop:build:standalone:release": "npm run build && node build-desktop.js --standalone --release",
     "desktop:installer": "npm run desktop:build:standalone && node build-installer.js",
-    "desktop:installer:only": "node build-installer.js"
+    "desktop:installer:only": "node build-installer.js",
+    "test": "npm run desktop:launch:cdp"
   },
   "dependencies": {
     "@neutralinojs/lib": "^6.5.0",

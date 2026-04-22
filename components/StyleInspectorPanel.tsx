@@ -1,5 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronDown, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronDown,
+  MessageSquareOff,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { VirtualElement } from "../types";
 import {
   CSS_PROPERTY_NAMES,
@@ -18,6 +26,8 @@ interface StyleInspectorPanelProps {
   onReplaceAsset?: () => void;
   onWrapTextTag?: (tag: "sup" | "sub") => void;
   onToggleTextTag?: (tag: "sup" | "sub") => void;
+  onDeleteElement?: () => void;
+  onCommentOutElement?: () => void;
   selectionMode?: "default" | "text" | "image" | "css";
   resolveAssetPreviewUrl?: (raw: string, source?: string) => string;
   computedStyles?: React.CSSProperties | null;
@@ -682,6 +692,8 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   onReplaceAsset,
   onWrapTextTag,
   onToggleTextTag,
+  onDeleteElement,
+  onCommentOutElement,
   selectionMode = "default",
   resolveAssetPreviewUrl,
   computedStyles,
@@ -739,6 +751,7 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
   const [htmlDraft, setHtmlDraft] = useState("");
   const [showSelectorTokenInput, setShowSelectorTokenInput] = useState(false);
   const [selectorTokenDraft, setSelectorTokenDraft] = useState("");
+  const [layerLevelDraft, setLayerLevelDraft] = useState("");
   const [ruleDrafts, setRuleDrafts] = useState<
     Record<string, { key: string; value: string }>
   >({});
@@ -935,6 +948,11 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
           : "",
     );
   }, [element?.content, element?.html, element?.id]);
+
+  useEffect(() => {
+    const rawLevel = element?.styles?.zIndex ?? computedStyles?.zIndex ?? "";
+    setLayerLevelDraft(rawLevel === "" ? "" : String(rawLevel));
+  }, [computedStyles?.zIndex, element?.id, element?.styles?.zIndex]);
 
   useEffect(() => {
     setHighlightedSuggestionIndex(filteredSuggestions.length > 0 ? 0 : -1);
@@ -2013,6 +2031,27 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
     setActiveSuggestionField(null);
   };
 
+  const applyLayerLevelDraft = () => {
+    const trimmed = layerLevelDraft.trim();
+    if (!trimmed) return;
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return;
+    const nextPosition =
+      typeof computedStyles?.position === "string"
+        ? computedStyles.position
+        : typeof element?.styles?.position === "string"
+          ? element.styles.position
+          : "";
+    const patch: Partial<React.CSSProperties> = {
+      zIndex: String(Math.trunc(parsed)),
+    };
+    if (!nextPosition || nextPosition === "static") {
+      patch.position = "relative";
+    }
+    onUpdateStyle(patch);
+    setLayerLevelDraft(String(Math.trunc(parsed)));
+  };
+
   if (!element) {
     return (
       <div
@@ -2082,6 +2121,64 @@ const StyleInspectorPanel: React.FC<StyleInspectorPanelProps> = ({
       </div>
 
       <div className="style-inspector-body">
+        {onDeleteElement || onCommentOutElement ? (
+          <div
+            className="style-inspector-section"
+            style={{ borderColor: "var(--border-color)" }}
+          >
+            <div className="style-inspector-text-tools" style={{ flexWrap: "wrap" }}>
+              <label
+                className="style-inspector-tool-button"
+                style={{ gap: 8, cursor: "text", paddingRight: 8 }}
+                title="Controls CSS z-index. Static elements are switched to position: relative automatically."
+              >
+                <span>Elevation</span>
+                <input
+                  type="number"
+                  value={layerLevelDraft}
+                  onChange={(event) => setLayerLevelDraft(event.target.value)}
+                  onBlur={applyLayerLevelDraft}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      applyLayerLevelDraft();
+                    }
+                  }}
+                  className="min-w-0 border-0 bg-transparent p-0 outline-none"
+                  style={{ width: 72, color: "var(--text-main)" }}
+                  placeholder="0"
+                />
+              </label>
+              {onCommentOutElement ? (
+                <button
+                  type="button"
+                  onClick={onCommentOutElement}
+                  className="style-inspector-tool-button"
+                  title="Comment out this element"
+                >
+                  <MessageSquareOff size={12} />
+                  <span>Comment Out</span>
+                </button>
+              ) : null}
+              {onDeleteElement ? (
+                <button
+                  type="button"
+                  onClick={onDeleteElement}
+                  className="style-inspector-tool-button"
+                  style={{
+                    borderColor: "color-mix(in srgb, #ef4444 24%, transparent)",
+                    color: "#ef4444",
+                    background: "color-mix(in srgb, #ef4444 10%, transparent)",
+                  }}
+                  title="Delete this element"
+                >
+                  <Trash2 size={12} />
+                  <span>Delete</span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {onUpdateIdentity ? (
           <div
             className="style-inspector-section"

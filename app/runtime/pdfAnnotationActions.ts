@@ -108,55 +108,50 @@ export const runPdfAnnotationMapping = async ({
   dispatch(setRecords([]));
   try {
     throwIfCancelled();
-    appendPdfAnnotationLog(dispatch, "Reading PDF file into memory.");
-    const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
-      normalizedPdfPath,
-    );
-    throwIfCancelled();
-    const pdfData = toByteArray(binaryData);
-    appendPdfAnnotationLog(dispatch, "Preparing PDF data for extraction.");
     let preExtractedAnnotations: PdfAnnotationRecord[] | null = null;
     try {
       throwIfCancelled();
-      appendPdfAnnotationLog(dispatch, "Running background extractor script.");
+      appendPdfAnnotationLog(dispatch, "Running background PDF extraction.");
       const appRoot = normalizePath(String((window as any).NL_PATH || ""));
-      const workerScriptPath = appRoot
-        ? `${appRoot}/scripts/pdf_annotation_worker.mjs`
-        : "";
       const workerOutputPath = projectPath
         ? `${normalizePath(projectPath)}/.nx_tmp_pdf_annotations_${Date.now()}.json`
         : "";
-      if (workerScriptPath && workerOutputPath) {
-        let nodeExecutable = "node";
-        if (appRoot) {
-          const bundledNode = normalizePath(`${appRoot}/node/node.exe`);
-          try {
-            await (Neutralino as any).filesystem.getStats(bundledNode);
-            nodeExecutable = `"${bundledNode}"`;
-          } catch {
-            nodeExecutable = "node";
+      if (workerOutputPath) {
+        const workerScriptPath = appRoot
+          ? `${appRoot}/scripts/pdf_annotation_worker.mjs`
+          : "";
+        if (workerScriptPath) {
+          let nodeExecutable = "node";
+          if (appRoot) {
+            const bundledNode = normalizePath(`${appRoot}/node/node.exe`);
+            try {
+              await (Neutralino as any).filesystem.getStats(bundledNode);
+              nodeExecutable = `"${bundledNode}"`;
+            } catch {
+              nodeExecutable = "node";
+            }
           }
-        }
-        appendPdfAnnotationLog(
-          dispatch,
-          `PDF worker paths: node=${nodeExecutable}, script=${workerScriptPath}`,
-        );
-        const command = `${nodeExecutable} "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
-        const execResult = await (Neutralino as any).os.execCommand(command);
-        throwIfCancelled();
-        if ((execResult?.exitCode ?? 1) === 0) {
-          appendPdfAnnotationLog(dispatch, "Parsing extractor output.");
-          const workerRaw = await (Neutralino as any).filesystem.readFile(
-            workerOutputPath,
+          appendPdfAnnotationLog(
+            dispatch,
+            `PDF worker paths: node=${nodeExecutable}, script=${workerScriptPath}`,
           );
+          const command = `${nodeExecutable} "${workerScriptPath}" "${normalizedPdfPath}" "${workerOutputPath}"`;
+          const execResult = await (Neutralino as any).os.execCommand(command);
           throwIfCancelled();
-          const parsed = JSON.parse(String(workerRaw || "{}"));
-          if (Array.isArray(parsed?.annotations)) {
-            preExtractedAnnotations = parsed.annotations;
-            appendPdfAnnotationLog(
-              dispatch,
-              `Extractor produced ${preExtractedAnnotations.length} annotations.`,
+          if ((execResult?.exitCode ?? 1) === 0) {
+            appendPdfAnnotationLog(dispatch, "Parsing JS extractor output.");
+            const workerRaw = await (Neutralino as any).filesystem.readFile(
+              workerOutputPath,
             );
+            throwIfCancelled();
+            const parsed = JSON.parse(String(workerRaw || "{}"));
+            if (Array.isArray(parsed?.annotations)) {
+              preExtractedAnnotations = parsed.annotations;
+              appendPdfAnnotationLog(
+                dispatch,
+                `JS extractor produced ${preExtractedAnnotations.length} annotations.`,
+              );
+            }
           }
         }
         try {
@@ -180,6 +175,12 @@ export const runPdfAnnotationMapping = async ({
       preExtractedAnnotations = null;
     }
     throwIfCancelled();
+    appendPdfAnnotationLog(dispatch, "Reading PDF file into memory for page hashing and mapping.");
+    const binaryData = await (Neutralino as any).filesystem.readBinaryFile(
+      normalizedPdfPath,
+    );
+    throwIfCancelled();
+    const pdfData = toByteArray(binaryData);
     appendPdfAnnotationLog(dispatch, "Mapping annotations to project files.");
     const details = await buildMappedPdfAnnotations({
       pdfData,

@@ -1,41 +1,39 @@
-# WebView2 CDP Bridge
+# WebView2 CDP Sidecar
 
-This repo now includes a Windows-only Rust sidecar at `native/cdp_bridge`.
+This repo now routes CDP inspection through a single Rust Neutralino extension sidecar.
 
 ## Why this exists
 
-The custom CSS inspector in the app cannot reliably reproduce Chrome DevTools cascade resolution using only page-side CSSOM logic. The stronger path is to ask the Chromium engine directly through the Chrome DevTools Protocol (CDP).
+The preview Style Inspector needs Chromium/CDP truth for matched and computed styles, but we no longer want a separate localhost bridge process for that work.
 
-Because this app runs on Neutralino, the easiest in-repo bridge is:
+The current architecture is:
 
-1. Launch the app with WebView2 remote debugging enabled.
-2. Run a bundled Rust sidecar that connects to that CDP endpoint.
-3. Ask CDP for the selected preview element's matched/computed styles.
+1. Neutralino starts one Rust extension sidecar: `js.neutralino.nocodex.sidecar`
+2. The frontend sends requests with `Neutralino.extensions.dispatch(...)`
+3. Rust connects to WebView2's remote debugging endpoint
+4. Rust returns CDP payloads back to the app through `app.broadcast(...)`
 
-## Current bridge API
+This keeps CDP and future embedded-AI work in one sidecar process.
 
-The Rust sidecar exposes a tiny local HTTP API:
+## Current frontend-sidecar API
 
-- `GET /health`
-- `POST /inspect-selected`
+- `sidecar.health`
+- `model.status`
+- `cdp.inspect_selected`
+- `agent.run`
+- `agent.cancel`
 
-Example request:
+Current preview inspector usage only depends on `cdp.inspect_selected`.
 
-```json
-{
-  "cdp_port": 9222,
-  "iframe_title": "project-preview",
-  "selected_selector": ".__nx-preview-selected"
-}
-```
+## Current CDP response shape
 
-Example response shape:
+`cdp.inspect_selected` preserves the payload shape the preview helpers already expect:
 
 ```json
 {
   "ok": true,
   "target": {
-    "id": "....",
+    "id": "...",
     "title": "Nocode X Studio",
     "type": "page",
     "url": "http://127.0.0.1:3000/"
@@ -46,20 +44,48 @@ Example response shape:
 }
 ```
 
+That compatibility is important because the existing inspector logic only wants CDP to project activity and computed-style truth onto the current matched rule set.
+
 ## Dev workflow
 
-Start Neutralino with CDP exposed:
+Prepare the Rust sidecar binary:
+
+```powershell
+npm run sidecar:build
+```
+
+Launch Neutralino with WebView2 CDP enabled:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start-neutralino-with-cdp.ps1 9222
 ```
 
-Run the Rust bridge:
+The startup script now builds/copies `native/cdp_bridge.exe` and lets Neutralino launch it as an extension. It no longer spawns a separate localhost HTTP bridge.
 
-```powershell
-cargo run --manifest-path native/cdp_bridge/Cargo.toml -- --cdp-port 9222 --listen-port 38991
-```
+## Embedded Gemma runtime
 
-## Important note
+The same Rust sidecar now owns both:
 
-This bridge uses WebView2's remote debugging endpoint rather than direct `CoreWebView2` host calls. That keeps it compatible with the current Neutralino app structure, while still using Chromium/CDP as the source of truth.
+- CDP inspection
+- embedded Gemma inference
+
+The AI path does not start Ollama, Python, Node, or `llama-server`.
+
+Instead, the sidecar:
+
+1. downloads the official Windows CPU `llama.cpp` runtime DLL bundle on first use if it is not already present
+2. downloads `gemma-4-E2B-it-Q4_K_M.gguf` on first AI use if the model is not already present
+3. loads the GGUF into memory once
+4. reuses that model/context for future requests inside the same sidecar process
+
+Current storage locations are under the local app-data root used by the sidecar:
+
+- runtime DLLs: `AppData\\Local\\nocode-x-studio\\runtime\\llama-b8683-bin-win-cpu-x64`
+- Gemma GGUF: `AppData\\Local\\nocode-x-studio\\models\\gemma-4-E2B-it-Q4_K_M.gguf`
+
+`model.status` now reflects:
+
+- runtime download state
+- model download state
+- embedded load state
+- ready/error state

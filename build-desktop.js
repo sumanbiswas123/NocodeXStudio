@@ -36,6 +36,7 @@ fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
 try {
     // Generate .ico from public/app-icon.svg (if present)
     execSync('node scripts/generate-windows-icon.js', { stdio: 'inherit', shell: true });
+    execSync('node scripts/prepare-sidecar.js --release', { stdio: 'inherit', shell: true });
 
     const flags = [];
     if (standalone) flags.push('--embed-resources');

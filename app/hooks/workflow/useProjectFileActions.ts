@@ -32,7 +32,7 @@ type UseProjectFileActionsOptions = {
   fontCachePathRef: MutableRefObject<string | null>;
   isRefreshingFilesRef: MutableRefObject<boolean>;
   loadingFilePromisesRef: MutableRefObject<
-    Record<string, Promise<string | Blob | null | undefined>>
+    Partial<Record<string, Promise<string | undefined>>>
   >;
   loadingFilesRef: MutableRefObject<Set<string>>;
   pendingPreviewWritesRef: MutableRefObject<Record<string, string>>;

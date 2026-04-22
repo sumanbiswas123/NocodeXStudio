@@ -59,10 +59,11 @@ type UseMainStageViewModelOptions = {
   setDeviceMode: React.Dispatch<
     React.SetStateAction<"desktop" | "mobile" | "tablet">
   >;
-  setFrameZoom: React.Dispatch<React.SetStateAction<number>>;
-  setPreviewModeWithSync: React.Dispatch<
-    React.SetStateAction<"edit" | "preview">
-  >;
+  setFrameZoom: React.Dispatch<React.SetStateAction<50 | 75 | 100>>;
+  setPreviewModeWithSync: (
+    nextMode: "edit" | "preview",
+    options?: { skipUnsavedPrompt?: boolean },
+  ) => void;
   setPreviewSelectionMode: React.Dispatch<
     React.SetStateAction<"default" | "text" | "image" | "css">
   >;

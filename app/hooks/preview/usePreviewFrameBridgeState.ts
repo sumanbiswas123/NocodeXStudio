@@ -37,10 +37,13 @@ type UsePreviewFrameBridgeStateOptions = {
   interactionMode: InteractionMode;
   interactionModeRef: React.MutableRefObject<InteractionMode>;
   isPreviewMountReady: boolean;
-  openPopupInPreview: (selector: string, popupId: string) => boolean;
+  openPopupInPreview: (
+    selector: string | null,
+    popupId: string | null,
+  ) => boolean;
   pendingPopupOpenRef: React.MutableRefObject<{
-    selector: string;
-    popupId: string;
+    selector: string | null;
+    popupId: string | null;
   } | null>;
   pendingPreviewWritesRef: React.MutableRefObject<Record<string, string>>;
   positionQuickTextEditAtRange: (range: Range) => void;

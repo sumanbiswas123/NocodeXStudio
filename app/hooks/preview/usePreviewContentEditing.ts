@@ -29,6 +29,7 @@ type PersistPreviewHtmlContentFn = (
     saveNow?: boolean;
     pushToHistory?: boolean;
     elementPath?: number[];
+    skipCssExtraction?: boolean;
   },
 ) => Promise<void>;
 

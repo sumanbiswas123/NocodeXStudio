@@ -53,6 +53,7 @@ import { useProjectFileActions } from "./app/hooks/workflow/useProjectFileAction
 import { usePanelLayoutState } from "./app/hooks/layout/usePanelLayoutState";
 import { useStageLayoutState } from "./app/hooks/layout/useStageLayoutState";
 import { useScreenshotGallery } from "./app/hooks/workflow/useScreenshotGallery";
+import { useAiAssistant } from "./app/hooks/workflow/useAiAssistant";
 import { useAppShellControls } from "./app/hooks/shell/useAppShellControls";
 import { useTopLevelLayersViewModel } from "./app/hooks/viewModels/useTopLevelLayersViewModel";
 import { useLeftSidebarViewModel } from "./app/hooks/viewModels/useLeftSidebarViewModel";
@@ -1236,6 +1237,8 @@ const App: React.FC = () => {
     textFileCacheRef,
   });
   const {
+    applyPreviewCommentOutSelected,
+    applyPreviewDeleteSelected,
     applyPreviewTagUpdate,
     applyQuickTextWrapTag,
     handleReplacePreviewAsset,
@@ -1472,6 +1475,35 @@ const App: React.FC = () => {
     setPreviewSyncedFile,
     textFileCacheRef,
     saveCodeDraftsRef,
+  });
+  const {
+    assistantMode: aiAssistantMode,
+    currentSlideLabel: aiAssistantCurrentSlideLabel,
+    hasProject: aiAssistantHasProject,
+    input: aiAssistantInput,
+    isOpen: aiAssistantOpen,
+    isSubmitting: aiAssistantSubmitting,
+    messages: aiAssistantMessages,
+    modelStatus: aiAssistantModelStatus,
+    progress: aiAssistantProgress,
+    setAssistantMode: setAiAssistantMode,
+    setInput: setAiAssistantInput,
+    setIsOpen: setAiAssistantOpen,
+    stageResponse: stageAiAssistantResponse,
+    submitPrompt: submitAiAssistantPrompt,
+    cancelPrompt: cancelAiAssistantPrompt,
+  } = useAiAssistant({
+    activeFile,
+    files,
+    projectPath,
+    selectedPreviewHtml,
+    previewSelectedElement,
+    previewSelectedComputedStyles,
+    previewSelectedMatchedCssRules,
+    setCodeDraftByPath,
+    setCodeDirtyPathSet,
+    setIsCodePanelOpen,
+    setActiveFileStable,
   });
   const {
     baseOverflowX,
@@ -1713,6 +1745,8 @@ const App: React.FC = () => {
     handleUpdateContent,
     applyPreviewTagUpdate,
     applyQuickTextWrapTag,
+    applyPreviewDeleteSelected,
+    applyPreviewCommentOutSelected,
     handlePreviewStyleUpdateStable,
     handleUpdateStyle,
     handlePreviewIdentityUpdateStable,
@@ -1766,7 +1800,17 @@ const App: React.FC = () => {
     panelSide,
     projectPath,
     selectedFolderCloneSource,
+    aiAssistantMode,
+    aiAssistantCurrentSlideLabel,
+    aiAssistantHasProject,
+    aiAssistantInput,
+    aiAssistantOpen,
+    aiAssistantSubmitting,
+    aiAssistantMessages,
+    aiAssistantModelStatus,
+    aiAssistantProgress,
     files,
+    annotationRecords: pdfAnnotationRecords,
     configPathForModal,
     portfolioPathForModal,
     isDetachedEditorOpen,
@@ -1797,6 +1841,12 @@ const App: React.FC = () => {
     setCodeDirtyPathSet,
     clearPdfExportLogs,
     handleCodeDraftChange,
+    setAiAssistantMode,
+    setAiAssistantInput,
+    setAiAssistantOpen,
+    submitAiAssistantPrompt,
+    cancelAiAssistantPrompt,
+    stageAiAssistantResponse,
   });
   return (
     <div
@@ -1844,3 +1894,5 @@ const AppRoot: React.FC = () => (
 );
 
 export default AppRoot;
+
+

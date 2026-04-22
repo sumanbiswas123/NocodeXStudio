@@ -46,6 +46,11 @@ export class ResourceScanner {
    */
   public scan(fileMap: FileMap): ResourceIndex {
     console.log("[AI] Starting Project-Wide Resource Scan...");
+    this.index = {
+      popups: {},
+      slides: {},
+      sharedResources: [],
+    };
 
     // 1. Look for config.json first
     for (const [path, entry] of Object.entries(fileMap)) {

@@ -26,6 +26,26 @@ interface AnnotationState {
   typeFilter: 'all' | 'slide' | 'popup';
 }
 
+const sortAnnotationRecords = (records: PdfAnnotationUiRecord[]) =>
+  [...records].sort((left, right) => {
+    if (left.annoPdfPage !== right.annoPdfPage) {
+      return left.annoPdfPage - right.annoPdfPage;
+    }
+    const yDiff = (left.position?.y ?? 0) - (right.position?.y ?? 0);
+    if (Math.abs(yDiff) > 4) return yDiff;
+    const xDiff = (left.position?.x ?? 0) - (right.position?.x ?? 0);
+    if (Math.abs(xDiff) > 2) return xDiff;
+    const sequenceDiff =
+      (left.sequenceIndex ?? Number.MAX_SAFE_INTEGER) -
+      (right.sequenceIndex ?? Number.MAX_SAFE_INTEGER);
+    if (sequenceDiff !== 0) return sequenceDiff;
+    const pdfOrderDiff =
+      (left.pdfOrderIndex ?? Number.MAX_SAFE_INTEGER) -
+      (right.pdfOrderIndex ?? Number.MAX_SAFE_INTEGER);
+    if (pdfOrderDiff !== 0) return pdfOrderDiff;
+    return left.annotationId.localeCompare(right.annotationId);
+  });
+
 const initialState: AnnotationState = {
   records: [],
   fileName: '',
@@ -46,7 +66,7 @@ export const annotationSlice = createSlice({
   initialState,
   reducers: {
     setRecords: (state, action: PayloadAction<PdfAnnotationUiRecord[]>) => {
-      state.records = action.payload;
+      state.records = sortAnnotationRecords(action.payload);
     },
     setFileName: (state, action: PayloadAction<string>) => {
       state.fileName = action.payload;

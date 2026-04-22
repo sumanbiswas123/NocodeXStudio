@@ -119,8 +119,17 @@ export const usePreviewCreation = ({
       previewFrameRef.current?.contentWindow ??
       previewFrameRef.current?.contentDocument?.defaultView ??
       null;
+    let frameHref = "";
+    try {
+      frameHref = frameWindow?.location?.href || "";
+    } catch {
+      frameHref = "";
+    }
+    if (/^chrome-error:\/\//i.test(frameHref) || frameHref.includes("chromewebdata")) {
+      return null;
+    }
     const frameSrc =
-      frameWindow?.location?.href ||
+      frameHref ||
       previewFrameRef.current?.getAttribute("src") ||
       previewFrameRef.current?.src ||
       "";

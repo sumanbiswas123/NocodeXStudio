@@ -2,64 +2,9 @@ $ErrorActionPreference = "Stop"
 
 $port = if ($args.Length -gt 0 -and $args[0]) { $args[0] } else { "9222" }
 $devUrl = if ($args.Length -gt 1 -and $args[1]) { $args[1] } else { "" }
-$bridgePort = if ($args.Length -gt 2 -and $args[2]) { $args[2] } else { "38991" }
 $flag = "--remote-debugging-port=$port"
 $regPath = "HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-
-function Test-LocalPort {
-  param([int]$Port)
-
-  try {
-    $client = New-Object System.Net.Sockets.TcpClient
-    $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
-    $connected = $iar.AsyncWaitHandle.WaitOne(300)
-    if (-not $connected) {
-      $client.Close()
-      return $false
-    }
-    $client.EndConnect($iar)
-    $client.Close()
-    return $true
-  } catch {
-    return $false
-  }
-}
-
-function Start-CdpBridge {
-  param(
-    [string]$CdpPort,
-    [string]$ListenPort
-  )
-
-  if (Test-LocalPort -Port ([int]$ListenPort)) {
-    Write-Host "Rust CDP bridge already listening on $ListenPort. Reusing existing process."
-    return $null
-  }
-
-  $bridgeCandidates = @(
-    (Join-Path $repoRoot "native\cdp_bridge.exe"),
-    (Join-Path $repoRoot "native\cdp_bridge\target\release\cdp_bridge.exe"),
-    (Join-Path $repoRoot "native\cdp_bridge\target\debug\cdp_bridge.exe")
-  )
-
-  foreach ($candidate in $bridgeCandidates) {
-    if (Test-Path $candidate) {
-      Write-Host "Starting Rust CDP bridge from $candidate"
-      return Start-Process -FilePath $candidate -ArgumentList @("--cdp-port", $CdpPort, "--listen-port", $ListenPort) -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden
-    }
-  }
-
-  $cargoPath = Get-Command cargo -ErrorAction SilentlyContinue
-  $manifestPath = Join-Path $repoRoot "native\cdp_bridge\Cargo.toml"
-  if ($cargoPath -and (Test-Path $manifestPath)) {
-    Write-Host "Starting Rust CDP bridge via cargo run (first run may take longer)..."
-    return Start-Process -FilePath $cargoPath.Source -ArgumentList @("run", "--manifest-path", $manifestPath, "--", "--cdp-port", $CdpPort, "--listen-port", $ListenPort) -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden
-  }
-
-  Write-Warning "Rust CDP bridge binary not found and cargo is unavailable. Inspector priority will fallback to frontend-only mode."
-  return $null
-}
 
 function Get-AppBinaryNames {
   $names = New-Object System.Collections.Generic.List[string]
@@ -147,7 +92,13 @@ if ([string]::IsNullOrWhiteSpace($existing)) {
 
 $targetExecutables = Get-AppBinaryNames
 $registryState = Set-CdpRegistryFlags -ExecutableNames $targetExecutables -Value $flag
-$bridgeProcess = Start-CdpBridge -CdpPort $port -ListenPort $bridgePort
+
+try {
+  Write-Host "Preparing Rust sidecar binary..."
+  node (Join-Path $repoRoot "scripts\prepare-sidecar.js")
+} catch {
+  Write-Warning "Rust sidecar build failed. Neutralino will still launch, but extension-backed CDP/AI features will be unavailable. $($_.Exception.Message)"
+}
 
 Write-Host "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=$($env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS)"
 if ($registryState.Applied) {
@@ -164,12 +115,5 @@ try {
     npx neu run
   }
 } finally {
-  if ($bridgeProcess -and -not $bridgeProcess.HasExited) {
-    try {
-      Stop-Process -Id $bridgeProcess.Id -Force -ErrorAction SilentlyContinue
-    } catch {
-      # Ignore bridge shutdown errors.
-    }
-  }
   Restore-CdpRegistryFlags -RegistryState $registryState
 }

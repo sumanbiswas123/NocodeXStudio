@@ -42,6 +42,8 @@ type UseRightInspectorViewModelOptions = {
   handleUpdateContent: (data: { content?: string; html?: string }) => void;
   applyPreviewTagUpdate: (tag: string) => Promise<void>;
   applyQuickTextWrapTag: (tag: "sup" | "sub") => Promise<void>;
+  applyPreviewDeleteSelected: () => Promise<void>;
+  applyPreviewCommentOutSelected: () => Promise<void>;
   handlePreviewStyleUpdateStable: (
     styles: Partial<React.CSSProperties>,
   ) => void;
@@ -90,6 +92,8 @@ export const useRightInspectorViewModel = ({
   handleUpdateContent,
   applyPreviewTagUpdate,
   applyQuickTextWrapTag,
+  applyPreviewDeleteSelected,
+  applyPreviewCommentOutSelected,
   handlePreviewStyleUpdateStable,
   handleUpdateStyle,
   handlePreviewIdentityUpdateStable,
@@ -140,6 +144,8 @@ export const useRightInspectorViewModel = ({
         onUpdateContent: handleUpdateContent,
         onApplyPreviewTagUpdate: applyPreviewTagUpdate,
         onApplyQuickTextWrapTag: applyQuickTextWrapTag,
+        onDeletePreviewElement: applyPreviewDeleteSelected,
+        onCommentOutPreviewElement: applyPreviewCommentOutSelected,
         onPreviewStyleUpdate: handlePreviewStyleUpdateStable,
         onUpdateStyle: handleUpdateStyle,
         onPreviewIdentityUpdate: handlePreviewIdentityUpdateStable,
@@ -181,6 +187,8 @@ export const useRightInspectorViewModel = ({
       handleUpdateContent,
       applyPreviewTagUpdate,
       applyQuickTextWrapTag,
+      applyPreviewDeleteSelected,
+      applyPreviewCommentOutSelected,
       handlePreviewStyleUpdateStable,
       handleUpdateStyle,
       handlePreviewIdentityUpdateStable,

@@ -65,6 +65,11 @@ const isSlideFolderPath = (path: string): boolean => {
   return /_[0-9]{3,}$/i.test(name);
 };
 
+const VERSIONED_SLIDE_SUFFIX_PATTERN =
+  /_\d{4}_[A-Za-z]{2,}\d+(?:\.\d+)?_(.+)$/i;
+const VERSIONED_PROJECT_PREFIX_PATTERN =
+  /^(.*?_\d{4}_[A-Za-z]{2,}\d+(?:\.\d+)?)_/i;
+
 const buildAncestorFolderSet = (path: string): Set<string> => {
   const normalized = String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   if (!normalized) return new Set();
@@ -79,9 +84,7 @@ const buildAncestorFolderSet = (path: string): Set<string> => {
 const getCompactNodeLabel = (node: TreeNode): string => {
   const normalizedName = node.name.trim();
   if (node.type === 'folder') {
-    const versionSuffixMatch = normalizedName.match(
-      /_[A-Za-z]{1,}\d+(?:\.\d+)?_(.+)$/i,
-    );
+    const versionSuffixMatch = normalizedName.match(VERSIONED_SLIDE_SUFFIX_PATTERN);
     if (versionSuffixMatch) return versionSuffixMatch[1];
 
     const suffixMatch = normalizedName.match(/_([^_/]+)$/);
@@ -92,9 +95,7 @@ const getCompactNodeLabel = (node: TreeNode): string => {
 
 const getProjectBaseLabel = (name: string): string => {
   const normalizedName = name.trim();
-  const versionPrefixMatch = normalizedName.match(
-    /^(.*?_[A-Za-z]{1,}\d+(?:\.\d+)?)_/i,
-  );
+  const versionPrefixMatch = normalizedName.match(VERSIONED_PROJECT_PREFIX_PATTERN);
   return versionPrefixMatch ? versionPrefixMatch[1] : normalizedName;
 };
 

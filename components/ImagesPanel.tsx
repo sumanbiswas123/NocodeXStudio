@@ -21,7 +21,7 @@ const getSlideBucket = (path: string): string => {
 const getCompactFolderLabel = (name: string): string => {
   const normalizedName = name.trim();
   const versionSuffixMatch = normalizedName.match(
-    /_[A-Za-z]{1,}\d+(?:\.\d+)?_(.+)$/i,
+    /_\d{4}_[A-Za-z]{2,}\d+(?:\.\d+)?_(.+)$/i,
   );
   if (versionSuffixMatch) return versionSuffixMatch[1];
 

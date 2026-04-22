@@ -22,6 +22,10 @@ import {
   toFileUrl,
   toMountRelativePath,
 } from "../../helpers/appHelpers";
+import {
+  ensureSidecarReady,
+  inspectSelectedViaSidecar,
+} from "../../runtime/sidecarClient";
 
 type UsePreviewInspectorRuntimeOptions = {
   applyPreviewStyleUpdateAtPath: (
@@ -45,6 +49,7 @@ type UsePreviewInspectorRuntimeOptions = {
       refreshPreviewDoc?: boolean;
       saveNow?: boolean;
       skipAutoSave?: boolean;
+      skipCssExtraction?: boolean;
     },
   ) => Promise<void>;
   previewMountBasePath: string | null;
@@ -284,49 +289,9 @@ export const usePreviewInspectorRuntime = ({
   }, [previewSelectedMatchedCssRules]);
 
   useEffect(() => {
-    const ensureCdpBridge = async () => {
-      const nlPort = String((window as any).NL_PORT || "").trim();
-      if (!nlPort) return;
-
-      try {
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 600);
-        try {
-          const response = await fetch("http://127.0.0.1:38991/health", {
-            signal: controller.signal,
-          });
-          if (response.ok) return;
-        } finally {
-          window.clearTimeout(timeoutId);
-        }
-      } catch {
-        // Bridge is not running yet.
-      }
-
-      const appRoot = normalizePath(String((window as any).NL_PATH || ""));
-      if (!appRoot) return;
-
-      const candidatePaths = [
-        `${appRoot}/native/cdp_bridge.exe`,
-        `${appRoot}/native/cdp_bridge/target/release/cdp_bridge.exe`,
-        `${appRoot}/native/cdp_bridge/target/debug/cdp_bridge.exe`,
-      ];
-
-      for (const candidatePath of candidatePaths) {
-        try {
-          await (Neutralino as any).filesystem.getStats(candidatePath);
-          await (Neutralino as any).os.spawnProcess(
-            `"${candidatePath}" --cdp-port 9222 --listen-port 38991`,
-            appRoot,
-          );
-          return;
-        } catch {
-          // Try the next candidate path.
-        }
-      }
-    };
-
-    void ensureCdpBridge();
+    void ensureSidecarReady().catch(() => {
+      // The extension may still be building or starting up.
+    });
   }, []);
 
   useEffect(() => {
@@ -339,25 +304,16 @@ export const usePreviewInspectorRuntime = ({
       return;
     }
 
-    const controller = new AbortController();
+    let disposed = false;
     const timeoutId = window.setTimeout(async () => {
       try {
-        const response = await fetch("http://127.0.0.1:38991/inspect-selected", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            cdp_port: 9222,
-            iframe_title: "project-preview",
-            selected_selector: ".__nx-preview-selected",
-            target_url_contains: window.location.origin,
-          }),
-          signal: controller.signal,
-        });
-        if (!response.ok) return;
-        const payload =
-          (await response.json()) as CdpInspectSelectedResponse | null;
+        const payload = (await inspectSelectedViaSidecar({
+          cdp_port: 9222,
+          iframe_title: "project-preview",
+          selected_selector: ".__nx-preview-selected",
+          target_url_contains: window.location.origin,
+        })) as CdpInspectSelectedResponse | null;
+        if (disposed) return;
         if (!payload?.ok) return;
 
         const cdpComputedStyles = toReactComputedStylesFromCdp(
@@ -390,12 +346,12 @@ export const usePreviewInspectorRuntime = ({
           });
         }
       } catch {
-        if (controller.signal.aborted) return;
+        if (disposed) return;
       }
     }, 120);
 
     return () => {
-      controller.abort();
+      disposed = true;
       window.clearTimeout(timeoutId);
     };
   }, [

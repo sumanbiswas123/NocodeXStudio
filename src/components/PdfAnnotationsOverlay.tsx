@@ -16,6 +16,21 @@ const ANNOTATION_INTENT_OPTIONS = [
   "siChange",
 ];
 
+const formatPdfAnnotationText = (value: string): string => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  if (/\n/.test(trimmed)) return trimmed.replace(/\n{3,}/g, "\n\n");
+
+  return trimmed
+    .replace(/\s+(\(Translation\b)/gi, "\n\n$1")
+    .replace(/\s+(Refer to attachment:)/gi, "\n\n$1")
+    .replace(/\s+(Slide number\b)/gi, "\n\n$1")
+    .replace(/\s+(Slide\s+\d+\s*:)/gi, "\n\n$1")
+    .replace(/\s+(Currently translated\b)/gi, "\n\n$1")
+    .replace(/\s+(Deck needs\b)/gi, "\n\n$1")
+    .replace(/\n{3,}/g, "\n\n");
+};
+
 interface PdfAnnotationsOverlayProps {
   currentPreviewSlideId: string | null;
   theme: 'light' | 'dark';
@@ -233,6 +248,9 @@ const PdfAnnotationsOverlay: React.FC<PdfAnnotationsOverlayProps> = ({
               annotation.threadEntries.find((entry) => entry.role === "comment") ||
               annotation.threadEntries[0] ||
               null;
+            const replyEntries = annotation.threadEntries.filter(
+              (entry) => entry !== mainThreadEntry,
+            );
             const effectiveType =
               typeOverrides[annotation.annotationId] ||
               (ANNOTATION_INTENT_OPTIONS.includes(annotation.annotationType)
@@ -295,8 +313,62 @@ const PdfAnnotationsOverlay: React.FC<PdfAnnotationsOverlayProps> = ({
                   </select>
                 </div>
 
-                <div className={`text-sm leading-relaxed break-words whitespace-pre-wrap ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
-                  {mainThreadEntry ? mainThreadEntry.text : annotation.annotationText}
+                <div className="space-y-3">
+                  {[mainThreadEntry, ...replyEntries].filter(Boolean).map((entry, index) => {
+                    const initials = String(entry?.author || "?")
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .map((part) => part[0])
+                      .join("")
+                      .slice(0, 2)
+                      .toUpperCase();
+                    const hasThreadReplies = replyEntries.length > 0;
+                    return (
+                      <div
+                        key={`${annotation.annotationId}-thread-${index}`}
+                        className={
+                          hasThreadReplies
+                            ? "grid grid-cols-[34px_minmax(0,1fr)] gap-3"
+                            : "block"
+                        }
+                      >
+                        {hasThreadReplies ? (
+                          <div className="relative flex justify-center">
+                            {index < replyEntries.length ? (
+                              <span
+                                className={`absolute top-8 bottom-[-0.75rem] w-px ${
+                                  theme === 'dark' ? 'bg-slate-700' : 'bg-slate-300'
+                                }`}
+                              />
+                            ) : null}
+                            <div
+                              className={`relative z-10 h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                                theme === 'dark'
+                                  ? 'bg-slate-700 text-slate-200'
+                                  : 'bg-slate-300 text-slate-700'
+                              }`}
+                            >
+                              {initials}
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="min-w-0">
+                          {entry?.author ? (
+                            <div className={`text-[12px] font-bold ${
+                              theme === 'dark' ? 'text-slate-100' : 'text-slate-900'
+                            }`}>
+                              {entry.author}
+                            </div>
+                          ) : null}
+                          <div className={`mt-2 text-[12px] leading-[1.45rem] break-words whitespace-pre-wrap ${
+                            theme === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                          }`}>
+                            {formatPdfAnnotationText(entry?.text || annotation.annotationText)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {annotation.pdfPageImage ? (

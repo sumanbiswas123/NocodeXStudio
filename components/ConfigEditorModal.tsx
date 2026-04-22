@@ -3,6 +3,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { FileMap } from "../types";
 import { GripVertical, Plus, Save, Search, Settings2, ShieldAlert, Trash2, X } from "lucide-react";
 import ColorCodeEditor from "./ColorCodeEditor";
+import type { PdfAnnotationUiRecord } from "../app/helpers/pdfAnnotationHelpers";
+import { useReferenceOpsWorkflow } from "../app/hooks/workflow/useReferenceOpsWorkflow";
+import ReferenceOpsPanel from "../app/ui/ReferenceOpsPanel";
 
 interface ConfigEditorModalProps {
   isOpen: boolean;
@@ -21,6 +24,7 @@ interface ConfigEditorModalProps {
   selectedSlideCloneSource?: string | null;
   onSelectSlideCloneSource?: (slideId: string) => void;
   files: FileMap;
+  annotationRecords: PdfAnnotationUiRecord[];
 }
 
 interface MtConfigPayload {
@@ -44,7 +48,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "configRaw", label: "Config.js" },
 ];
 
-const REFERENCE_TEXT_LIST_KEYS = ["referencesAll", "footnotesAll", "abbreviationAll"] as const;
+const REFERENCE_TEXT_LIST_KEYS = ["referencesAll", "footnotesAll", "abbreviationsAll"] as const;
 const REFERENCE_FLAG_KEYS = [
   "tabReferences",
   "allReferencesAlphabetical",
@@ -206,6 +210,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   selectedSlideCloneSource = null,
   onSelectSlideCloneSource,
   files,
+  annotationRecords,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("general");
   const [configDraft, setConfigDraft] = useState<MtConfigPayload | null>(null);
@@ -258,8 +263,11 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     if (parsed) {
       const nextDrafts: Record<string, string[]> = {};
       for (const key of REFERENCE_TEXT_LIST_KEYS) {
-        const arr = Array.isArray(parsed[key])
-          ? parsed[key].map((item: unknown) => String(item ?? ""))
+        const sourceKey = key === "abbreviationsAll" && Array.isArray(parsed.abbreviationAll)
+          ? "abbreviationAll"
+          : key;
+        const arr = Array.isArray(parsed[sourceKey])
+          ? parsed[sourceKey].map((item: unknown) => String(item ?? ""))
           : [];
         nextDrafts[key] = [...arr, ""];
       }
@@ -299,6 +307,12 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
   const filteredSlides = useMemo(() => pagesAll.filter((s) => !slideSearch.trim() || s.toLowerCase().includes(slideSearch.toLowerCase())), [pagesAll, slideSearch]);
 
+  const referenceOps = useReferenceOpsWorkflow({
+    configDraft,
+    files,
+    annotationRecords,
+  });
+
   if (!isOpen) return null;
 
   const setField = (key: string, value: any) => setConfigDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -308,6 +322,18 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     const nextConfig = rawConfigDirty ? rawConfig : configDraft && configContent ? replaceConfigObject(configContent, configDraft) : rawConfig;
     onSave(nextConfig, rawPortfolio);
     onClose();
+  };
+
+  const handleApplyReferencePlan = () => {
+    const result = referenceOps.applySelectedPlan();
+    if (!result) return;
+    setConfigDraft(result.nextConfigDraft as MtConfigPayload);
+    setReferenceDrafts((prev) => ({ ...prev, ...result.nextReferenceDrafts }));
+    setRawConfigDirty(false);
+    const nextRaw = configContent
+      ? replaceConfigObject(configContent, result.nextConfigDraft as MtConfigPayload)
+      : JSON.stringify(result.nextConfigDraft, null, 2);
+    setRawConfig(nextRaw);
   };
 
   const borderCol = theme === "dark" ? "rgba(148,163,184,0.2)" : "rgba(0,0,0,0.12)";
@@ -729,8 +755,25 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
               <div className="flex flex-col gap-4">
                 {renderTextListEditor("referencesAll", "References", "One reference per line")}
                 {renderTextListEditor("footnotesAll", "Footnotes", "One footnote per line")}
-                {renderTextListEditor("abbreviationAll", "Abbreviations", "One abbreviation per line")}
+                {renderTextListEditor("abbreviationsAll", "Abbreviations", "One abbreviation per line")}
               </div>
+
+              <ReferenceOpsPanel
+                theme={theme}
+                borderColor={borderCol}
+                inputBackground={inputBg}
+                textMain={textMain}
+                textMuted={textMuted}
+                workspace={referenceOps.workspace}
+                candidates={referenceOps.candidates}
+                selectedCandidateId={referenceOps.selectedCandidateId}
+                selectedOptionId={referenceOps.selectedOptionId}
+                selectedCandidate={referenceOps.selectedCandidate}
+                selectedPlan={referenceOps.selectedPlan}
+                onSelectCandidate={(id) => referenceOps.setSelectedCandidateId(id)}
+                onSelectOption={(id) => referenceOps.setSelectedOptionId(id)}
+                onApplyPlan={handleApplyReferencePlan}
+              />
             </div>
           ) : null}
           {activeTab === "slides" ? (
@@ -880,3 +923,4 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 };
 
 export default ConfigEditorModal;
+

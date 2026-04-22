@@ -2,6 +2,14 @@ import { useMemo } from "react";
 import type React from "react";
 import AppOverlays from "../../ui/AppOverlays";
 import type { FileMap } from "../../../types";
+import type { PdfAnnotationUiRecord } from "../../helpers/pdfAnnotationHelpers";
+import type { AiAssistantMessage } from "../workflow/useAiAssistant";
+import type {
+  AgentRunResponse,
+  AssistantMode,
+  SidecarModelStatus,
+  SidecarProgressEvent,
+} from "../../runtime/sidecarClient";
 
 type UseAppOverlaysViewModelOptions = {
   theme: "dark" | "light";
@@ -18,7 +26,17 @@ type UseAppOverlaysViewModelOptions = {
   panelSide: "default" | "swapped";
   projectPath: string | null;
   selectedFolderCloneSource: string | null;
+  aiAssistantMode: AssistantMode;
+  aiAssistantCurrentSlideLabel: string;
+  aiAssistantHasProject: boolean;
+  aiAssistantInput: string;
+  aiAssistantOpen: boolean;
+  aiAssistantSubmitting: boolean;
+  aiAssistantMessages: AiAssistantMessage[];
+  aiAssistantModelStatus: SidecarModelStatus | null;
+  aiAssistantProgress: SidecarProgressEvent | null;
   files: FileMap;
+  annotationRecords: PdfAnnotationUiRecord[];
   configPathForModal: string;
   portfolioPathForModal: string;
   isDetachedEditorOpen: boolean;
@@ -63,6 +81,12 @@ type UseAppOverlaysViewModelOptions = {
   >;
   clearPdfExportLogs: () => void;
   handleCodeDraftChange: (value: string) => void;
+  setAiAssistantMode: React.Dispatch<React.SetStateAction<AssistantMode>>;
+  setAiAssistantInput: React.Dispatch<React.SetStateAction<string>>;
+  setAiAssistantOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  submitAiAssistantPrompt: () => Promise<void>;
+  cancelAiAssistantPrompt: () => Promise<void>;
+  stageAiAssistantResponse: (messageId: string, response: AgentRunResponse) => void;
 };
 
 export const useAppOverlaysViewModel = ({
@@ -80,7 +104,17 @@ export const useAppOverlaysViewModel = ({
   panelSide,
   projectPath,
   selectedFolderCloneSource,
+  aiAssistantMode,
+  aiAssistantCurrentSlideLabel,
+  aiAssistantHasProject,
+  aiAssistantInput,
+  aiAssistantOpen,
+  aiAssistantSubmitting,
+  aiAssistantMessages,
+  aiAssistantModelStatus,
+  aiAssistantProgress,
   files,
+  annotationRecords,
   configPathForModal,
   portfolioPathForModal,
   isDetachedEditorOpen,
@@ -111,6 +145,12 @@ export const useAppOverlaysViewModel = ({
   setCodeDirtyPathSet,
   clearPdfExportLogs,
   handleCodeDraftChange,
+  setAiAssistantMode,
+  setAiAssistantInput,
+  setAiAssistantOpen,
+  submitAiAssistantPrompt,
+  cancelAiAssistantPrompt,
+  stageAiAssistantResponse,
 }: UseAppOverlaysViewModelOptions): React.ComponentProps<typeof AppOverlays> =>
   useMemo(
     () => ({
@@ -129,9 +169,19 @@ export const useAppOverlaysViewModel = ({
         panelSide,
         projectPath,
         selectedFolderCloneSource,
+        aiAssistantMode,
+        aiAssistantCurrentSlideLabel,
+        aiAssistantHasProject,
+        aiAssistantInput,
+        aiAssistantOpen,
+        aiAssistantSubmitting,
+        aiAssistantMessages,
+        aiAssistantModelStatus,
+        aiAssistantProgress,
       },
       configState: {
         files,
+        annotationRecords,
         configPathForModal,
         portfolioPathForModal,
       },
@@ -166,6 +216,12 @@ export const useAppOverlaysViewModel = ({
         setCodeDirtyPathSet,
         clearPdfExportLogs,
         handleCodeDraftChange,
+        setAiAssistantMode,
+        setAiAssistantInput,
+        setAiAssistantOpen,
+        submitAiAssistantPrompt,
+        cancelAiAssistantPrompt,
+        stageAiAssistantResponse,
       },
     }),
     [
@@ -183,7 +239,17 @@ export const useAppOverlaysViewModel = ({
       panelSide,
       projectPath,
       selectedFolderCloneSource,
+      aiAssistantMode,
+      aiAssistantCurrentSlideLabel,
+      aiAssistantHasProject,
+      aiAssistantInput,
+      aiAssistantOpen,
+      aiAssistantSubmitting,
+      aiAssistantMessages,
+      aiAssistantModelStatus,
+      aiAssistantProgress,
       files,
+      annotationRecords,
       configPathForModal,
       portfolioPathForModal,
       isDetachedEditorOpen,
@@ -214,5 +280,11 @@ export const useAppOverlaysViewModel = ({
       setCodeDirtyPathSet,
       clearPdfExportLogs,
       handleCodeDraftChange,
+      setAiAssistantMode,
+      setAiAssistantInput,
+      setAiAssistantOpen,
+      submitAiAssistantPrompt,
+      cancelAiAssistantPrompt,
+      stageAiAssistantResponse,
     ],
   );

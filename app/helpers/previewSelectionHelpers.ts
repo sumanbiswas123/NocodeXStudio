@@ -72,6 +72,7 @@ type PersistPreviewHtmlContentArgs = {
     skipAutoSave?: boolean;
     elementPath?: number[];
     pushToHistory?: boolean;
+    skipCssExtraction?: boolean;
   };
 };
 
@@ -245,6 +246,7 @@ export const persistPreviewHtmlContent = async ({
   const shouldSaveNow = options?.saveNow ?? false;
   const shouldSkipAutoSave = options?.skipAutoSave ?? false;
   const shouldPushToHistory = options?.pushToHistory ?? true;
+  const shouldSkipCssExtraction = options?.skipCssExtraction ?? false;
   const previousSerialized =
     typeof filesRef.current[updatedPath]?.content === "string"
       ? (filesRef.current[updatedPath]?.content as string)
@@ -285,7 +287,9 @@ export const persistPreviewHtmlContent = async ({
     htmlDirVirtual ? `${htmlDirVirtual}/css/local.css` : "css/local.css",
   );
   const needsCssExtraction =
-    /<style\b/i.test(sanitizedSerialized) || /\sstyle=(["']).+?\1/i.test(sanitizedSerialized);
+    !shouldSkipCssExtraction &&
+    (/<style\b/i.test(sanitizedSerialized) ||
+      /\sstyle=(["']).+?\1/i.test(sanitizedSerialized));
   let finalSerialized = sanitizedSerialized;
 
   if (needsCssExtraction) {

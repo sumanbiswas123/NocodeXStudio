@@ -24,6 +24,7 @@ type UsePreviewIdentityUpdateOptions = {
       skipAutoSave?: boolean;
       elementPath?: number[];
       pushToHistory?: boolean;
+      skipCssExtraction?: boolean;
     },
   ) => Promise<void>;
   previewSelectedPath: number[] | null;

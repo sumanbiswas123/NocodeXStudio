@@ -103,9 +103,10 @@ export class DeepScanMatcher {
                boost += 0.35;
             }
          } else {
-            // PERSISTENCE BOOST: If we are already on this slide, don't leave it unless there's a strong reason
-            if (id === options.currentSlideId) {
-               boost += 0.45; // Higher than the popup boost (0.35)
+            // Persistence is only a tie-breaker. A large unconditional boost can
+            // pin ambiguous PDF pages to the first/current slide.
+            if (id === options.currentSlideId && (semanticSim > 0.08 || visualSim > 0.72)) {
+               boost += 0.15;
             }
          }
       }

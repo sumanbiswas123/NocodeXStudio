@@ -22,7 +22,14 @@ import {
 type PersistPreviewHtmlContentFn = (
   path: string,
   html: string,
-  options?: Record<string, unknown>,
+  options?: {
+    refreshPreviewDoc?: boolean;
+    saveNow?: boolean;
+    skipAutoSave?: boolean;
+    elementPath?: number[];
+    pushToHistory?: boolean;
+    skipCssExtraction?: boolean;
+  },
 ) => Promise<void>;
 
 type UsePreviewElementActionsOptions = {
@@ -52,7 +59,9 @@ type UsePreviewElementActionsOptions = {
   selectedPreviewSrc: string | null;
   selectPreviewElementAtPath: (path: number[]) => void;
   previewSelectedMatchedCssRules: PreviewMatchedCssRule[];
-  resolvePreviewMatchedRuleSourcePath?: (source: string) => string | null;
+  resolvePreviewMatchedRuleSourcePath?: (
+    source?: string | null,
+  ) => string | null;
   handlePreviewMatchedRulePropertyAdd?: (
     rule: {
       selector: string;
@@ -600,6 +609,73 @@ export const usePreviewElementActions = ({
     const parentPath = previewSelectedPath.slice(0, -1);
     await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
       refreshPreviewDoc: false,
+      skipCssExtraction: true,
+      ...(parentPath.length > 0 ? { elementPath: parentPath } : {}),
+    });
+
+    setPreviewSelectedPath(null);
+    setPreviewSelectedElement(null);
+    setPreviewSelectedComputedStyles(null);
+    setSelectedId(null);
+  }, [
+    filesRef,
+    getLivePreviewSelectedElement,
+    loadFileContent,
+    persistPreviewHtmlContent,
+    previewSelectedPath,
+    selectedPreviewHtml,
+    setPreviewSelectedComputedStyles,
+    setPreviewSelectedElement,
+    setPreviewSelectedPath,
+    setSelectedId,
+  ]);
+
+  const applyPreviewCommentOutSelected = useCallback(async () => {
+    if (
+      !selectedPreviewHtml ||
+      !previewSelectedPath ||
+      !Array.isArray(previewSelectedPath) ||
+      previewSelectedPath.length === 0
+    ) {
+      return;
+    }
+
+    const loaded = await loadFileContent(selectedPreviewHtml);
+    const sourceHtml =
+      typeof loaded === "string" && loaded.length > 0
+        ? loaded
+        : typeof filesRef.current[selectedPreviewHtml]?.content === "string"
+          ? (filesRef.current[selectedPreviewHtml]?.content as string)
+          : "";
+    if (!sourceHtml) return;
+
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(sourceHtml, "text/html");
+    const target = readElementByPath(parsed.body, previewSelectedPath);
+    if (!target || !target.parentElement) return;
+
+    const serializedElement = target.outerHTML;
+    const bytes = new TextEncoder().encode(serializedElement);
+    let binary = "";
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    const encodedPayload = window.btoa(binary);
+    const commentNode = parsed.createComment(
+      ` nx-commented-out:${encodedPayload} `,
+    );
+    target.replaceWith(commentNode);
+
+    const liveTarget = getLivePreviewSelectedElement(previewSelectedPath);
+    if (liveTarget && liveTarget.parentElement) {
+      liveTarget.parentElement.removeChild(liveTarget);
+    }
+
+    const parentPath = previewSelectedPath.slice(0, -1);
+    const serialized = `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+    await persistPreviewHtmlContent(selectedPreviewHtml, serialized, {
+      refreshPreviewDoc: false,
+      skipCssExtraction: true,
       ...(parentPath.length > 0 ? { elementPath: parentPath } : {}),
     });
 
@@ -702,6 +778,7 @@ export const usePreviewElementActions = ({
 
   return {
     applyPreviewDeleteSelected,
+    applyPreviewCommentOutSelected,
     applyPreviewTagUpdate,
     applyQuickTextWrapTag,
     handlePreviewDuplicateSelected,

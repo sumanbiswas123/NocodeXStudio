@@ -147,7 +147,7 @@ export const usePdfAnnotationWorkflow = ({
           }
         >;
       };
-      if (!parsed || parsed.version !== 2) return null;
+      if (!parsed || parsed.version !== 3) return null;
       return parsed;
     } catch {
       return null;
@@ -163,7 +163,7 @@ export const usePdfAnnotationWorkflow = ({
     ) => {
       try {
         const existing = readPdfAnnotationCache() || {
-          version: 1,
+          version: 3,
           projects: {},
         };
         const nextProjects = { ...existing.projects };
@@ -183,7 +183,7 @@ export const usePdfAnnotationWorkflow = ({
         nextProjects[projectKey] = projectEntry;
         localStorage.setItem(
           cacheKey,
-          JSON.stringify({ version: 2, projects: nextProjects }),
+          JSON.stringify({ version: 3, projects: nextProjects }),
         );
       } catch {
         // Ignore storage errors.

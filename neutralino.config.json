@@ -2,9 +2,10 @@
   "applicationId": "js.neutralino.nocodexstudio",
   "version": "1.0.5",
   "defaultMode": "window",
-  "documentRoot": "dist/",
-  "url": "/",
+  "documentRoot": "/dist",
+  "url": "/index.html",
   "enableServer": true,
+  "enableExtensions": true,
   "singlePageServe": true,
   "enableNativeAPI": true,
   "tokenSecurity": "none",
@@ -19,7 +20,14 @@
     "window.*",
     "events.*",
     "debug.*",
-    "server.*"
+    "server.*",
+    "extensions.*"
+  ],
+  "extensions": [
+    {
+      "id": "js.neutralino.nocodex.sidecar",
+      "commandWindows": "\"${NL_PATH}\\native\\cdp_bridge.exe\" --cdp-port 9222"
+    }
   ],
   "modes": {
     "window": {
@@ -43,6 +51,9 @@
     "binaryName": "nocode-x-studio",
     "resourcesPath": "/dist",
     "distributionPath": "/dist",
+    "copyItems": [
+      "native/cdp_bridge.exe"
+    ],
     "binaryVersion": "6.5.0",
     "clientVersion": "6.5.0"
   }

@@ -9,12 +9,33 @@ export const getPreviewFrameWindow = (
 ): Window | null =>
   frame?.contentWindow ?? frame?.contentDocument?.defaultView ?? null;
 
+const readFrameHref = (frame: HTMLIFrameElement | null): string => {
+  if (!frame) return "";
+  try {
+    const href = frame.contentWindow?.location?.href || "";
+    if (href) return href;
+  } catch {
+    // Ignore transient cross-origin or error-page access.
+  }
+  return frame.getAttribute("src") || frame.src || "";
+};
+
+const isChromeErrorDocument = (href: string): boolean =>
+  /^chrome-error:\/\//i.test(href) || href.includes("chromewebdata");
+
 export const injectMountedPreviewBridge = (
   frame: HTMLIFrameElement | null,
   bridgeScript: string,
 ): void => {
+  const frameHref = readFrameHref(frame);
+  if (isChromeErrorDocument(frameHref)) return;
   const frameWindow = frame?.contentWindow ?? null;
-  const frameDocument = frameWindow?.document ?? null;
+  let frameDocument: Document | null = null;
+  try {
+    frameDocument = frameWindow?.document ?? null;
+  } catch {
+    frameDocument = null;
+  }
   if (!frameWindow || !frameDocument) return;
   if (
     frameDocument.documentElement?.getAttribute(
@@ -170,13 +191,25 @@ export const handlePreviewFrameLoad = ({
     options?: { skipUnsavedPrompt?: boolean },
   ) => void;
   pendingPopupOpenRef: React.MutableRefObject<{
-    selector: string;
-    popupId: string;
+    selector: string | null;
+    popupId: string | null;
   } | null>;
-  openPopupInPreview: (selector: string, popupId: string) => boolean;
+  openPopupInPreview: (
+    selector: string | null,
+    popupId: string | null,
+  ) => boolean;
   setPreviewFrameLoadNonce: React.Dispatch<React.SetStateAction<number>>;
 }): void => {
   setPreviewFrameLoadNonce((prev) => prev + 1);
+
+  const frameHref = readFrameHref(frame);
+  if (isChromeErrorDocument(frameHref)) {
+    console.warn(
+      "[Preview] Skipping frame load sync because Chromium loaded an internal error page:",
+      frameHref,
+    );
+    return;
+  }
 
   if (selectedPreviewSrc) {
     injectBridge(frame);
@@ -187,7 +220,7 @@ export const handlePreviewFrameLoad = ({
 
   if (!isPreviewMountReady) return;
 
-  const frameSrc = frame.getAttribute("src") || frame.src || "";
+  const frameSrc = frameHref || readFrameHref(frame);
   if (!frameSrc) return;
 
   let locationPath = "";

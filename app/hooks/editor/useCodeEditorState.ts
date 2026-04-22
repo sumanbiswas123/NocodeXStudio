@@ -26,6 +26,7 @@ type UseCodeEditorStateOptions = {
       refreshPreviewDoc?: boolean;
       saveNow?: boolean;
       pushToHistory?: boolean;
+      skipCssExtraction?: boolean;
     },
   ) => Promise<void>;
   selectedPreviewHtml: string | null;

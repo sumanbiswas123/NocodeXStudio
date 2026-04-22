@@ -1,361 +1,277 @@
-use anyhow::{anyhow, bail, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+mod ai;
+mod cdp;
+mod ipc;
+mod logging;
+
+use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use std::collections::HashSet;
 use std::env;
-use tiny_http::{Header, Method, Response, Server, StatusCode};
-use tungstenite::{connect, Message, WebSocket};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
-#[derive(Debug, Clone)]
-struct AppConfig {
-    cdp_port: u16,
-    listen_port: u16,
+use crate::ai::AiRuntime;
+use crate::cdp::inspect_selected_element;
+use crate::ipc::{
+    parse_incoming_request, parse_wire_message, AiResponse, CancelResponse, ExtensionBootstrap,
+    IncomingRequest, ModelState, ModelStatusSnapshot, NativeMethodCall, SidecarEmitter,
+    SidecarHealthResponse, SidecarMethod, DEFAULT_CDP_PORT,
+};
+use crate::logging::log_line;
+
+const AI_FEATURE_ENABLED: bool = false;
+
+#[derive(Clone)]
+struct AppState {
+    ai: AiRuntime,
+    cancelled_requests: Arc<Mutex<HashSet<String>>>,
+    default_cdp_port: u16,
+    emitter: SidecarEmitter,
+    extension_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct InspectSelectedRequest {
-    cdp_port: Option<u16>,
-    iframe_title: Option<String>,
-    selected_selector: Option<String>,
-    target_url_contains: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DebugTarget {
-    id: String,
-    title: String,
-    #[serde(rename = "type")]
-    target_type: String,
-    url: String,
-    #[serde(rename = "webSocketDebuggerUrl")]
-    web_socket_debugger_url: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody<'a> {
-    ok: bool,
-    error: &'a str,
-}
-
-struct CdpClient {
-    socket: WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
-    next_id: u64,
-}
-
-impl CdpClient {
-    fn connect(ws_url: &str) -> Result<Self> {
-        let (socket, _) = connect(ws_url).context("failed to connect to CDP websocket")?;
-        Ok(Self { socket, next_id: 1 })
-    }
-
-    fn send_command(&mut self, method: &str, params: Value) -> Result<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let payload = json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        self.socket
-            .send(Message::Text(payload.to_string()))
-            .with_context(|| format!("failed to send CDP command {method}"))?;
-
-        loop {
-            let message = self.socket.read().context("failed to read CDP response")?;
-            match message {
-                Message::Text(text) => {
-                    let parsed: Value = serde_json::from_str(&text)
-                        .context("failed to parse CDP websocket payload")?;
-                    if parsed.get("id").and_then(Value::as_u64) != Some(id) {
-                        continue;
-                    }
-                    if let Some(error) = parsed.get("error") {
-                        bail!("CDP command {method} failed: {error}");
-                    }
-                    return Ok(parsed.get("result").cloned().unwrap_or(Value::Null));
-                }
-                Message::Binary(binary) => {
-                    let parsed: Value = serde_json::from_slice(&binary)
-                        .context("failed to parse binary CDP websocket payload")?;
-                    if parsed.get("id").and_then(Value::as_u64) != Some(id) {
-                        continue;
-                    }
-                    if let Some(error) = parsed.get("error") {
-                        bail!("CDP command {method} failed: {error}");
-                    }
-                    return Ok(parsed.get("result").cloned().unwrap_or(Value::Null));
-                }
-                Message::Close(frame) => {
-                    bail!("CDP websocket closed unexpectedly: {frame:?}");
-                }
-                _ => {}
-            }
+impl AppState {
+    async fn current_health(&self) -> SidecarHealthResponse {
+        SidecarHealthResponse {
+            ai: self.current_ai_status().await,
+            cdp_port: self.default_cdp_port,
+            extension_id: self.extension_id.clone(),
+            ok: true,
         }
     }
-}
 
-fn parse_arg_u16(args: &[String], flag: &str, default: u16) -> u16 {
-    args.windows(2)
-        .find(|window| window[0] == flag)
-        .and_then(|window| window[1].parse::<u16>().ok())
-        .unwrap_or(default)
-}
-
-fn build_config() -> AppConfig {
-    let args: Vec<String> = env::args().collect();
-    AppConfig {
-        cdp_port: parse_arg_u16(&args, "--cdp-port", 9222),
-        listen_port: parse_arg_u16(&args, "--listen-port", 38991),
+    async fn current_ai_status(&self) -> ModelStatusSnapshot {
+        let mut status = self.ai.current_status().await;
+        if !AI_FEATURE_ENABLED {
+            status.state = ModelState::EngineUnavailable;
+            status.progress = None;
+            status.message = "AI feature is currently disabled.".to_string();
+        }
+        status
     }
 }
 
-fn escape_js_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
-}
+#[tokio::main]
+async fn main() -> Result<()> {
+    log_line("sidecar startup");
+    let extension_id = "js.neutralino.nocodex.sidecar".to_string();
+    let cdp_port = parse_arg_u16("--cdp-port", DEFAULT_CDP_PORT);
+    log_line(format!("parsed cdp port: {cdp_port}"));
+    let bootstrap = ExtensionBootstrap::from_stdin()?;
+    log_line(format!(
+        "bootstrap parsed: port={}, extension_id={extension_id}",
+        bootstrap.nl_port
+    ));
+    let websocket_url = bootstrap.websocket_url(&extension_id);
+    log_line(format!("connecting websocket: {websocket_url}"));
 
-fn choose_target(cdp_port: u16, url_filter: Option<&str>) -> Result<DebugTarget> {
-    let endpoint = format!("http://127.0.0.1:{cdp_port}/json/list");
-    let response = ureq::get(&endpoint)
-        .call()
-        .with_context(|| format!("failed to reach CDP endpoint at {endpoint}"))?;
-    let targets: Vec<DebugTarget> = response
-        .into_json()
-        .context("failed to decode CDP /json/list response")?;
+    let (socket, _) = connect_async(&websocket_url)
+        .await
+        .with_context(|| format!("failed to connect extension websocket at {websocket_url}"))?;
+    log_line("websocket connected");
+    let (mut write, mut read) = socket.split();
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<NativeMethodCall>();
+    let emitter = SidecarEmitter::new(bootstrap.nl_token.clone(), outbound_tx);
 
-    targets
-        .into_iter()
-        .filter(|target| target.target_type == "page")
-        .find(|target| {
-            target.web_socket_debugger_url.is_some()
-                && url_filter
-                    .map(|filter| target.url.contains(filter) || target.title.contains(filter))
-                    .unwrap_or(true)
-        })
-        .ok_or_else(|| anyhow!("no matching CDP page target found on port {cdp_port}"))
-}
-
-fn inspect_selected_element(
-    cdp_port: u16,
-    iframe_title: &str,
-    selected_selector: &str,
-    target_url_contains: Option<&str>,
-) -> Result<Value> {
-    let target = choose_target(cdp_port, target_url_contains)?;
-    let ws_url = target
-        .web_socket_debugger_url
-        .clone()
-        .ok_or_else(|| anyhow!("selected target is missing a websocket debugger URL"))?;
-    let mut cdp = CdpClient::connect(&ws_url)?;
-
-    cdp.send_command("DOM.enable", json!({}))?;
-    cdp.send_command("CSS.enable", json!({}))?;
-    cdp.send_command("Runtime.enable", json!({}))?;
-
-    let document = cdp.send_command("DOM.getDocument", json!({ "depth": 1, "pierce": true }))?;
-    let root_node_id = document
-        .get("root")
-        .and_then(|root| root.get("nodeId"))
-        .and_then(Value::as_i64)
-        .ok_or_else(|| anyhow!("DOM.getDocument did not return a root nodeId"))?;
-
-    let iframe_selector = format!("iframe[title=\"{}\"]", escape_js_string(iframe_title));
-    let iframe_query = cdp.send_command(
-        "DOM.querySelector",
-        json!({
-            "nodeId": root_node_id,
-            "selector": iframe_selector,
-        }),
-    )?;
-    let iframe_node_id = iframe_query.get("nodeId").and_then(Value::as_i64).unwrap_or(0);
-
-    let node_id = if iframe_node_id > 0 {
-        let described = cdp.send_command(
-            "DOM.describeNode",
-            json!({
-                "nodeId": iframe_node_id,
-                "depth": 1,
-                "pierce": true,
-            }),
-        )?;
-        let content_document_node_id = described
-            .get("node")
-            .and_then(|node| node.get("contentDocument"))
-            .and_then(|content_document| content_document.get("nodeId"))
-            .and_then(Value::as_i64)
-            .ok_or_else(|| anyhow!("iframe contentDocument was not available through CDP"))?;
-
-        let selected_query = cdp.send_command(
-            "DOM.querySelector",
-            json!({
-                "nodeId": content_document_node_id,
-                "selector": selected_selector,
-            }),
-        )?;
-        selected_query
-            .get("nodeId")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| anyhow!("selected preview element was not found in iframe document"))?
-    } else {
-        let selected_query = cdp.send_command(
-            "DOM.querySelector",
-            json!({
-                "nodeId": root_node_id,
-                "selector": selected_selector,
-            }),
-        )?;
-        selected_query
-            .get("nodeId")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| anyhow!("selected preview element was not found in page document"))?
+    let state = AppState {
+        ai: AiRuntime::new(),
+        cancelled_requests: Arc::new(Mutex::new(HashSet::new())),
+        default_cdp_port: cdp_port,
+        emitter: emitter.clone(),
+        extension_id,
     };
 
-    let matched_styles = cdp.send_command("CSS.getMatchedStylesForNode", json!({ "nodeId": node_id }))?;
-    let computed_styles = cdp.send_command("CSS.getComputedStyleForNode", json!({ "nodeId": node_id }))?;
+    let writer_task = tokio::spawn(async move {
+        while let Some(call) = outbound_rx.recv().await {
+            let payload =
+                serde_json::to_string(&call).context("failed to serialize outbound event")?;
+            write
+                .send(Message::Text(payload))
+                .await
+                .context("failed to send outbound event over Neutralino websocket")?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
 
-    Ok(json!({
-        "ok": true,
-        "target": {
-            "id": target.id,
-            "title": target.title,
-            "type": target.target_type,
-            "url": target.url,
-        },
-        "nodeId": node_id,
-        "matchedStyles": matched_styles,
-        "computedStyles": computed_styles,
-    }))
-}
-
-fn json_header() -> Header {
-    Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
-        .expect("static header bytes should be valid")
-}
-
-fn cors_headers() -> [Header; 3] {
-    [
-        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
-            .expect("static header bytes should be valid"),
-        Header::from_bytes(
-            &b"Access-Control-Allow-Methods"[..],
-            &b"GET, POST, OPTIONS"[..],
-        )
-        .expect("static header bytes should be valid"),
-        Header::from_bytes(
-            &b"Access-Control-Allow-Headers"[..],
-            &b"Content-Type"[..],
-        )
-        .expect("static header bytes should be valid"),
-    ]
-}
-
-fn respond_json(request: tiny_http::Request, status: StatusCode, body: &Value) {
-    let response = Response::from_string(body.to_string())
-        .with_status_code(status)
-        .with_header(json_header());
-    let response = cors_headers()
-        .into_iter()
-        .fold(response, |response, header| response.with_header(header));
-    let _ = request.respond(response);
-}
-
-fn respond_empty(request: tiny_http::Request, status: StatusCode) {
-    let response = Response::empty(status);
-    let response = cors_headers()
-        .into_iter()
-        .fold(response, |response, header| response.with_header(header));
-    let _ = request.respond(response);
-}
-
-fn read_json_body<T: for<'de> Deserialize<'de>>(request: &mut tiny_http::Request) -> Result<T> {
-    let mut body = String::new();
-    request
-        .as_reader()
-        .read_to_string(&mut body)
-        .context("failed to read request body")?;
-    serde_json::from_str(&body).context("failed to parse JSON request body")
-}
-
-fn main() -> Result<()> {
-    let config = build_config();
-    let server = Server::http(("127.0.0.1", config.listen_port))
-        .map_err(|error| anyhow!("failed to bind bridge on {}: {error}", config.listen_port))?;
-
-    println!(
-        "cdp_bridge listening on http://127.0.0.1:{} (CDP port {})",
-        config.listen_port, config.cdp_port
-    );
-
-    for mut request in server.incoming_requests() {
-        let path = request.url().to_owned();
-        match (request.method(), path.as_str()) {
-            (&Method::Options, _) => {
-                respond_empty(request, StatusCode(204));
+    if AI_FEATURE_ENABLED {
+        log_line("starting background warmup");
+        let warmup_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = warmup_state.ai.warmup(&warmup_state.emitter).await {
+                log_line(format!("background warmup failed: {error:#}"));
+            } else {
+                log_line("warmup finished");
             }
-            (&Method::Get, "/health") => {
-                respond_json(
-                    request,
-                    StatusCode(200),
-                    &json!({
-                        "ok": true,
-                        "listenPort": config.listen_port,
-                        "cdpPort": config.cdp_port,
-                    }),
-                );
-            }
-            (&Method::Post, "/inspect-selected") => {
-                let payload = match read_json_body::<InspectSelectedRequest>(&mut request) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        respond_json(
-                            request,
-                            StatusCode(400),
-                            &json!({
-                                "ok": false,
-                                "error": error.to_string(),
-                            }),
-                        );
-                        continue;
-                    }
+        });
+    } else {
+        log_line("AI feature disabled; skipping warmup");
+    }
+
+    while let Some(message) = read.next().await {
+        let message = message.context("failed to read message from Neutralino websocket")?;
+        match message {
+            Message::Text(text) => {
+                let wire = parse_wire_message(&text)?;
+                let Some(request) = parse_incoming_request(&wire)? else {
+                    continue;
                 };
-                let iframe_title = payload
-                    .iframe_title
-                    .unwrap_or_else(|| "project-preview".to_string());
-                let selected_selector = payload
-                    .selected_selector
-                    .unwrap_or_else(|| ".__nx-preview-selected".to_string());
-                let cdp_port = payload.cdp_port.unwrap_or(config.cdp_port);
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_request(request, state.clone()).await {
+                        log_line(format!("request handler error: {error:#}"));
+                        eprintln!("{error:#}");
+                    }
+                });
+            }
+            Message::Binary(binary) => {
+                let text = String::from_utf8(binary.to_vec())
+                    .context("failed to decode binary websocket payload as UTF-8")?;
+                let wire = parse_wire_message(&text)?;
+                let Some(request) = parse_incoming_request(&wire)? else {
+                    continue;
+                };
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_request(request, state.clone()).await {
+                        log_line(format!("request handler error: {error:#}"));
+                        eprintln!("{error:#}");
+                    }
+                });
+            }
+            Message::Close(_) => {
+                log_line("websocket closed");
+                break;
+            }
+            _ => {}
+        }
+    }
 
-                match inspect_selected_element(
-                    cdp_port,
-                    &iframe_title,
-                    &selected_selector,
-                    payload.target_url_contains.as_deref(),
-                ) {
-                    Ok(body) => respond_json(request, StatusCode(200), &body),
-                    Err(error) => respond_json(
-                        request,
-                        StatusCode(500),
-                        &json!({
-                            "ok": false,
-                            "error": error.to_string(),
-                        }),
-                    ),
+    log_line("sidecar shutting down");
+    writer_task.abort();
+    Ok(())
+}
+
+async fn handle_request(request: IncomingRequest, state: AppState) -> Result<()> {
+    match request {
+        IncomingRequest::SidecarHealth(request) => {
+            log_line(format!("handling {}", SidecarMethod::SidecarHealth.as_str()));
+            let payload = state.current_health().await;
+            state.emitter.broadcast_result(
+                &request.request_id,
+                SidecarMethod::SidecarHealth,
+                &payload,
+            )?;
+        }
+        IncomingRequest::ModelStatus(request) => {
+            log_line(format!("handling {}", SidecarMethod::ModelStatus.as_str()));
+            let payload: ModelStatusSnapshot = state.current_ai_status().await;
+            state.emitter.broadcast_result(
+                &request.request_id,
+                SidecarMethod::ModelStatus,
+                &payload,
+            )?;
+        }
+        IncomingRequest::CdpInspectSelected(request) => {
+            log_line(format!("handling {}", SidecarMethod::CdpInspectSelected.as_str()));
+            match inspect_selected_element(&request).await {
+                Ok(payload) => state.emitter.broadcast_result(
+                    &request.request_id,
+                    SidecarMethod::CdpInspectSelected,
+                    &payload,
+                )?,
+                Err(error) => state.emitter.broadcast_error(
+                    &request.request_id,
+                    SidecarMethod::CdpInspectSelected,
+                    error,
+                )?,
+            }
+        }
+        IncomingRequest::AgentCancel(request) => {
+            log_line(format!("handling {}", SidecarMethod::AgentCancel.as_str()));
+            state
+                .cancelled_requests
+                .lock()
+                .await
+                .insert(request.target_request_id.clone());
+            let payload = CancelResponse {
+                cancelled: true,
+                target_request_id: request.target_request_id,
+            };
+            state.emitter.broadcast_result(
+                &request.request_id,
+                SidecarMethod::AgentCancel,
+                &payload,
+            )?;
+        }
+        IncomingRequest::AgentRun(request) => {
+            log_line(format!("handling {}", SidecarMethod::AgentRun.as_str()));
+            if !AI_FEATURE_ENABLED {
+                state.emitter.broadcast_error(
+                    &request.request_id,
+                    SidecarMethod::AgentRun,
+                    "AI feature is currently disabled.",
+                )?;
+                return Ok(());
+            }
+            if is_cancelled(&state, &request.request_id).await {
+                state.emitter.broadcast_error(
+                    &request.request_id,
+                    SidecarMethod::AgentRun,
+                    "AI request was cancelled before execution started.",
+                )?;
+                return Ok(());
+            }
+
+            let result: Result<AiResponse> = state.ai.run_agent(&request, &state.emitter).await;
+
+            if is_cancelled(&state, &request.request_id).await {
+                state.emitter.broadcast_error(
+                    &request.request_id,
+                    SidecarMethod::AgentRun,
+                    "AI request was cancelled.",
+                )?;
+                clear_cancellation(&state, &request.request_id).await;
+                return Ok(());
+            }
+
+            match result {
+                Ok(payload) => {
+                    state.emitter.broadcast_result(
+                        &request.request_id,
+                        SidecarMethod::AgentRun,
+                        &payload,
+                    )?;
+                }
+                Err(error) => {
+                    state.emitter.broadcast_error(
+                        &request.request_id,
+                        SidecarMethod::AgentRun,
+                        error,
+                    )?;
                 }
             }
-            _ => {
-                let body = serde_json::to_value(ErrorBody {
-                    ok: false,
-                    error: "Not found",
-                })
-                .unwrap_or_else(|_| json!({ "ok": false, "error": "Not found" }));
-                respond_json(request, StatusCode(404), &body);
-            }
+
+            clear_cancellation(&state, &request.request_id).await;
         }
     }
 
     Ok(())
+}
+
+async fn clear_cancellation(state: &AppState, request_id: &str) {
+    state.cancelled_requests.lock().await.remove(request_id);
+}
+
+async fn is_cancelled(state: &AppState, request_id: &str) -> bool {
+    state.cancelled_requests.lock().await.contains(request_id)
+}
+
+fn parse_arg_u16(flag: &str, default: u16) -> u16 {
+    let args: Vec<String> = env::args().collect();
+    args.windows(2)
+        .find(|window| window[0] == flag)
+        .and_then(|window| window[1].parse::<u16>().ok())
+        .unwrap_or(default)
 }

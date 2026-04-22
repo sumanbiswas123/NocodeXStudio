@@ -31,7 +31,7 @@ type UseScreenshotGalleryParams = {
   previewFrameRef: React.RefObject<HTMLIFrameElement | null>;
   selectedPreviewHtmlRef: React.RefObject<string | null>;
   filePathIndexRef: React.RefObject<Record<string, string>>;
-  previewMountBasePath: string;
+  previewMountBasePath: string | null;
   deviceMode: ScreenshotMetadata["deviceMode"];
   tabletModel: ScreenshotMetadata["tabletModel"];
   tabletOrientation: ScreenshotMetadata["tabletOrientation"];

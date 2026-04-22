@@ -64,6 +64,10 @@ export interface PdfAnnotationRecord {
   annotationText: string;
   threadEntries: PdfThreadEntry[];
   annoPdfPage: number;
+  pdfOrderIndex?: number;
+  sequenceIndex?: number;
+  threadRootId?: string;
+  threadUpdatedAt?: string | null;
   subtype: string;
   pdfContextText?: string;
   position: PdfAnnotationPosition;
@@ -114,11 +118,14 @@ export interface PdfPageHashRecord {
   pdfPageNumber: number;
   hash: bigint;
   image?: string;
+  text?: string;
 }
 
 export interface ThumbHashRecord extends ThumbRecord {
   hash: bigint;
 }
+
+type MappableSlideRecord = SlideRecord | ThumbHashRecord;
 
 export interface PdfPageMatch {
   pdfPageNumber: number;
@@ -174,6 +181,17 @@ function cleanText(value: unknown): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function cleanAnnotationText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/\n[ \t\f\v]+/g, "\n")
+    .replace(/[ \t\f\v]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function extractAnnotationAuthor(annotation: any): string {
   const candidates = [
     annotation?.title,
@@ -201,7 +219,7 @@ function extractAnnotationText(annotation: any): string {
     typeof annotation?.richText === "string" ? annotation.richText : "",
     typeof annotation?.richText?.str === "string" ? annotation.richText.str : "",
   ]
-    .map(cleanText)
+    .map(cleanAnnotationText)
     .filter(Boolean);
 
   return [...new Set(values)].join(" | ");
@@ -210,19 +228,100 @@ function extractAnnotationText(annotation: any): string {
 function normalizeReferenceKey(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "string" || typeof value === "number") {
-    const normalized = String(value).trim();
+    const normalized = String(value).trim().replace(/\s+/g, " ");
+    const indirectRefMatch = normalized.match(/^(\d+)\s+(\d+)\s+R$/i);
+    if (indirectRefMatch) {
+      return `${indirectRefMatch[1]}:${indirectRefMatch[2]}`;
+    }
     return normalized || null;
   }
   if (Array.isArray(value) && value.length > 0) {
+    if (
+      value.length >= 2 &&
+      Number.isFinite(Number(value[0])) &&
+      Number.isFinite(Number(value[1]))
+    ) {
+      return `${Number(value[0])}:${Number(value[1])}`;
+    }
     return normalizeReferenceKey(value[0]);
   }
   if (typeof value === "object") {
     const input = value as Record<string, unknown>;
+    if (input.num !== undefined || input.gen !== undefined) {
+      const num = Number(input.num);
+      const gen = Number(input.gen ?? 0);
+      if (Number.isFinite(num) && Number.isFinite(gen)) {
+        return `${num}:${gen}`;
+      }
+    }
     if (input.id !== undefined) return normalizeReferenceKey(input.id);
     if (input.num !== undefined) return normalizeReferenceKey(input.num);
     if (input.ref !== undefined) return normalizeReferenceKey(input.ref);
+    if (input.toString && typeof input.toString === "function") {
+      const asString = String(input.toString());
+      if (asString && asString !== "[object Object]") {
+        return normalizeReferenceKey(asString);
+      }
+    }
   }
   return null;
+}
+
+function normalizePdfDate(value: unknown): string | null {
+  const text = cleanText(value);
+  if (!text) return null;
+  const compact = text.replace(/^D:/i, "").replace(/[^0-9]/g, "");
+  if (!compact) return null;
+  const padded = `${compact}00000000000000`.slice(0, 14);
+  const year = padded.slice(0, 4);
+  if (!year || year === "0000") return null;
+  const month = padded.slice(4, 6) || "01";
+  const day = padded.slice(6, 8) || "01";
+  const hour = padded.slice(8, 10) || "00";
+  const minute = padded.slice(10, 12) || "00";
+  const second = padded.slice(12, 14) || "00";
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
+}
+
+function extractAnnotationDate(annotation: any): string | null {
+  const candidates = [
+    annotation?.modificationDate,
+    annotation?.modDate,
+    annotation?.modificationDateObj?.str,
+    annotation?.creationDate,
+    annotation?.creationDateObj?.str,
+    annotation?.M,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizePdfDate(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function annotationSortTimestamp(annotation: any, fallbackIndex: number): number {
+  const date = extractAnnotationDate(annotation);
+  const parsed = date ? Date.parse(date) : Number.NaN;
+  if (Number.isFinite(parsed)) return parsed;
+  return fallbackIndex;
+}
+
+function compareThreadMembers(
+  left: { index: number; isReply: boolean; annotation: any; key: string },
+  right: { index: number; isReply: boolean; annotation: any; key: string },
+  rootKey: string,
+): number {
+  const leftIsPopup = left.annotation?.subtype === "Popup" ? 1 : 0;
+  const rightIsPopup = right.annotation?.subtype === "Popup" ? 1 : 0;
+  const leftIsRoot = left.key === rootKey ? 0 : 1;
+  const rightIsRoot = right.key === rootKey ? 0 : 1;
+  if (leftIsRoot !== rightIsRoot) return leftIsRoot - rightIsRoot;
+  if (left.isReply !== right.isReply) return Number(left.isReply) - Number(right.isReply);
+  if (leftIsPopup !== rightIsPopup) return leftIsPopup - rightIsPopup;
+  const leftTimestamp = annotationSortTimestamp(left.annotation, left.index);
+  const rightTimestamp = annotationSortTimestamp(right.annotation, right.index);
+  if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp;
+  return left.index - right.index;
 }
 
 function getAnnotationKey(annotation: any, fallbackIndex: number): string {
@@ -238,9 +337,13 @@ function resolveInReplyToKey(annotation: any): string | null {
   return (
     normalizeReferenceKey(annotation?.inReplyTo) ||
     normalizeReferenceKey(annotation?.inReplyToId) ||
+    normalizeReferenceKey(annotation?.inReplyToObj) ||
     normalizeReferenceKey(annotation?.IRT) ||
     normalizeReferenceKey(annotation?.irt) ||
+    normalizeReferenceKey(annotation?.irtObj) ||
     normalizeReferenceKey(annotation?.inReplyToRef) ||
+    normalizeReferenceKey(annotation?.replyTo) ||
+    normalizeReferenceKey(annotation?.replyToId) ||
     null
   );
 }
@@ -250,8 +353,39 @@ function resolveParentAnnotationKey(annotation: any): string | null {
     normalizeReferenceKey(annotation?.parentId) ||
     normalizeReferenceKey(annotation?.parent) ||
     normalizeReferenceKey(annotation?.parentRef) ||
+    normalizeReferenceKey(annotation?.parentAnnotationId) ||
+    normalizeReferenceKey(annotation?.parentAnnotation) ||
     null
   );
+}
+
+function getInlineReplies(annotation: any): any[] {
+  const candidates = [
+    annotation?.replies,
+    annotation?.replyAnnotations,
+    annotation?.children,
+    annotation?.thread,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate.filter(Boolean);
+  }
+  return [];
+}
+
+function expandAnnotationThreads(annotations: any[]): any[] {
+  const output: any[] = [];
+  const visit = (annotation: any, parentKey: string | null) => {
+    if (!annotation) return;
+    const key = getAnnotationKey(annotation, output.length);
+    const nextAnnotation =
+      parentKey && !resolveInReplyToKey(annotation) && !resolveParentAnnotationKey(annotation)
+        ? { ...annotation, inReplyTo: parentKey }
+        : annotation;
+    output.push(nextAnnotation);
+    getInlineReplies(annotation).forEach((reply) => visit(reply, key));
+  };
+  annotations.forEach((annotation) => visit(annotation, null));
+  return output;
 }
 
 function normalizeRect(rect: unknown, pageHeight: number): PdfAnnotationPosition {
@@ -369,9 +503,10 @@ function buildThreadedPdfAnnotationsForPage({
   pageTextFragments: PageTextFragment[];
 }): PdfAnnotationRecord[] {
   if (!annotations.length) return [];
+  const expandedAnnotations = expandAnnotationThreads(annotations);
 
   const annotationLookup = new Map<string, { key: string; index: number; annotation: any }>();
-  annotations.forEach((annotation, index) => {
+  expandedAnnotations.forEach((annotation, index) => {
     const key = getAnnotationKey(annotation, index);
     annotationLookup.set(key, { key, index, annotation });
   });
@@ -400,7 +535,7 @@ function buildThreadedPdfAnnotationsForPage({
     }
   >();
 
-  annotations.forEach((annotation, index) => {
+  expandedAnnotations.forEach((annotation, index) => {
     const key = getAnnotationKey(annotation, index);
     const replyTo = resolveInReplyToKey(annotation);
     const popupParent = annotation.subtype === "Popup" ? resolveParentAnnotationKey(annotation) : null;
@@ -416,14 +551,16 @@ function buildThreadedPdfAnnotationsForPage({
 
   const extracted: PdfAnnotationRecord[] = [];
   threads.forEach((thread, rootKey) => {
-    const orderedMembers = [...thread.members].sort((left, right) => left.index - right.index);
+    const orderedMembers = [...thread.members].sort((left, right) =>
+      compareThreadMembers(left, right, rootKey),
+    );
     const threadEntries: PdfThreadEntry[] = [];
     const seen = new Set<string>();
     let hasComment = false;
 
     orderedMembers.forEach((member) => {
       const author = extractAnnotationAuthor(member.annotation);
-      const text = cleanText(extractAnnotationText(member.annotation));
+      const text = cleanAnnotationText(extractAnnotationText(member.annotation));
       
       // Filter out AI-generated annotations (Brand Guardian, Rule Engine Logs)
       const isNoise = 
@@ -465,6 +602,13 @@ function buildThreadedPdfAnnotationsForPage({
       annotationText,
       threadEntries,
       annoPdfPage: pageNumber,
+      pdfOrderIndex: extracted.length,
+      sequenceIndex: Math.min(...orderedMembers.map((member) => member.index)),
+      threadRootId: rootKey,
+      threadUpdatedAt:
+        orderedMembers
+          .map((member) => extractAnnotationDate(member.annotation))
+          .find(Boolean) || null,
       subtype: rootSubtype,
       pdfContextText,
       position: anchorPosition,
@@ -495,6 +639,16 @@ function isIndexHtmlOutsideShared(pathValue: string): boolean {
   return fileName === "index.html" && !normalized.includes("/shared/");
 }
 
+function getVersionedSlideLabel(name: string): string {
+  const normalizedName = String(name || "").trim();
+  const versionSuffixMatch = normalizedName.match(
+    /_\d{4}_[A-Za-z]{2,}\d+(?:\.\d+)?_(.+)$/i,
+  );
+  if (versionSuffixMatch) return versionSuffixMatch[1];
+  const suffixMatch = normalizedName.match(/_([^_/]+)$/);
+  return suffixMatch ? suffixMatch[1] : normalizedName;
+}
+
 export function buildProjectSlideOrder(files: FileMap): SlideRecord[] {
   const allIndexSlides = Object.values(files)
     .filter((file) => file.type === "html" && isIndexHtmlOutsideShared(file.path))
@@ -503,10 +657,17 @@ export function buildProjectSlideOrder(files: FileMap): SlideRecord[] {
       const parts = normalized.split("/").filter(Boolean);
       const slideId = parts[parts.length - 2] || normalized;
       const baseName = normalized.split("/").pop() || normalized;
+      const compactSlideId = getVersionedSlideLabel(slideId);
       return {
         slideId,
         filePath: normalized,
-        lookupKeys: [slideId, file.name, baseName, normalized].filter(Boolean),
+        lookupKeys: [
+          slideId,
+          compactSlideId,
+          file.name,
+          baseName,
+          normalized,
+        ].filter(Boolean),
       };
     })
     .sort((left, right) =>
@@ -652,6 +813,18 @@ function extractNearbyPdfText(
   return cleanText(nearby.join(" "));
 }
 
+function joinPageTextFragments(fragments: PageTextFragment[]): string {
+  return cleanText(
+    [...fragments]
+      .sort((a, b) => {
+        if (Math.abs(a.y - b.y) <= 6) return a.x - b.x;
+        return a.y - b.y;
+      })
+      .map((fragment) => fragment.text)
+      .join(" "),
+  );
+}
+
 function createCanvas(width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -744,6 +917,10 @@ export async function renderPdfPageHashes(
   for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
     const page = await pdfDocument.getPage(pageNumber);
     const baseViewport = page.getViewport({ scale: 1 });
+    const pageTextFragments = await extractPageTextFragments(
+      page,
+      round(baseViewport.height),
+    );
     const renderScale = Math.max(0.2, renderWidth / Math.max(1, baseViewport.width));
     const viewport = page.getViewport({ scale: renderScale });
     const canvas = createCanvas(
@@ -757,6 +934,7 @@ export async function renderPdfPageHashes(
       pdfPageNumber: pageNumber,
       hash: computeDHashFromCanvasSource(canvas),
       image: canvas.toDataURL("image/jpeg", 0.7),
+      text: joinPageTextFragments(pageTextFragments),
     });
   }
 
@@ -785,6 +963,7 @@ async function extractPdfAnnotationsAndPageHashes(
     };
     const pageAnnotations = await page.getAnnotations({ intent: "display" });
     const pageTextFragments = await extractPageTextFragments(page, pageSize.height);
+    const pageText = joinPageTextFragments(pageTextFragments);
     const supported = pageAnnotations.filter((annotation: any) =>
       SUPPORTED_ANNOTATION_SUBTYPES.has(annotation?.subtype),
     );
@@ -823,6 +1002,7 @@ async function extractPdfAnnotationsAndPageHashes(
       pdfPageHashes.push({
         pdfPageNumber: pageNumber,
         hash: computeDHashFromCanvasSource(canvas),
+        text: pageText,
       });
     }
   }
@@ -864,6 +1044,13 @@ type ThumbAnchor = {
   page: PdfPageHashRecord;
   distance: number;
   confidence: number;
+};
+
+type SlideAnchor = {
+  slide: MappableSlideRecord;
+  slideIndex: number;
+  pdfPageNumber: number;
+  matchMethod: string;
 };
 
 function buildThumbAnchors(
@@ -957,6 +1144,53 @@ function getThumbOrderMap(thumbHashes: ThumbHashRecord[]): Map<string, number> {
   );
 }
 
+function normalizeSlideTextToken(value: string): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function slideTextMatchScore(pdfText: string, slide: MappableSlideRecord): number {
+  const normalizedText = normalizeSlideTextToken(pdfText);
+  if (!normalizedText) return 0;
+  const folderName = slide.filePath.split("/").filter(Boolean).slice(-2, -1)[0] || "";
+  const compactFolderName = getVersionedSlideLabel(folderName);
+  const candidates = [
+    slide.slideId,
+    getVersionedSlideLabel(slide.slideId),
+    ...slide.lookupKeys,
+    folderName,
+    compactFolderName,
+  ]
+    .map((value) => normalizeSlideTextToken(value))
+    .filter(Boolean);
+  let bestScore = 0;
+  candidates.forEach((candidate) => {
+    if (!candidate) return;
+    if (normalizedText.includes(candidate)) {
+      bestScore = Math.max(bestScore, candidate.length >= 3 ? 100 : 60);
+    }
+    const numeric = candidate.match(/\d{2,}$/)?.[0] || "";
+    if (numeric && normalizedText.includes(numeric)) {
+      bestScore = Math.max(bestScore, numeric.length >= 3 ? 95 : 55);
+    }
+  });
+  return bestScore;
+}
+
+function findSlideByPdfText(
+  pdfText: string,
+  slides: MappableSlideRecord[],
+): MappableSlideRecord | null {
+  let best: { slide: MappableSlideRecord; score: number } | null = null;
+  slides.forEach((slide) => {
+    const score = slideTextMatchScore(pdfText, slide);
+    if (score <= 0) return;
+    if (!best || score > best.score) {
+      best = { slide, score };
+    }
+  });
+  return best && best.score >= 95 ? best.slide : null;
+}
+
 export function clusterPdfPagesByHashes(
   pdfPageHashes: PdfPageHashRecord[],
   pdfPageMatches: PdfPageMatch[],
@@ -1046,6 +1280,7 @@ export function clusterPdfPagesWithDeepIntelligence(
   pdfPageMatches: PdfPageMatch[],
   thumbHashes: ThumbHashRecord[],
   annotations: PdfAnnotationRecord[],
+  slideRecords: SlideRecord[] = thumbHashes,
   threshold = DEFAULT_HASH_DISTANCE_THRESHOLD,
 ): {
   pageClusters: PdfPageClusterRecord[];
@@ -1060,7 +1295,12 @@ export function clusterPdfPagesWithDeepIntelligence(
   const pageClusters: PdfPageClusterRecord[] = [];
   const pageToSlide = new Map<number, ThumbHashRecord>();
   let currentAnchor: ThumbAnchor | null = null;
+  let currentSlideAnchor: SlideAnchor | null = null;
   let anchorCursor = 0;
+  const thumbOrder = getThumbOrderMap(thumbHashes);
+  const slideOrder = new Map(
+    slideRecords.map((slide, index) => [slide.filePath, index]),
+  );
 
   for (const match of pdfPageMatches) {
     // 1. Advance sequence anchor
@@ -1072,71 +1312,145 @@ export function clusterPdfPagesWithDeepIntelligence(
       anchorCursor += 1;
     }
 
-    // 2. Extract keywords from this PDF page's annotations for Deep Match
-    const pageAnnos = annotations.filter(a => a.annoPdfPage === match.pdfPageNumber);
-    const pdfTextContent = pageAnnos.map(a => a.annotationText + ' ' + (a.pdfContextText || '')).join(' ');
-    
-    // 3. Try Deep Intelligence Match
-    const pageHashRecord = pdfPageHashes.find(h => h.pdfPageNumber === match.pdfPageNumber);
-    const deepResult = deepScanMatcher.findBestMatch(
-      pdfTextContent, 
-      pageHashRecord?.hash || 0n,
-      { 
-        currentSlideId: currentAnchor?.thumb.slideId,
-        pdfPageNumber: match.pdfPageNumber 
-      }
-    );
-
     let assignedThumb: ThumbHashRecord | null = null;
     let mappedSlideId: string | null = null;
     let mappedFilePath: string | null = null;
     let detectedPageType: PdfPageClusterRecord["detectedPageType"] = "Unmapped";
     let matchMethod = "No Match";
+    let parentMainSlidePdfPage: number | null = null;
+    const pageAnchor = anchorByPage.get(match.pdfPageNumber) || null;
+    const nextAnchor = anchorCursor < anchors.length ? anchors[anchorCursor] : null;
+    const pageAnnos = annotations.filter(a => a.annoPdfPage === match.pdfPageNumber);
+    const pageHashRecord = pdfPageHashes.find(h => h.pdfPageNumber === match.pdfPageNumber);
+    const pdfTextContent = [
+      pageHashRecord?.text || "",
+      ...pageAnnos.map(a => `${a.annotationText} ${a.pdfContextText || ""}`),
+    ].join(" ");
 
-    if (deepResult) {
+    if (pageAnchor) {
+      assignedThumb = pageAnchor.thumb;
+      mappedSlideId = assignedThumb.slideId;
+      mappedFilePath = assignedThumb.filePath;
+      const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
+      detectedPageType = isSharedPath ? "Child/Popup" : "Main";
+      parentMainSlidePdfPage = pageAnchor.page.pdfPageNumber;
+      matchMethod = "dHash anchor";
+      if (detectedPageType === "Main") {
+        currentSlideAnchor = {
+          slide: assignedThumb,
+          slideIndex: slideOrder.get(assignedThumb.filePath) ?? pageAnchor.slideIndex,
+          pdfPageNumber: match.pdfPageNumber,
+          matchMethod,
+        };
+      }
+    } else if (match.bestThumb && match.hammingDistance <= STRONG_HASH_DISTANCE_THRESHOLD) {
+      assignedThumb = match.bestThumb;
+      mappedSlideId = assignedThumb.slideId;
+      mappedFilePath = assignedThumb.filePath;
+      const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
+      detectedPageType = isSharedPath ? "Child/Popup" : "Main";
+      parentMainSlidePdfPage = match.pdfPageNumber;
+      matchMethod = "dHash direct";
+      if (detectedPageType === "Main") {
+        currentSlideAnchor = {
+          slide: assignedThumb,
+          slideIndex: slideOrder.get(assignedThumb.filePath) ?? -1,
+          pdfPageNumber: match.pdfPageNumber,
+          matchMethod,
+        };
+      }
+    }
+
+    if (!mappedSlideId) {
+      const textMatchedSlide = findSlideByPdfText(pdfTextContent, slideRecords);
+      if (textMatchedSlide) {
+        assignedThumb = "hash" in textMatchedSlide ? textMatchedSlide : null;
+        mappedSlideId = textMatchedSlide.slideId;
+        mappedFilePath = textMatchedSlide.filePath;
+        const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
+        detectedPageType = isSharedPath ? "Child/Popup" : "Main";
+        parentMainSlidePdfPage = match.pdfPageNumber;
+        matchMethod = "Slide text match";
+        if (detectedPageType === "Main") {
+          currentSlideAnchor = {
+            slide: textMatchedSlide,
+            slideIndex: slideOrder.get(textMatchedSlide.filePath) ?? -1,
+            pdfPageNumber: match.pdfPageNumber,
+            matchMethod,
+          };
+        }
+      }
+    }
+
+    // Sequence fallback for no-thumb popup pages. If a PDF page follows a
+    // confirmed main slide and has no strong visual match, keep it attached to
+    // that current slide instead of letting broad semantic text match slide 001.
+    if (!mappedSlideId) {
+      if (currentSlideAnchor) {
+        mappedSlideId = currentSlideAnchor.slide.slideId;
+        mappedFilePath = currentSlideAnchor.slide.filePath;
+        assignedThumb = "hash" in currentSlideAnchor.slide
+          ? currentSlideAnchor.slide
+          : null;
+        detectedPageType = "Child/Popup";
+        parentMainSlidePdfPage = currentSlideAnchor.pdfPageNumber;
+        matchMethod = "Previous main slide popup";
+      } else if (currentAnchor) {
+        const bestThumbIndex = match.bestThumb
+          ? thumbOrder.get(match.bestThumb.filePath) ?? -1
+          : -1;
+        const withinCurrentSequence =
+          bestThumbIndex < 0 ||
+          (bestThumbIndex >= currentAnchor.slideIndex &&
+            (!nextAnchor || bestThumbIndex <= nextAnchor.slideIndex));
+        const weakVisualStillPlausible =
+          match.bestThumb && match.hammingDistance <= DEFAULT_HASH_DISTANCE_THRESHOLD;
+
+        if (weakVisualStillPlausible && withinCurrentSequence) {
+          assignedThumb = match.bestThumb;
+          mappedSlideId = assignedThumb.slideId;
+          mappedFilePath = assignedThumb.filePath;
+          const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
+          detectedPageType = isSharedPath ? "Child/Popup" : "Main";
+          parentMainSlidePdfPage = detectedPageType === "Main"
+            ? match.pdfPageNumber
+            : currentAnchor.page.pdfPageNumber;
+          matchMethod = "dHash weak direct";
+        } else {
+          assignedThumb = currentAnchor.thumb;
+          mappedSlideId = assignedThumb.slideId;
+          mappedFilePath = assignedThumb.filePath;
+          detectedPageType = "Child/Popup";
+          parentMainSlidePdfPage = currentAnchor.page.pdfPageNumber;
+          matchMethod = "dHash clustered popup";
+        }
+      }
+    }
+
+    // Deep matching is useful before the first reliable anchor or when visual
+    // sequencing gives us no parent. It should not override current-slide
+    // popup inheritance.
+    const deepResult = !mappedSlideId
+      ? deepScanMatcher.findBestMatch(
+          pdfTextContent,
+          pageHashRecord?.hash || 0n,
+          {
+            currentSlideId: currentAnchor?.thumb.slideId,
+            pdfPageNumber: match.pdfPageNumber,
+          },
+        )
+      : null;
+
+    if (!mappedSlideId && deepResult) {
       assignedThumb = thumbHashes.find(t => t.slideId === deepResult.targetId) || null;
       mappedSlideId = deepResult.targetId;
       mappedFilePath = deepResult.filePath;
       // VITAL FIX: Shared folder files can NEVER be "Main" slides.
       const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
       detectedPageType = isSharedPath ? "Child/Popup" : (deepResult.pageType as any);
+      parentMainSlidePdfPage =
+        detectedPageType === "Main" ? match.pdfPageNumber : currentAnchor?.page.pdfPageNumber || null;
       matchMethod = `Deep ${deepResult.method} match`;
-    } 
-    
-    // Direct dHash match (Strong signal, even if not an anchor)
-    if (!mappedSlideId && match.bestThumb && match.hammingDistance <= STRONG_HASH_DISTANCE_THRESHOLD) {
-      assignedThumb = match.bestThumb;
-      mappedSlideId = assignedThumb.slideId;
-      mappedFilePath = assignedThumb.filePath;
-      // VITAL FIX: Shared folder files can NEVER be "Main" slides.
-      // We use a robust regex to handle Windows, POSIX, and "start of string" cases.
-      const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
-      detectedPageType = isSharedPath ? "Child/Popup" : "Main";
-      matchMethod = "dHash direct";
-    }
-
-    // Fallback block if no match found yet
-    if (!mappedSlideId) {
-
-      // Fallback to legacy anchors for sequence continuity if deep match fails on a "Main" looking page
-      if (anchorByPage.has(match.pdfPageNumber)) {
-        assignedThumb = anchorByPage.get(match.pdfPageNumber)!.thumb;
-        mappedSlideId = assignedThumb.slideId;
-        mappedFilePath = assignedThumb.filePath;
-        const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
-        detectedPageType = isSharedPath ? "Child/Popup" : "Main";
-        matchMethod = "dHash anchor";
-      } else if (currentAnchor) {
-        assignedThumb = currentAnchor.thumb;
-        mappedSlideId = assignedThumb.slideId;
-        mappedFilePath = assignedThumb.filePath;
-        // Default to "Main" instead of "Child/Popup" to prevent accidental popup triggers
-        // BUT exclude shared folder indices using robust path checking.
-        const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(mappedFilePath || "");
-        detectedPageType = isSharedPath ? "Child/Popup" : "Main"; 
-        matchMethod = "dHash clustered (persistence)";
-      }
-
     }
 
     if (assignedThumb) {
@@ -1148,7 +1462,7 @@ export function clusterPdfPagesWithDeepIntelligence(
       detectedPageType,
       mappedSlideId,
       mappedFilePath,
-      parentMainSlidePdfPage: currentAnchor?.page.pdfPageNumber || null,
+      parentMainSlidePdfPage,
       matchMethod,
     });
 
@@ -1637,9 +1951,9 @@ export function mapPdfAnnotationsToPageClusters(
     }
   };
 
-  // --- PRE-CALCULATE PAGE CONTEXT MEMORY ---
+  // --- PRE-CALCULATE EXPLICIT PAGE CONTEXT ---
   const pageToParentSlideMap = new Map<number, { path: string; slideId: string | null }>();
-  let lastSeenMainSlide: { path: string; slideId: string | null } | null = null;
+  const mainSlideByPdfPage = new Map<number, { path: string; slideId: string | null }>();
   
   // Sort clusters by PDF page number to establish sequence
   const sortedClusters = [...pageClusters].sort((a, b) => a.pdfPageNumber - b.pdfPageNumber);
@@ -1647,10 +1961,16 @@ export function mapPdfAnnotationsToPageClusters(
     // Defensive guard: even if clustering logic fails, never inherit a shared path as a "Main" slide.
     const isSharedPath = /(^|[\\/])shared([\\/]|$)/i.test(cluster.mappedFilePath || "");
     if (cluster.detectedPageType === "Main" && !isSharedPath) {
-      lastSeenMainSlide = { path: cluster.mappedFilePath!, slideId: cluster.mappedSlideId };
+      const mainSlide = { path: cluster.mappedFilePath!, slideId: cluster.mappedSlideId };
+      mainSlideByPdfPage.set(cluster.pdfPageNumber, mainSlide);
+      pageToParentSlideMap.set(cluster.pdfPageNumber, mainSlide);
+      continue;
     }
-    if (lastSeenMainSlide) {
-      pageToParentSlideMap.set(cluster.pdfPageNumber, lastSeenMainSlide);
+    if (cluster.parentMainSlidePdfPage !== null) {
+      const parentSlide = mainSlideByPdfPage.get(cluster.parentMainSlidePdfPage);
+      if (parentSlide) {
+        pageToParentSlideMap.set(cluster.pdfPageNumber, parentSlide);
+      }
     }
   }
 
@@ -1671,9 +1991,12 @@ export function mapPdfAnnotationsToPageClusters(
     // If it's a semantic popup OR if the visual match is in shared folder,
     // we strictly prioritize the PARENT SLIDE path.
     // We MUST search the parent slide's HTML to find the local triggers/context.
+    const canUseParentSlide =
+      cluster?.detectedPageType === "Child/Popup" ||
+      Boolean(isSemanticMappingTarget || isClusterShared);
     const targetFilePathForSearch = (isSemanticMappingTarget || isClusterShared)
       ? (parentSlide?.path || cluster?.mappedFilePath || null)
-      : (cluster?.mappedFilePath || parentSlide?.path || null);
+      : (cluster?.mappedFilePath || (canUseParentSlide ? parentSlide?.path : null) || null);
     
     const htmlContent =
       targetFilePathForSearch &&
@@ -1864,18 +2187,37 @@ export async function buildMappedPdfAnnotations(options: {
     ? await renderPdfPageHashes(mappingPdfData)
     : annotationsAndHashes?.pdfPageHashes || [];
 
+  const slideRecords = buildProjectSlideOrder(files);
   const thumbs = collectProjectThumbs(files, absolutePathIndex);
   if (!thumbs.length) {
     return mapPdfAnnotationsToPageClusters(
       annotations,
-      pdfPageHashes.map((page) => ({
-        pdfPageNumber: page.pdfPageNumber,
-        detectedPageType: "Unmapped",
-        mappedSlideId: null,
-        mappedFilePath: null,
-        parentMainSlidePdfPage: null,
-        matchMethod: "No thumbnails",
-      })),
+      pdfPageHashes.map((page) => {
+        const pageAnnos = annotations.filter(
+          (annotation) => annotation.annoPdfPage === page.pdfPageNumber,
+        );
+        const pdfTextContent = pageAnnos
+          .map(
+            (annotation) =>
+              `${annotation.annotationText} ${annotation.pdfContextText || ""}`,
+          )
+          .concat(page.text || "")
+          .join(" ");
+        const textMatchedSlide = findSlideByPdfText(
+          pdfTextContent,
+          slideRecords,
+        );
+        return {
+          pdfPageNumber: page.pdfPageNumber,
+          detectedPageType: textMatchedSlide ? "Main" : "Unmapped",
+          mappedSlideId: textMatchedSlide?.slideId || null,
+          mappedFilePath: textMatchedSlide?.filePath || null,
+          parentMainSlidePdfPage: textMatchedSlide
+            ? page.pdfPageNumber
+            : null,
+          matchMethod: textMatchedSlide ? "Slide text match" : "No thumbnails",
+        };
+      }),
       files,
     );
   }
@@ -1904,6 +2246,7 @@ export async function buildMappedPdfAnnotations(options: {
     pageMatches,
     thumbHashes,
     annotations,
+    slideRecords,
   );
 
 
