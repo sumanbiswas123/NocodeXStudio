@@ -26,7 +26,14 @@ interface ConfigEditorModalProps {
   slidesOnlyMode?: boolean;
   configContent: string | null;
   portfolioContent: string | null;
-  onSave: (newConfigContent: string, newPortfolioContent: string) => void;
+  presentationJsContent: string | null;
+  presentationCssContent: string | null;
+  onSave: (
+    newConfigContent: string,
+    newPortfolioContent: string,
+    newPresentationJs: string,
+    newPresentationCss: string,
+  ) => void;
   theme: "light" | "dark";
   autoSaveEnabled: boolean;
   onAutoSaveChange: (val: boolean) => void;
@@ -52,6 +59,8 @@ type TabKey =
   | "slides"
   | "flow"
   | "configRaw"
+  | "presentationJsRaw"
+  | "presentationCssRaw"
   | "general";
 
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -60,6 +69,8 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "slides", label: "Slides" },
   { key: "flow", label: "Flow" },
   { key: "configRaw", label: "Config.js" },
+  { key: "presentationJsRaw", label: "presentation.js" },
+  { key: "presentationCssRaw", label: "presentation.css" },
 ];
 
 const REFERENCE_TEXT_LIST_KEYS = ["referencesAll", "footnotesAll", "abbreviationsAll"] as const;
@@ -232,6 +243,8 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   slidesOnlyMode = false,
   configContent,
   portfolioContent,
+  presentationJsContent,
+  presentationCssContent,
   onSave,
   theme,
   autoSaveEnabled,
@@ -249,6 +262,8 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
   const [parseError, setParseError] = useState<string | null>(null);
   const [rawConfig, setRawConfig] = useState("");
   const [rawPortfolio, setRawPortfolio] = useState("");
+  const [rawPresentationJs, setRawPresentationJs] = useState("");
+  const [rawPresentationCss, setRawPresentationCss] = useState("");
   const [rawConfigDirty, setRawConfigDirty] = useState(false);
   const [slideSearch, setSlideSearch] = useState("");
   const [referenceDrafts, setReferenceDrafts] = useState<Record<string, string[]>>({});
@@ -260,6 +275,8 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
     const src = configContent || "";
     setRawConfig(src);
     setRawPortfolio(portfolioContent || "");
+    setRawPresentationJs(presentationJsContent || "");
+    setRawPresentationCss(presentationCssContent || "");
     setRawConfigDirty(false);
     setSlideSearch("");
     setNewFlowName("");
@@ -332,7 +349,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
       // If parsing failed, fallback to configRaw tab only when a project is loaded
       setActiveTab(hasProjectConfig ? "configRaw" : "general");
     }
-  }, [isOpen, configContent, portfolioContent, hasProjectConfig, initialTab, slidesOnlyMode]);
+  }, [isOpen, configContent, portfolioContent, presentationJsContent, presentationCssContent, hasProjectConfig, initialTab, slidesOnlyMode]);
 
   const pagesAll = useMemo(() => {
     if (configDraft?.pagesAll && Array.isArray(configDraft.pagesAll)) {
@@ -410,7 +427,7 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
 
   const handleSave = () => {
     const nextConfig = rawConfigDirty ? rawConfig : configDraft && configContent ? replaceConfigObject(configContent, configDraft) : rawConfig;
-    onSave(nextConfig, rawPortfolio);
+    onSave(nextConfig, rawPortfolio, rawPresentationJs, rawPresentationCss);
     onClose();
   };
 
@@ -1144,6 +1161,42 @@ const ConfigEditorModal: React.FC<ConfigEditorModalProps> = ({
                     color: textMain,
                     lineHeight: "1.6",
                   }}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "presentationJsRaw" ? (
+            <div className="space-y-3 animate-fadeIn">
+              <p className="text-xs" style={{ color: textMuted }}>Edit `shared/js/presentation.js` — shared JavaScript logic for the presentation.</p>
+              <div
+                className="w-full min-h-[64vh] rounded-md border overflow-hidden"
+                style={{ borderColor: borderCol, backgroundColor: inputBg }}
+              >
+                <textarea
+                  value={rawPresentationJs}
+                  onChange={(e) => setRawPresentationJs(e.target.value ?? "")}
+                  spellCheck={false}
+                  className="w-full h-full min-h-[64vh] px-4 py-3 text-sm font-mono outline-none resize-none"
+                  style={{ backgroundColor: "transparent", color: textMain, lineHeight: "1.6" }}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "presentationCssRaw" ? (
+            <div className="space-y-3 animate-fadeIn">
+              <p className="text-xs" style={{ color: textMuted }}>Edit `shared/css/presentation.css` — shared stylesheet for the presentation.</p>
+              <div
+                className="w-full min-h-[64vh] rounded-md border overflow-hidden"
+                style={{ borderColor: borderCol, backgroundColor: inputBg }}
+              >
+                <textarea
+                  value={rawPresentationCss}
+                  onChange={(e) => setRawPresentationCss(e.target.value ?? "")}
+                  spellCheck={false}
+                  className="w-full h-full min-h-[64vh] px-4 py-3 text-sm font-mono outline-none resize-none"
+                  style={{ backgroundColor: "transparent", color: textMain, lineHeight: "1.6" }}
                 />
               </div>
             </div>

@@ -66,6 +66,7 @@ type AppOverlaysProps = {
     pdfExportLogs: string[];
     saveToastMessage: string | null;
     saveCodeDraftsRef: React.MutableRefObject<(() => Promise<void>) | null>;
+    presentationCssPath: string;
   };
   actions: {
     setIsCodePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -78,6 +79,8 @@ type AppOverlaysProps = {
     handleSaveConfig: (
       newConfigContent: string,
       newPortfolioContent: string,
+      newPresentationJs: string,
+      newPresentationCss: string,
     ) => Promise<void>;
     setAutoSaveEnabled: React.Dispatch<React.SetStateAction<boolean>>;
     setPanelSide: React.Dispatch<React.SetStateAction<"default" | "swapped">>;
@@ -167,6 +170,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
     pdfExportLogs,
     saveToastMessage,
     saveCodeDraftsRef,
+    presentationCssPath,
   } = editorState;
   const {
     setIsCodePanelOpen,
@@ -414,6 +418,12 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
         portfolioContent={
           (files[portfolioPathForModal]?.content as string) || null
         }
+        presentationJsContent={
+          (files["shared/js/presentation.js"]?.content as string) || null
+        }
+        presentationCssContent={
+          (files["shared/css/presentation.css"]?.content as string) || null
+        }
         onSave={handleSaveConfig}
         theme={theme}
         autoSaveEnabled={autoSaveEnabled}
@@ -472,6 +482,7 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({
           });
         }}
         isTextEditable={detachedEditorIsTextEditable}
+        presentationCssPath={presentationCssPath}
       />
 
       {AI_ASSISTANT_ENABLED ? (

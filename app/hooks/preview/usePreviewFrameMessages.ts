@@ -814,7 +814,15 @@ export const usePreviewFrameMessages = ({
       const editableText = normalizeEditorMultilineText(
         payloadText || liveText || savedHtmlText,
       );
-      const editableHtml = payloadHtml || liveHtml || savedHtmlMarkup;
+      const pendingDraft = inlineEditDraftPendingRef.current;
+      const hasPendingDraft =
+        pendingDraft &&
+        selectedPreviewHtml === pendingDraft.filePath &&
+        nextPath.length === pendingDraft.elementPath.length &&
+        nextPath.every((seg, i) => seg === pendingDraft.elementPath[i]);
+      const editableHtml = hasPendingDraft
+        ? pendingDraft.html
+        : payloadHtml || liveHtml || savedHtmlMarkup;
       const payloadSrc =
         typeof payload.src === "string" && payload.src.trim().length > 0
           ? payload.src.trim()

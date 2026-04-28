@@ -131,6 +131,8 @@ export const PRESENTATION_CSS_VIRTUAL_PATH = "shared/css/presentation.css";
 export const FONT_CACHE_VIRTUAL_PATH = "shared/js/nocodex-fonts.json";
 export const FONT_CACHE_VERSION = 1;
 export const CONFIG_JSON_PATH = "shared/config.json";
+export const PRESENTATION_JS_PATH = "shared/js/presentation.js";
+export const PRESENTATION_CSS_PATH_CONST = "shared/css/presentation.css";
 export const PORTFOLIO_CONFIG_PATH = "shared/portfolioconfig.json";
 export const ADD_TOOL_COMPONENT_PRESETS = new Set([
   "preset:carousel",

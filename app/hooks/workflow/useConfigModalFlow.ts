@@ -5,6 +5,8 @@ import type { FileMap } from "../../../types";
 import {
   CONFIG_JSON_PATH,
   PORTFOLIO_CONFIG_PATH,
+  PRESENTATION_JS_PATH,
+  PRESENTATION_CSS_PATH_CONST,
   getConfigPathCandidates,
   resolveConfigPathFromFiles,
   scoreConfigContent,
@@ -32,7 +34,12 @@ type UseConfigModalFlowResult = {
   configPathForModal: string;
   handleChooseFolderCloneSource: () => void;
   handleOpenConfigModal: () => void;
-  handleSaveConfig: (newConfig: string, newPortfolio: string) => Promise<void>;
+  handleSaveConfig: (
+    newConfig: string,
+    newPortfolio: string,
+    newPresentationJs: string,
+    newPresentationCss: string,
+  ) => Promise<void>;
   isConfigModalOpen: boolean;
   isConfigModalSlidesOnly: boolean;
   portfolioPathForModal: string;
@@ -155,6 +162,21 @@ export const useConfigModalFlow = ({
           : Promise.resolve(),
         loadFileContent(portfolioPath, { persistToState: true }),
       ]);
+      // Also load presentation.js and presentation.css for the new tabs
+      const presentationJsPath = Object.keys(filesRef.current).find(
+        (p) => /shared\/js\/presentation\.js$/i.test(p),
+      ) || "shared/js/presentation.js";
+      const presentationCssPath = Object.keys(filesRef.current).find(
+        (p) => /shared\/css\/presentation\.css$/i.test(p),
+      ) || "shared/css/presentation.css";
+
+      await Promise.all([
+        loadFileContent(presentationJsPath, { persistToState: true }),
+        loadFileContent(presentationCssPath, { persistToState: true }),
+      ]).catch(() => {
+        // Files may not exist yet — that's OK
+      });
+
       for (const [path, entry] of Object.entries(filesRef.current)) {
         if (
           entry?.type === "image" &&
@@ -174,7 +196,7 @@ export const useConfigModalFlow = ({
   }, []);
 
   const handleSaveConfig = useCallback(
-    async (newConfig: string, newPortfolio: string) => {
+    async (newConfig: string, newPortfolio: string, newPresentationJs: string, newPresentationCss: string) => {
       try {
         const configPath =
           configModalConfigPathRef.current ||
@@ -239,6 +261,51 @@ export const useConfigModalFlow = ({
               prev.filter((entry) => entry !== portfolioPath),
             );
           }
+        }
+
+        const persistFile = async (virtualPath: string, content: string) => {
+          const absPath = filePathIndexRef.current[virtualPath];
+          if (!absPath) return;
+          if (!filesRef.current[virtualPath]) {
+            filesRef.current = {
+              ...filesRef.current,
+              [virtualPath]: {
+                path: virtualPath,
+                name: virtualPath.split("/").pop() || virtualPath,
+                type: (virtualPath.endsWith(".css") ? "css" : "js") as "css" | "js",
+                content,
+              },
+            };
+            setFiles(filesRef.current);
+          } else {
+            filesRef.current = {
+              ...filesRef.current,
+              [virtualPath]: {
+                ...filesRef.current[virtualPath],
+                content,
+              },
+            };
+            setFiles(filesRef.current);
+          }
+          if (!dirtyFilesRef.current.includes(virtualPath)) {
+            dirtyFilesRef.current.push(virtualPath);
+            setDirtyFiles((prev) => [...prev, virtualPath]);
+          }
+          await (Neutralino as any).filesystem.writeFile(absPath, content);
+          dirtyFilesRef.current = dirtyFilesRef.current.filter(
+            (entry) => entry !== virtualPath,
+          );
+          setDirtyFiles((prev) => prev.filter((entry) => entry !== virtualPath));
+        };
+
+        if (newPresentationJs) {
+          const jsPath = resolveConfigPathFromFiles(filesRef.current, "config.json")
+            ? PRESENTATION_JS_PATH
+            : PRESENTATION_JS_PATH;
+          await persistFile(jsPath, newPresentationJs);
+        }
+        if (newPresentationCss) {
+          await persistFile(PRESENTATION_CSS_PATH_CONST, newPresentationCss);
         }
 
         requestPreviewRefreshWithUnsavedGuard();

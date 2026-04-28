@@ -26,6 +26,7 @@ type UseAppOverlaysViewModelOptions = {
   panelSide: "default" | "swapped";
   projectPath: string | null;
   selectedFolderCloneSource: string | null;
+  presentationCssPath: string;
   aiAssistantMode: AssistantMode;
   aiAssistantCurrentSlideLabel: string;
   aiAssistantHasProject: boolean;
@@ -60,6 +61,8 @@ type UseAppOverlaysViewModelOptions = {
   handleSaveConfig: (
     newConfigContent: string,
     newPortfolioContent: string,
+    newPresentationJs: string,
+    newPresentationCss: string,
   ) => Promise<void>;
   setAutoSaveEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setPanelSide: React.Dispatch<React.SetStateAction<"default" | "swapped">>;
@@ -96,6 +99,7 @@ export const useAppOverlaysViewModel = ({
   isFloatingPanels,
   isCodePanelOpen,
   isRightPanelOpen,
+  presentationCssPath,
   rightPanelMode,
   isCompactConsoleOpening,
   previewConsoleErrorCount,
@@ -201,6 +205,7 @@ export const useAppOverlaysViewModel = ({
         pdfExportLogs,
         saveToastMessage,
         saveCodeDraftsRef,
+        presentationCssPath: presentationCssPath || "presentation.css",
       },
       actions: {
         setIsCodePanelOpen,

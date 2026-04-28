@@ -12,9 +12,11 @@ import {
   Save,
   Search,
   X,
+  PanelLeft,
 } from "lucide-react";
 import { FileMap, ProjectFile } from "../types";
-import ColorCodeEditor from "./ColorCodeEditor";
+import ColorCodeEditor, { CodeLanguage } from "./ColorCodeEditor";
+import "./styles/DetachedCodeEditorWindow.css";
 
 interface DetachedCodeEditorWindowProps {
   isOpen: boolean;
@@ -29,6 +31,7 @@ interface DetachedCodeEditorWindowProps {
   onSave: () => void;
   onReload: () => void;
   isTextEditable: boolean;
+  presentationCssPath?: string;
 }
 
 interface TreeNode {
@@ -122,18 +125,6 @@ const iconForFile = (path: string, type: ProjectFile["type"]) => {
   return <File size={14} />;
 };
 
-const pickInitialFile = (files: FileMap): string | null => {
-  const ordered = Object.values(files).sort((a, b) => a.path.localeCompare(b.path));
-  const preferred = ordered.find(
-    (file) =>
-      file.type === "html" ||
-      file.type === "css" ||
-      file.type === "js" ||
-      file.type === "image",
-  );
-  return preferred?.path ?? ordered[0]?.path ?? null;
-};
-
 const filterTree = (nodes: TreeNode[], query: string): TreeNode[] => {
   const needle = query.trim().toLowerCase();
   if (!needle) return nodes;
@@ -152,13 +143,30 @@ const filterTree = (nodes: TreeNode[], query: string): TreeNode[] => {
     .filter((node): node is TreeNode => Boolean(node));
 };
 
-const isRenderableTextFile = (file: ProjectFile | null, path: string): boolean => {
+const isRenderableTextFile = (
+  file: ProjectFile | null,
+  path: string,
+): boolean => {
   if (!file) return false;
   if (file.type === "image") return isSvgPath(path);
   return true;
 };
 
-const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
+const getDisambiguatedTabName = (path: string, allTabs: string[]) => {
+  const name = fileNameFromPath(path);
+  const hasConflict = allTabs.some(
+    (p) => p !== path && fileNameFromPath(p) === name,
+  );
+  if (hasConflict) {
+    const parts = splitPath(path);
+    if (parts.length >= 2) {
+      return `${name} - ${parts[parts.length - 2]}`;
+    }
+  }
+  return name;
+};
+
+function DetachedCodeEditorWindow({
   isOpen,
   onClose,
   theme,
@@ -171,49 +179,74 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
   onSave,
   onReload,
   isTextEditable,
-}) => {
+}: DetachedCodeEditorWindowProps) {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set(),
+  );
+  const [searchQuery, setSearchQuery] = useState("");
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
   const popupRef = useRef<Window | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState("");
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
 
   const tree = useMemo(() => buildTree(files), [files]);
-  const filteredTree = useMemo(() => filterTree(tree, search), [search, tree]);
+  const filteredTree = useMemo(
+    () => filterTree(tree, searchQuery),
+    [searchQuery, tree],
+  );
   const activeFile = activeFilePath ? files[activeFilePath] : null;
-  const activePathNormalized = activeFilePath ? normalizePath(activeFilePath) : "";
+  const activePathNormalized = activeFilePath
+    ? normalizePath(activeFilePath)
+    : "";
+
   const activeImageSrc =
-    activeFile?.type === "image" &&
-    !isSvgPath(activeFile.path) &&
-    typeof activeFile.content === "string"
-      ? activeFile.content
+    activeFile?.type === "image" && !isSvgPath(activeFile.path)
+      ? typeof activeFile.content === "string"
+        ? activeFile.content
+        : activeFile.content instanceof Blob
+          ? URL.createObjectURL(activeFile.content)
+          : ""
       : "";
 
-  useEffect(() => {
-    if (!isOpen) return;
-    if (activeFilePath) return;
-    const next = pickInitialFile(files);
-    if (next) onSelectFile(next);
-  }, [activeFilePath, files, isOpen, onSelectFile]);
+  const currentLanguage = isSvgPath(activeFilePath || "")
+    ? "svg"
+    : activeFile?.type === "css" ||
+        activeFile?.type === "js" ||
+        activeFile?.type === "html"
+      ? activeFile.type
+      : "text";
 
+  // --- FIX: ONE SINGLE SOURCE OF TRUTH FOR TABS AND FOLDERS ---
   useEffect(() => {
     if (!activePathNormalized) return;
+
+    // Expand the required folders
     setExpandedFolders((prev) => {
       const next = new Set(prev);
-      collectAncestorPaths(activePathNormalized).forEach((path) => next.add(path));
+      collectAncestorPaths(activePathNormalized).forEach((path) =>
+        next.add(path),
+      );
       return next;
     });
+
+    // Safely add the tab without causing duplicates
     setOpenTabs((prev) => {
-      const next = prev.filter((path) => files[path]);
-      if (!next.includes(activePathNormalized)) next.push(activePathNormalized);
-      return next;
+      const existingTabs = prev.filter((path) => files[path]); // Remove deleted files
+      if (!existingTabs.includes(activePathNormalized)) {
+        return [...existingTabs, activePathNormalized]; // Append only if missing
+      }
+      return existingTabs; // Do nothing if it's already there
     });
   }, [activePathNormalized, files]);
 
   useEffect(() => {
-    setOpenTabs((prev) => prev.filter((path) => files[path]));
-  }, [files]);
+    return () => {
+      if (activeImageSrc && activeImageSrc.startsWith("blob:")) {
+        URL.revokeObjectURL(activeImageSrc);
+      }
+    };
+  }, [activeImageSrc]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -223,6 +256,11 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
       popupRef.current = null;
       containerRef.current = null;
       setIsReady(false);
+
+      // Clean slate on close
+      setOpenTabs([]);
+      setExpandedFolders(new Set());
+      setSearchQuery("");
       return;
     }
 
@@ -240,44 +278,13 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
 
     const mountNode = popup.document.createElement("div");
     mountNode.id = "nocodex-detached-editor-root";
-    mountNode.style.height = "100vh";
     popup.document.body.appendChild(mountNode);
-
-    popup.document.documentElement.style.height = "100%";
-    popup.document.body.style.margin = "0";
-    popup.document.body.style.height = "100vh";
-    popup.document.body.style.overflow = "hidden";
-    popup.document.body.style.background = theme === "dark" ? "#0b1220" : "#edf2f7";
-    popup.document.documentElement.className = document.documentElement.className;
-    popup.document.body.className = document.body.className;
 
     const sourceStyles = Array.from(
       document.querySelectorAll("style, link[rel='stylesheet']"),
     );
     sourceStyles.forEach((node) => {
       popup.document.head.appendChild(node.cloneNode(true));
-    });
-
-    const computedRootStyles = window.getComputedStyle(document.documentElement);
-    [
-      "--bg-app",
-      "--bg-panel",
-      "--bg-glass",
-      "--bg-glass-strong",
-      "--border-color",
-      "--text-main",
-      "--text-muted",
-      "--icon-color",
-      "--accent-primary",
-      "--accent-glow",
-      "--glass-shadow",
-      "--input-bg",
-      "--toolbar-bg",
-    ].forEach((name) => {
-      const value = computedRootStyles.getPropertyValue(name);
-      if (value) {
-        popup.document.documentElement.style.setProperty(name, value);
-      }
     });
 
     containerRef.current = mountNode;
@@ -291,33 +298,34 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
     return () => {
       popup.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [isOpen, onClose, theme]);
+  }, [isOpen, onClose]);
 
-  if (!isOpen || !isReady || !containerRef.current || !popupRef.current) return null;
+  if (!isOpen || !isReady || !containerRef.current || !popupRef.current)
+    return null;
 
-  const handleTabClose = (path: string) => {
+  const handleTabClose = (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
     setOpenTabs((prev) => prev.filter((entry) => entry !== path));
     if (normalizePath(path) !== activePathNormalized) return;
     const remaining = openTabs.filter((entry) => entry !== path);
-    const next = remaining[remaining.length - 1] ?? pickInitialFile(files);
+    const next = remaining[remaining.length - 1] ?? null;
     if (next && next !== path) {
       onSelectFile(next);
     }
   };
 
   const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode => {
+    const paddingLeft = `${depth * 16 + 8}px`;
+
     if (node.type === "folder") {
-      const isExpanded = expandedFolders.has(node.path) || Boolean(search.trim());
+      const isExpanded =
+        expandedFolders.has(node.path) || Boolean(searchQuery.trim());
       return (
         <div key={node.path}>
           <button
             type="button"
-            className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors"
-            style={{
-              paddingLeft: `${depth * 16 + 12}px`,
-              color: "var(--text-main)",
-              background: "transparent",
-            }}
+            className="nx-tree-item"
+            style={{ paddingLeft }}
             onClick={() =>
               setExpandedFolders((prev) => {
                 const next = new Set(prev);
@@ -327,11 +335,17 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
               })
             }
           >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            <Folder size={14} />
-            <span className="truncate text-sm">{node.name}</span>
+            {isExpanded ? (
+              <ChevronDown size={14} />
+            ) : (
+              <ChevronRight size={14} />
+            )}
+            <Folder size={14} style={{ opacity: 0.8 }} />
+            <span className="nx-truncate">{node.name}</span>
           </button>
-          {isExpanded ? node.children.map((child) => renderTreeNode(child, depth + 1)) : null}
+          {isExpanded
+            ? node.children.map((child) => renderTreeNode(child, depth + 1))
+            : null}
         </div>
       );
     }
@@ -342,295 +356,245 @@ const DetachedCodeEditorWindow: React.FC<DetachedCodeEditorWindowProps> = ({
       <button
         key={node.path}
         type="button"
-        className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors"
-        style={{
-          paddingLeft: `${depth * 16 + 12}px`,
-          color: isActive ? (theme === "dark" ? "#8be9fd" : "#0f766e") : "var(--text-main)",
-          background: isActive
-            ? theme === "dark"
-              ? "rgba(56,189,248,0.16)"
-              : "rgba(14,165,233,0.14)"
-            : "transparent",
-        }}
+        className={`nx-tree-item ${isActive ? "active" : ""}`}
+        style={{ paddingLeft }}
         onClick={() => onSelectFile(node.path)}
       >
-        {iconForFile(node.path, node.fileType || "unknown")}
-        <span className="truncate text-sm">{node.name}</span>
+        <span
+          style={{
+            opacity: isActive ? 1 : 0.8,
+            display: "flex",
+            alignItems: "center",
+            marginLeft: "22px",
+          }}
+        >
+          {iconForFile(node.path, node.fileType || "unknown")}
+        </span>
+        <span className="nx-truncate">{node.name}</span>
       </button>
     );
   };
 
-  return createPortal(
-    <div
-      className="h-screen w-screen overflow-hidden"
-      style={{
-        background: theme === "dark" ? "#0b1220" : "#edf2f7",
-        color: "var(--text-main)",
-      }}
-    >
-      <div className="grid h-full grid-cols-[52px_320px_minmax(0,1fr)]">
-        <aside
-          className="border-r flex h-full flex-col items-center py-3"
-          style={{
-            borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-            background: theme === "dark" ? "#0f172a" : "#e2e8f0",
-          }}
-        >
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-xl"
-            style={{
-              background: theme === "dark" ? "rgba(56,189,248,0.14)" : "rgba(14,165,233,0.14)",
-              color: theme === "dark" ? "#67e8f9" : "#0f766e",
-            }}
-          >
-            <FileCode2 size={18} />
-          </div>
-        </aside>
+  const renderBreadcrumbs = () => {
+    if (!activeFilePath) return "No file selected";
+    const parts = splitPath(activeFilePath);
+    return parts.map((part, idx) => (
+      <React.Fragment key={idx}>
+        <span>{part}</span>
+        {idx < parts.length - 1 && (
+          <ChevronRight size={10} className="nx-breadcrumb-sep" />
+        )}
+      </React.Fragment>
+    ));
+  };
 
-        <aside
-          className="border-r h-full overflow-hidden flex flex-col"
-          style={{
-            borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-            background: theme === "dark" ? "#111827" : "#f8fafc",
-          }}
-        >
-          <div
-            className="border-b px-4 py-3"
-            style={{ borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)" }}
-          >
-            <div
-              className="text-[11px] uppercase tracking-[0.24em]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Explorer
-            </div>
-            <div className="mt-1 text-lg font-semibold">Project Files</div>
-            <div
-              className="mt-3 flex items-center gap-2 rounded-xl border px-3"
-              style={{
-                borderColor: theme === "dark" ? "rgba(148,163,184,0.18)" : "rgba(15,23,42,0.08)",
-                background: theme === "dark" ? "rgba(15,23,42,0.72)" : "rgba(255,255,255,0.96)",
-              }}
-            >
-              <Search size={14} style={{ color: "var(--text-muted)" }} />
+  return createPortal(
+    <div className={`nx-root nx-theme-${theme}`}>
+      <div
+        className="nx-layout-grid"
+        style={{
+          gridTemplateColumns: isSidebarOpen
+            ? "280px minmax(0, 1fr)"
+            : "0px minmax(0, 1fr)",
+        }}
+      >
+        <aside className="nx-sidebar">
+          <div className="nx-sidebar-header">
+            <div className="nx-explorer-title">Explorer</div>
+            <div className="nx-explorer-subtitle">Project Files</div>
+            <div className="nx-search-box">
+              <Search size={14} style={{ opacity: 0.6 }} />
               <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search files"
-                className="h-10 w-full bg-transparent text-sm outline-none"
-                style={{ color: "var(--text-main)" }}
+                type="text"
+                className="nx-search-input"
+                placeholder="Search files..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  style={{ opacity: 0.5 }}
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-2 custom-scrollbar">
+          <div className="nx-tree-container nx-scrollbar">
             {filteredTree.length ? (
               filteredTree.map((node) => renderTreeNode(node, 0))
             ) : (
-              <div className="px-3 py-4 text-sm" style={{ color: "var(--text-muted)" }}>
-                No files match this search.
+              <div
+                className="nx-tree-item"
+                style={{ color: "var(--nx-text-muted)" }}
+              >
+                No files match '{searchQuery}'
               </div>
             )}
           </div>
         </aside>
 
-        <section className="min-w-0 h-full flex flex-col">
-          <div
-            className="border-b px-4 py-2"
-            style={{
-              borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-              background: theme === "dark" ? "#0f172a" : "#f8fafc",
-            }}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-base font-semibold">
-                  {activeFilePath ? fileNameFromPath(activeFilePath) : "No file selected"}
-                </div>
-                <div className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  {activeFilePath || "Open any file from the explorer"}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="h-9 w-9 rounded-xl border flex items-center justify-center"
-                  style={{
-                    borderColor: theme === "dark" ? "rgba(148,163,184,0.18)" : "rgba(15,23,42,0.08)",
-                    color: "var(--text-main)",
-                  }}
-                  onClick={onReload}
-                  title="Reload file"
-                >
-                  <RefreshCw size={14} />
-                </button>
-                {isTextEditable ? (
-                  <button
-                    type="button"
-                    className="h-9 px-3 rounded-xl border flex items-center gap-2"
-                    style={{
-                      borderColor: theme === "dark" ? "rgba(148,163,184,0.18)" : "rgba(15,23,42,0.08)",
-                      color: "var(--text-main)",
-                    }}
-                    onClick={onSave}
-                    title="Save file"
-                  >
-                    <Save size={14} />
-                    Save
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="h-9 w-9 rounded-xl border flex items-center justify-center"
-                  style={{
-                    borderColor: theme === "dark" ? "rgba(148,163,184,0.18)" : "rgba(15,23,42,0.08)",
-                    color: "var(--text-main)",
-                  }}
-                  onClick={onClose}
-                  title="Close editor window"
-                >
-                  <X size={14} />
-                </button>
-              </div>
+        <section className="nx-editor-section">
+          <div className="nx-editor-header">
+            <div className="nx-editor-header-left nx-hide-scroll">
+              <button
+                type="button"
+                className="nx-sidebar-toggle"
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                title={isSidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+              >
+                <PanelLeft size={16} />
+              </button>
+
+              {openTabs.length > 0 &&
+                openTabs.map((path) => {
+                  const normalizedPath = normalizePath(path);
+                  const isCurrent = normalizedPath === activePathNormalized;
+                  const isCurrentDirty = isCurrent ? isDirty : false;
+                  const tabName = getDisambiguatedTabName(path, openTabs);
+
+                  return (
+                    <div
+                      key={path}
+                      className={`nx-tab ${isCurrent ? "active" : ""}`}
+                      onClick={() => onSelectFile(path)}
+                    >
+                      <div className="nx-tab-btn">
+                        <span style={{ opacity: isCurrent ? 1 : 0.7 }}>
+                          {iconForFile(path, files[path]?.type ?? "unknown")}
+                        </span>
+                        <span className="nx-truncate">{tabName}</span>
+                        {isCurrentDirty ? (
+                          <span className="nx-dirty-dot">●</span>
+                        ) : null}
+                      </div>
+                      <button
+                        type="button"
+                        className="nx-tab-close"
+                        onClick={(e) => handleTabClose(e, path)}
+                        title="Close tab"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+            </div>
+
+            <div className="nx-editor-header-right">
+              <button
+                type="button"
+                className="nx-icon-button"
+                onClick={onReload}
+                title="Reload file"
+              >
+                <RefreshCw size={14} />
+              </button>
+
+              <button
+                type="button"
+                className={`nx-text-button ${
+                  isTextEditable ? "" : "opacity-50"
+                }`}
+                onClick={() => {
+                  if (!activeFilePath || !isTextEditable) return;
+                  void onSave();
+                }}
+                disabled={!isTextEditable}
+              >
+                <Save size={14} />
+                Save
+              </button>
             </div>
           </div>
 
-          <div
-            className="border-b flex items-end gap-1 overflow-x-auto px-3 pt-2 custom-scrollbar"
-            style={{
-              borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-              background: theme === "dark" ? "#111827" : "#e2e8f0",
-            }}
-          >
-            {openTabs.map((path) => {
-              const isActive = normalizePath(path) === activePathNormalized;
-              const isCurrentDirty = isActive ? isDirty : false;
-              return (
-                <div
-                  key={path}
-                  className="group flex min-w-[140px] max-w-[240px] items-center gap-2 rounded-t-xl border border-b-0 px-3 py-2 text-sm"
-                  style={{
-                    background: isActive
-                      ? theme === "dark"
-                        ? "#0b1220"
-                        : "#ffffff"
-                      : theme === "dark"
-                        ? "rgba(15,23,42,0.92)"
-                        : "rgba(248,250,252,0.9)",
-                    borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-                    color: isActive ? "var(--text-main)" : "var(--text-muted)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    onClick={() => onSelectFile(path)}
-                  >
-                    {iconForFile(path, files[path]?.type ?? "unknown")}
-                    <span className="truncate">{fileNameFromPath(path)}</span>
-                    {isCurrentDirty ? <span className="text-[10px]">●</span> : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-md p-0.5 opacity-60 transition-opacity group-hover:opacity-100"
-                    onClick={() => handleTabClose(path)}
-                    title="Close tab"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+          <div className="nx-breadcrumbs">{renderBreadcrumbs()}</div>
 
-          <div
-            className="min-h-0 flex-1 overflow-hidden"
-            style={{
-              background: theme === "dark" ? "#0b1220" : "#ffffff",
-            }}
-          >
+          <div className="nx-workspace">
             {!activeFile ? (
-              <div className="flex h-full items-center justify-center text-sm" style={{ color: "var(--text-muted)" }}>
-                Select a file from the left explorer.
+              <div className="nx-center-pane">
+                <div className="nx-preview-card">
+                  <FileCode2
+                    size={48}
+                    style={{ margin: "0 auto", opacity: 0.2 }}
+                  />
+                  <div className="nx-preview-card-title">No file selected</div>
+                  <div className="nx-preview-card-subtitle">
+                    Open any file from the explorer to begin
+                  </div>
+                </div>
               </div>
             ) : activeFile.type === "image" && !isSvgPath(activeFile.path) ? (
-              <div className="flex h-full items-center justify-center p-8">
+              <div className="nx-center-pane">
                 {activeImageSrc ? (
                   <img
                     src={activeImageSrc}
                     alt={activeFile.name}
-                    className="max-h-full max-w-full rounded-2xl object-contain shadow-xl"
+                    className="nx-image-preview"
                   />
                 ) : (
-                  <div className="text-center">
-                    <ImageIcon size={28} className="mx-auto mb-3" />
-                    <div className="text-sm" style={{ color: "var(--text-muted)" }}>
+                  <div className="nx-preview-card">
+                    <ImageIcon
+                      size={32}
+                      style={{ margin: "0 auto", opacity: 0.5 }}
+                    />
+                    <div className="nx-preview-card-title">
                       Loading image preview...
                     </div>
                   </div>
                 )}
               </div>
             ) : isRenderableTextFile(activeFile, activeFile.path) ? (
-              <ColorCodeEditor
-                value={content}
-                onChange={isTextEditable ? onChange : () => {}}
-                language={
-                  isSvgPath(activeFile.path)
-                    ? "svg"
-                    : activeFile.type === "css" || activeFile.type === "js" || activeFile.type === "html"
-                      ? activeFile.type
-                      : "html"
-                }
-                theme={theme}
-                className="h-full"
-                style={{
-                  background: theme === "dark" ? "#0b1220" : "#ffffff",
-                  height: "100%",
-                }}
-                minHeight="100%"
-                readOnly={!isTextEditable}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center p-8">
-                <div
-                  className="max-w-lg rounded-3xl border px-8 py-8 text-center"
+              isTextEditable ? (
+                <ColorCodeEditor
+                  value={content}
+                  onChange={onChange}
+                  language={currentLanguage as CodeLanguage}
+                  theme={theme}
+                  className="h-full"
                   style={{
-                    borderColor: theme === "dark" ? "rgba(148,163,184,0.18)" : "rgba(15,23,42,0.08)",
+                    background: "transparent",
+                    height: "100%",
                   }}
-                >
-                  <div className="text-lg font-semibold">Preview not available</div>
-                  <div className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-                    This file type is not renderable in the editor yet.
+                  minHeight="100%"
+                />
+              ) : (
+                <pre className="nx-readonly-text nx-scrollbar">
+                  {content || "No content to display"}
+                </pre>
+              )
+            ) : (
+              <div className="nx-center-pane">
+                <div className="nx-preview-card">
+                  <File size={32} className="mx-auto mb-4" />
+                  <div className="nx-preview-card-title">
+                    Preview not available
                   </div>
-                  <div className="mt-4 text-xs" style={{ color: "var(--text-muted)" }}>
-                    {activeFile.path}
+                  <div className="nx-preview-card-subtitle">
+                    This file type is not supported for preview
                   </div>
                 </div>
               </div>
             )}
           </div>
 
-          <div
-            className="h-10 shrink-0 px-4 border-t flex items-center justify-between text-xs"
-            style={{
-              borderColor: theme === "dark" ? "rgba(148,163,184,0.16)" : "rgba(15,23,42,0.08)",
-              background: theme === "dark" ? "#0f172a" : "#f8fafc",
-              color: "var(--text-muted)",
-            }}
-          >
-            <span>{activeFile ? String(activeFile.type).toUpperCase() : "NO FILE"}</span>
-            <span
-              className="w-2.5 h-2.5 rounded-full"
-              style={{
-                backgroundColor: isDirty ? "#f59e0b" : "#22c55e",
-              }}
-              aria-hidden="true"
-            />
+          <div className="nx-status-bar">
+            <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span
+                className="nx-status-indicator"
+                style={{ backgroundColor: isDirty ? "#f59e0b" : "#10b981" }}
+              />
+              {activeFile ? String(activeFile.type).toUpperCase() : "READY"}
+            </span>
+            <span>UTF-8</span>
           </div>
         </section>
       </div>
     </div>,
     containerRef.current,
   );
-};
+}
 
 export default DetachedCodeEditorWindow;

@@ -2027,6 +2027,7 @@ const App: React.FC = () => {
     configModalInitialTab,
     isConfigModalSlidesOnly,
     autoSaveEnabled,
+    presentationCssPath: presentationCssPathRef.current,
     panelSide,
     projectPath,
     selectedFolderCloneSource,
